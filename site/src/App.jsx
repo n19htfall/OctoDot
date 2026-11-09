@@ -3,6 +3,14 @@ import { candidatesFor, preeditOf, schemes } from "./lexicon.js";
 
 const GITHUB = "https://github.com/n19htfall/OctoDot";
 const RELEASES = `${GITHUB}/releases`;
+/** Flip to true once the first signed release (v0.1.0) is on GitHub: the
+ *  download buttons then link to the latest release. Until then Releases
+ *  holds only the reranker's weights, so they point at building from source. */
+const APP_RELEASED = false;
+const DOWNLOAD = APP_RELEASED
+  ? { href: `${RELEASES}/latest`, label: "下载", nav: "下载" }
+  : { href: `${GITHUB}#requirements`, label: "从源码构建", nav: "GitHub" };
+const ICON = `${import.meta.env.BASE_URL}icon.png`;
 
 const NAV = [
   { id: "privacy", label: "隐私" },
@@ -513,7 +521,7 @@ export default function App() {
       <header className="nav">
         <div className="nav-inner">
           <a className="brand" href="#top" aria-label="八千点 OctoDot，回到页首">
-            <img src="/icon.png" alt="" width="30" height="30" />
+            <img src={ICON} alt="" width="30" height="30" />
             <span>
               八千点 <em>OctoDot</em>
             </span>
@@ -525,8 +533,8 @@ export default function App() {
               </a>
             ))}
           </nav>
-          <a className="btn small" href={RELEASES}>
-            下载
+          <a className="btn small" href={APP_RELEASED ? DOWNLOAD.href : GITHUB}>
+            {DOWNLOAD.nav}
           </a>
         </div>
       </header>
@@ -548,8 +556,8 @@ export default function App() {
               <span className="nowrap">没有任何网络权限。</span>
             </p>
             <div className="hero-actions">
-              <a className="btn" href={RELEASES}>
-                下载
+              <a className="btn" href={DOWNLOAD.href}>
+                {DOWNLOAD.label}
               </a>
               <a className="link" href="#isolation">
                 了解我的手段 <span aria-hidden="true">→</span>
@@ -589,12 +597,12 @@ export default function App() {
         <Features />
 
         <section className="cta reveal" aria-labelledby="cta-title">
-          <img src="/icon.png" alt="" width="72" height="72" />
+          <img src={ICON} alt="" width="72" height="72" />
           <h2 id="cta-title">八千点 OctoDot</h2>
-          <p>签名并公证的安装包即将发布；现在可以从源码构建。</p>
+          <p>{APP_RELEASED ? "签名并经过 Apple 公证，拖进「应用程序」即可安装。" : "签名并公证的安装包即将发布；现在可以从源码构建。"}</p>
           <div className="hero-actions center">
-            <a className="btn" href={RELEASES}>
-              前往下载页
+            <a className="btn" href={DOWNLOAD.href}>
+              {APP_RELEASED ? "前往下载页" : DOWNLOAD.label}
             </a>
             <a className="btn ghost" href={GITHUB}>
               在 GitHub 上查看

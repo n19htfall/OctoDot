@@ -87,6 +87,7 @@ is stored encrypted, with its key in your Keychain.
 | `tools/octo-compile/` | Goose tool: normalized sources → verified images (`build/images/`) |
 | `mk/toolchain.mk` | The pinned Goose compiler and Xcode settings the Makefiles share |
 | `spikes/` | M0: four prototypes and what they settled |
+| `site/` | The website (Vite + React), published at [n19htfall.github.io/OctoDot](https://n19htfall.github.io/OctoDot/) by `.github/workflows/pages.yml` |
 | `docs/M1-plan.md` | M1: a daily-drivable IME on the 万象 lexicon |
 | `docs/hotswap-architecture.md` | Switching schemes, lexicon sets and shape codes live, with no deploy step |
 | `LICENSE` | OctoDot's license: the GNU General Public License v3.0 |
