@@ -3,13 +3,13 @@ import { candidatesFor, preeditOf, schemes } from "./lexicon.js";
 
 const GITHUB = "https://github.com/n19htfall/OctoDot";
 const RELEASES = `${GITHUB}/releases`;
-/** Flip to true once the first signed release (v0.1.0) is on GitHub: the
- *  download buttons then link to the latest release. Until then Releases
- *  holds only the reranker's weights, so they point at building from source. */
-const APP_RELEASED = false;
-const DOWNLOAD = APP_RELEASED
-  ? { href: `${RELEASES}/latest`, label: "下载", nav: "下载" }
-  : { href: `${GITHUB}#requirements`, label: "从源码构建", nav: "GitHub" };
+/** The release the download buttons fetch, as its disk image straight from
+ *  GitHub. Update both on each release: the image's name carries the version,
+ *  and the size is the image's, as Finder shows it. */
+const RELEASE = { version: "0.1.0", size: "413 MB" };
+const DOWNLOAD = `${RELEASES}/download/v${RELEASE.version}/OctoDot-${RELEASE.version}.dmg`;
+/** The same disk image on Quark's cloud drive, for those GitHub is slow for. */
+const MIRROR = "https://pan.quark.cn/s/b9a29be252cb";
 const ICON = `${import.meta.env.BASE_URL}icon.png`;
 
 const NAV = [
@@ -173,11 +173,32 @@ function Icon({ name }) {
     keyboard: <path d="M3 6h18a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2Zm0 2v8h18V8H3Zm2 1h2v2H5V9Zm3 0h2v2H8V9Zm3 0h2v2h-2V9Zm3 0h2v2h-2V9Zm3 0h2v2h-2V9ZM6 13h12v2H6v-2Z" />,
     check: <path d="m9.5 16.2-4.2-4.2-1.4 1.4 5.6 5.6L21 7.5l-1.4-1.4L9.5 16.2Z" />,
     cross: <path d="M18.3 5.7 12 12l6.3 6.3-1.4 1.4L10.6 13.4 4.3 19.7l-1.4-1.4L9.2 12 2.9 5.7l1.4-1.4 6.3 6.3 6.3-6.3 1.4 1.4Z" />,
+    download: <path d="M11 3h2v9.2l3.3-3.3 1.4 1.4L12 16l-5.7-5.7 1.4-1.4 3.3 3.3V3ZM4 15h2v4h12v-4h2v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-4Z" />,
+    /* GitHub's mark, where the download comes from. */
+    github: <path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12" />,
   };
   return (
     <svg className="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
       {paths[name]}
     </svg>
+  );
+}
+
+/** Drawn in strokes, lighter than the filled set above: for a text link. */
+function DownloadOutlineIcon() {
+  return (
+    <svg className="icon outline" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M12 4v11m-4.5-4.5L12 15l4.5-4.5M5 15v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3" />
+    </svg>
+  );
+}
+
+function DownloadButton({ small = false, icon = "download" }) {
+  return (
+    <a className={small ? "btn small" : "btn download"} href={DOWNLOAD}>
+      <Icon name={icon} />
+      下载
+    </a>
   );
 }
 
@@ -533,9 +554,7 @@ export default function App() {
               </a>
             ))}
           </nav>
-          <a className="btn small" href={APP_RELEASED ? DOWNLOAD.href : GITHUB}>
-            {DOWNLOAD.nav}
-          </a>
+          <DownloadButton small />
         </div>
       </header>
 
@@ -556,14 +575,18 @@ export default function App() {
               <span className="nowrap">没有任何网络权限。</span>
             </p>
             <div className="hero-actions">
-              <a className="btn" href={DOWNLOAD.href}>
-                {DOWNLOAD.label}
-              </a>
+              <DownloadButton icon="github" />
               <a className="link" href="#isolation">
-                了解我的手段 <span aria-hidden="true">→</span>
+                输入法架构 <span aria-hidden="true">→</span>
               </a>
             </div>
-            <p className="hero-meta">macOS 14 及以上 · Apple 芯片</p>
+            <p className="hero-meta">
+              macOS 14 及以上 · Apple 芯片
+              <a className="mirror" href={MIRROR}>
+                <DownloadOutlineIcon />
+                备用下载链接
+              </a>
+            </p>
           </div>
           <Demo />
         </section>
@@ -599,11 +622,9 @@ export default function App() {
         <section className="cta reveal" aria-labelledby="cta-title">
           <img src={ICON} alt="" width="72" height="72" />
           <h2 id="cta-title">八千点 OctoDot</h2>
-          <p>{APP_RELEASED ? "签名并经过 Apple 公证，拖进「应用程序」即可安装。" : "签名并公证的安装包即将发布；现在可以从源码构建。"}</p>
+          <p>拖进「应用程序」即可安装。</p>
           <div className="hero-actions center">
-            <a className="btn" href={DOWNLOAD.href}>
-              {APP_RELEASED ? "前往下载页" : DOWNLOAD.label}
-            </a>
+            <DownloadButton icon="github" />
             <a className="btn ghost" href={GITHUB}>
               在 GitHub 上查看
             </a>

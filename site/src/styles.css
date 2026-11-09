@@ -70,6 +70,7 @@ p { text-wrap: pretty; }
 .skip:focus { top: 1rem; }
 
 .icon { width: 1em; height: 1em; fill: currentColor; flex: none; }
+.icon.outline { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 
 /* ---------- buttons ---------- */
 
@@ -97,6 +98,8 @@ p { text-wrap: pretty; }
 }
 .btn.ghost:hover { background: #fff; }
 .btn.small { min-height: 36px; padding: 0 1rem; font-size: 0.9rem; }
+/* The page's main action: a longer pill than the others. */
+.btn.download { min-height: 52px; padding: 0 2.1rem; }
 
 /* ---------- navigation ---------- */
 
@@ -199,6 +202,19 @@ main::before {
 .link:hover span { transform: translateX(3px); }
 .hero-actions.center { justify-content: center; }
 .hero-meta { margin-top: 1.2rem; color: var(--muted); font-size: 0.9rem; }
+/* The mirror, after the requirements: its own unit when the line wraps. */
+.mirror {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-left: 1rem;
+  color: var(--text-2);
+  text-decoration: none;
+  text-underline-offset: 3px;
+  white-space: nowrap;
+  transition: color 0.2s;
+}
+.mirror:hover { color: var(--text); text-decoration: underline; }
 
 /* ---------- the demo window ---------- */
 
