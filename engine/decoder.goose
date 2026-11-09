@@ -317,8 +317,12 @@ recursive fn group(w: Words&, g: lattice::Graph&, lex: lexicon::Lexicon&, source
     while i < ex && kept < keep {
         if (w.checks.len == 0 || fits(w, g, lex, input, i)) && !(filter && rare(lex, i)) {
             let weight = (lex.entries[i].weight as f64) / lexicon::WEIGHT_SCALE;
+            var penalty = 0.0;
+            if userdb::tombs.len > 0 && source != USER && source != ENGLISH && userdb::demoted(lex, i) {
+                penalty = userdb::DEMOTE_BITS;
+            }
             w.list.push(Word { from: start as u8, to: to as u8, source: source as u8, entry: i as u32,
-                               score: (weight - log_total + score - word_penalty) as f32 });
+                               score: (weight - log_total + score - word_penalty - penalty) as f32 });
             kept++;
         }
         i++;
@@ -363,6 +367,33 @@ fn chinese_reach(w: Words&, input: const u8[:]) -> i64 {
 
 // The best sentence over input[..end]: its words, last first, in `path`;
 // false if it cannot be read through to `end`.
+fn surface_of(w: Words&, i: i64) -> u64 {
+    if i < 0 { return 0; }
+    let word = w.list[i];
+    if word.source == ENGLISH { return 0; }
+    return userdb::hash_surface_entry(source_lexicon(word.source), word.entry);
+}
+
+fn context_boost(w: Words&, anterior: i64, prev: i64, current: i64) -> f64 {
+    if userdb::pom.len == 0 { return 0.0; }
+    var prev_h: u64 = 0;
+    var ant_h: u64 = 0;
+    if prev >= 0 {
+        prev_h = surface_of(w, prev);
+        if prev_h == 0 { return 0.0; }
+        ant_h = if anterior >= 0 { surface_of(w, anterior) } else { userdb::carry_prev };
+    } else {
+        prev_h = userdb::carry_prev;
+        ant_h = userdb::carry_ant;
+    }
+    if prev_h == 0 { return 0.0; }
+    let word = w.list[current];
+    if word.source == ENGLISH { return 0.0; }
+    let lex = source_lexicon(word.source);
+    let len = lex.entries[word.entry].len;
+    return userdb::recall(prev_h, ant_h, userdb::hash_reading_entry(lex, word.entry), len);
+}
+
 fn best_path(w: Words&, input: const u8[:], end: i64, path: i64[>..]&) -> bool {
     var best: f64[lattice::MAX_INPUT + 1] = [NONE; lattice::MAX_INPUT + 1];
     var back: i64[lattice::MAX_INPUT + 1] = [-1; lattice::MAX_INPUT + 1];
@@ -371,7 +402,11 @@ fn best_path(w: Words&, input: const u8[:], end: i64, path: i64[>..]&) -> bool {
     for i in w.list.len {                    // words come in order of where they start
         let word = w.list[i];
         if best[word.from] <= NONE { continue; }
-        let s = best[word.from] + word.score;
+        let pi = back[word.from];
+        var boost = 0.0;
+        if pi >= 0 { boost = context_boost(w, back[w.list[pi].from], pi, i); }
+        else { boost = context_boost(w, -1, -1, i); }
+        let s = best[word.from] + word.score + boost;
         if s > best[word.to] {
             best[word.to] = s;
             back[word.to] = i;
@@ -600,6 +635,13 @@ fn kbest_sentences(w: Words&, input: const u8[:], end: i64, beam: i64, homophone
                 let text = pool[text_at[o]..text_at[o + 1]];
                 var score = line.score + (word.score as f64) +
                             fit_weight * fit(context, context_hash, text, text_hash[o], to == end);
+                var ant: i64 = -1;
+                var prev: i64 = -1;
+                if line.word >= 0 {
+                    prev = offered[line.word];
+                    if line.prev >= 0 && lines[line.prev].word >= 0 { ant = offered[lines[line.prev].word]; }
+                }
+                score += context_boost(w, ant, prev, offered[o]);
                 if emit_on { score += emit_weight * emission(input, from, to, text); }
                 let key = text_hash[o] ^ ((to as u64) * 0x9E3779B97F4A7C15);
                 let found = by_text.get(key);

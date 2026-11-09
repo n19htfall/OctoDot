@@ -11,16 +11,21 @@ struct Snapshot: Equatable, Sendable {
         var comment: String
     }
 
+    /// session::PAGE_SIZE. Digit keys and the candidate grid both use it.
+    static let columns = 6
+
     var isComposing = false
     var hasPreviousPage = false
     var hasNextPage = false
     var isFullCharset = false     // rare characters shown too (Control-g)
+    var isExpanded = false        // the multi-row candidate grid (Down)
     var preedit = ""
     var caretUTF8 = 0  // byte offset into preedit
     var commit = ""
-    var candidates: [Candidate] = []  // this page's
-    var highlighted = 0               // on this page
-    var page = 0
+    var candidates: [Candidate] = []  // this page, or the visible grid
+    var highlighted = 0               // within candidates
+    var page = 0                      // page index, or the grid's first row
+    var menuCount = 0                 // the whole menu while the grid is open
 
     static let empty = Snapshot()
 
@@ -32,7 +37,7 @@ struct Snapshot: Equatable, Sendable {
         guard reader.u32() == Self.magic, reader.u16() == Self.version,
               let flags = reader.u16(), let preedit = reader.text(), let caret = reader.u32(),
               let commit = reader.text(), let count = reader.u16(), let highlighted = reader.u16(),
-              let page = reader.u16(), reader.u16() != nil
+              let page = reader.u16(), let total = reader.u16()
         else { return nil }
         var candidates: [Candidate] = []
         candidates.reserveCapacity(Int(count))
@@ -45,12 +50,14 @@ struct Snapshot: Equatable, Sendable {
         self.hasPreviousPage = flags & 4 != 0
         self.hasNextPage = flags & 8 != 0
         self.isFullCharset = flags & 16 != 0
+        self.isExpanded = flags & 32 != 0
         self.preedit = preedit
         self.caretUTF8 = Int(caret)
         self.commit = commit
         self.candidates = candidates
         self.highlighted = Int(highlighted)
         self.page = Int(page)
+        self.menuCount = Int(total)
     }
 }
 

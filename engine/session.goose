@@ -23,6 +23,7 @@ import rerank;
 namespace session;
 
 let PAGE_SIZE = 6;          // so 1-6 pick and 7 8 9 0 are free for tones, as in 万象
+let GRID_ROWS = 5;          // the candidate grid Down opens: this many rows at a time
 
 // A key as the host sends it. Every field sits at its natural C offset, so
 // Goose's packed layout and C's agree (16 bytes).
@@ -40,10 +41,13 @@ let KEY_UP = 7;
 let KEY_DOWN = 8;
 let KEY_PAGE_UP = 9;
 let KEY_PAGE_DOWN = 10;
+let KEY_HOME = 11;
+let KEY_END = 12;
 
 // KeyEvent.flags, set by the host from its privacy policy: a key that must
 // not teach the user dictionary (a secure field, a no-learn app, incognito).
 let KEYFLAG_NO_LEARN = 1;
+let KEYFLAG_PICK = 2;       // codepoint is a candidate index to commit (a click in the window)
 
 // KeyEvent.modifiers
 let MOD_SHIFT = 1;
@@ -65,6 +69,7 @@ let FLAG_COMPOSING = 1;
 let FLAG_PREVIOUS_PAGE = 4;
 let FLAG_NEXT_PAGE = 8;
 let FLAG_FULL_CHARSET = 16;   // rare characters are shown too (Control-g)
+let FLAG_EXPANDED = 32;       // the candidate grid is open (Down); the bar shows one row otherwise
 
 struct Session { generation: u32, live: bool }
 
@@ -111,6 +116,8 @@ var commits: u32 = 0;                   // commit ids for the user dictionary's 
 var commit: u8[..1024];     // what the last key committed
 var page: i64 = 0;
 var highlight: i64 = 0;     // within the whole menu
+var expanded = false;       // Down opened the candidate grid
+var grid_row: i64 = 0;      // first visible row of that grid
 var last_was_digit = false;  // so "3.14" keeps its period
 var double_open = false;
 var single_open = false;
@@ -348,6 +355,8 @@ fn clear_composition() {
     readable = 0;
     page = 0;
     highlight = 0;
+    expanded = false;
+    grid_row = 0;
     lead_to = 0;
     lead_text.clear();
 }
@@ -357,6 +366,7 @@ fn rebuild() {
     builds++;
     page = 0;
     highlight = 0;
+    grid_row = 0;
     decoder::clear(menu);
     readable = 0;
     letters_unread = false;
@@ -364,7 +374,10 @@ fn rebuild() {
     shown.clear();
     lead_to = 0;
     lead_text.clear();
-    if input.len == 0 { return; }
+    if input.len == 0 {
+        expanded = false;
+        return;
+    }
     let day = userdb::today();
     if day != refreshed_day {
         userdb::refresh();
@@ -826,6 +839,26 @@ fn commit_raw() {
     clear_composition();
 }
 
+fn commit_passing() -> u32 {
+    fresh_menu();
+    var i: i64 = -1;
+    if highlight >= 0 && highlight < menu.candidates.len && menu.candidates[highlight].to == input.len {
+        i = highlight;
+    } else {
+        for k in menu.candidates.len {
+            if menu.candidates[k].to == input.len { i = k; break; }
+        }
+    }
+    if i < 0 {
+        commit_raw();
+        return DIRTY | HAS_COMMIT;
+    }
+    let done = select(i);
+    if (done & HAS_COMMIT) != 0 { return done & (DIRTY | HAS_COMMIT); }
+    commit_raw();
+    return DIRTY | HAS_COMMIT;
+}
+
 fn select(i: i64) -> u32 {
     fresh_menu();
     if menu.candidates.len == 0 {                  // nothing to choose from: the letters
@@ -914,6 +947,9 @@ fn learn_composition() {
     commits++;
     if commits == 0 { commits = 1; }
     let id = commits;
+    var chain_prev = userdb::carry_prev;
+    var chain_ant = userdb::carry_ant;
+    var saw_word = false;
     if !learning_allowed {
         remember(full, confirmed, 0);
         return;
@@ -942,7 +978,15 @@ fn learn_composition() {
         let amount = if p.words == 1 { userdb::EXPLICIT } else { userdb::INCIDENTAL };
         for k in w..w + p.words {
             if ends[k] < 0 { continue; }
-            if span.len >= 2 { userdb::learn(words[from..ends[k]], amount, id); }
+            let slice = words[from..ends[k]];
+            if span.len >= 2 { userdb::learn(slice, amount, id); }
+            if slice.len > 0 {
+                let surface = userdb::hash_surface_pairs(slice);
+                if chain_prev != 0 { userdb::observe(chain_prev, chain_ant, userdb::hash_reading_pairs(slice), slice.len); }
+                chain_ant = chain_prev;
+                chain_prev = surface;
+                saw_word = true;
+            }
             from = ends[k];
         }
         letter += p.letters;
@@ -954,6 +998,8 @@ fn learn_composition() {
         userdb::learn(words, userdb::INCIDENTAL, id);
         if picks.len >= 2 { userdb::choose(full, confirmed, id); }
     }
+    if saw_word { userdb::set_carry(chain_ant, chain_prev); }
+    else if any_english { userdb::set_carry(0, 0); }
     remember(full, confirmed, id);
 }
 
@@ -1011,11 +1057,28 @@ fn move_highlight(delta: i64) {
     if h >= n { h = n - 1; }
     highlight = h;
     page = h / PAGE_SIZE;
+    ensure_grid();
+}
+
+// Keeps the highlighted row inside the open grid, scrolling by as few rows
+// as that takes.
+fn ensure_grid() {
+    if !expanded { return; }
+    let n = menu.candidates.len;
+    if n == 0 { grid_row = 0; return; }
+    let row = highlight / PAGE_SIZE;
+    if row < grid_row { grid_row = row; }
+    if row >= grid_row + GRID_ROWS { grid_row = row + 1 - GRID_ROWS; }
+    if grid_row < 0 { grid_row = 0; }
 }
 
 fn turn_page(delta: i64) {
     let n = menu.candidates.len;
     if n == 0 { return; }
+    if expanded {
+        move_highlight(delta * GRID_ROWS * PAGE_SIZE);
+        return;
+    }
     let last = (n - 1) / PAGE_SIZE;
     var p = page + delta;
     if p < 0 { p = 0; }
@@ -1243,6 +1306,10 @@ fn handle_key(handle: u64, ev: KeyEvent) -> u32 {
         clear_composition();
         active = handle;
     }
+    if (ev.flags & KEYFLAG_PICK) != 0 {
+        if !composing() { return 0; }
+        return select(ev.codepoint);
+    }
     let c = ev.codepoint;
     // Shift- or Control-Backspace while composing: forget the highlighted
     // candidate, if the user dictionary holds it.
@@ -1258,6 +1325,7 @@ fn handle_key(handle: u64, ev: KeyEvent) -> u32 {
         rebuild();
         return HANDLED | DIRTY;
     }
+    if composing() && (ev.modifiers & MOD_COMMAND) != 0 { return commit_passing(); }
     if chord != 0 {
         if !composing() { recent.clear(); }
         last_commit_english = false;
@@ -1356,8 +1424,46 @@ fn handle_key(handle: u64, ev: KeyEvent) -> u32 {
     if ev.key == KEY_OTHER && c >= '1' && c < '1' + PAGE_SIZE { return select(page * PAGE_SIZE + (c - '1')); }
     if ev.key == KEY_PAGE_DOWN || (ev.key == KEY_OTHER && c == '=') { turn_page(1); return HANDLED | DIRTY; }
     if ev.key == KEY_PAGE_UP || (ev.key == KEY_OTHER && c == '-') { turn_page(-1); return HANDLED | DIRTY; }
-    if ev.key == KEY_RIGHT || ev.key == KEY_DOWN { move_highlight(1); return HANDLED | DIRTY; }
-    if ev.key == KEY_LEFT || ev.key == KEY_UP { move_highlight(-1); return HANDLED | DIRTY; }
+    if ev.key == KEY_DOWN {
+        if menu.candidates.len == 0 { return HANDLED; }
+        if !expanded {
+            expanded = true;
+            ensure_grid();
+            return HANDLED | DIRTY;
+        }
+        move_highlight(PAGE_SIZE);
+        return HANDLED | DIRTY;
+    }
+    if ev.key == KEY_UP {
+        if menu.candidates.len == 0 { return HANDLED; }
+        if expanded {
+            if highlight < PAGE_SIZE {
+                expanded = false;
+                grid_row = 0;
+                return HANDLED | DIRTY;
+            }
+            move_highlight(-PAGE_SIZE);
+            return HANDLED | DIRTY;
+        }
+        move_highlight(-1);
+        return HANDLED | DIRTY;
+    }
+    if ev.key == KEY_RIGHT { move_highlight(1); return HANDLED | DIRTY; }
+    if ev.key == KEY_LEFT { move_highlight(-1); return HANDLED | DIRTY; }
+    if ev.key == KEY_HOME {
+        if menu.candidates.len == 0 { return HANDLED; }
+        highlight = 0;
+        page = 0;
+        ensure_grid();
+        return HANDLED | DIRTY;
+    }
+    if ev.key == KEY_END {
+        if menu.candidates.len == 0 { return HANDLED; }
+        highlight = menu.candidates.len - 1;
+        page = highlight / PAGE_SIZE;
+        ensure_grid();
+        return HANDLED | DIRTY;
+    }
     if ev.key == KEY_OTHER {
         let mark = punctuation(c);
         if mark.len > 0 {                          // the best reading, then the mark
@@ -1402,8 +1508,11 @@ fn put_text(out: u8[>..]&, s: const u8[:]) {
 // The UI state as versioned little-endian bytes:
 //   u32 magic, u16 version, u16 flags (FLAG_*),
 //   u32 len + preedit, u32 caret (bytes), u32 len + commit,
-//   u16 count, u16 highlighted (on this page), u16 page, u16 reserved,
+//   u16 count, u16 highlighted (within what this sends), u16 page, u16 total,
 //   count × (u32 len + text, u32 len + comment).
+// Without FLAG_EXPANDED, count is one page, page is that page's index and
+// total is 0. With it, count is the visible grid, page is its first row and
+// total is the whole menu.
 // The bytes are lent to the host until its next call into the engine.
 fn snapshot(handle: u64) -> const u8[:] {
     snap.clear();
@@ -1413,19 +1522,37 @@ fn snapshot(handle: u64) -> const u8[:] {
     var preedit: u8[>..] = [];
     var count: i64 = 0;
     var first: i64 = 0;
+    var shown_page: i64 = 0;
+    var total: i64 = 0;
     if mine {
         if composing() {                // nothing is shown once the composition is over
             flags = flags | FLAG_COMPOSING;
             preedit.append(confirmed);
             preedit.append(shown);
         }
-        first = page * PAGE_SIZE;
-        if first < menu.candidates.len {
-            count = menu.candidates.len - first;
-            if count > PAGE_SIZE { count = PAGE_SIZE; }
+        let n = menu.candidates.len;
+        if expanded && n > 0 && composing() {
+            flags = flags | FLAG_EXPANDED;
+            ensure_grid();
+            first = grid_row * PAGE_SIZE;
+            if first > n { first = 0; }
+            count = n - first;
+            let cap = GRID_ROWS * PAGE_SIZE;
+            if count > cap { count = cap; }
+            shown_page = grid_row;
+            total = if n > 65535 { 65535 } else { n };
+            if first > 0 { flags = flags | FLAG_PREVIOUS_PAGE; }
+            if first + count < n { flags = flags | FLAG_NEXT_PAGE; }
+        } else {
+            first = page * PAGE_SIZE;
+            if first < n {
+                count = n - first;
+                if count > PAGE_SIZE { count = PAGE_SIZE; }
+            }
+            shown_page = page;
+            if page > 0 { flags = flags | FLAG_PREVIOUS_PAGE; }
+            if first + PAGE_SIZE < n { flags = flags | FLAG_NEXT_PAGE; }
         }
-        if page > 0 { flags = flags | FLAG_PREVIOUS_PAGE; }
-        if first + PAGE_SIZE < menu.candidates.len { flags = flags | FLAG_NEXT_PAGE; }
     }
     binary::write_u32le(snap, SNAP_MAGIC);
     binary::write_u16le(snap, SNAP_VERSION);
@@ -1435,8 +1562,8 @@ fn snapshot(handle: u64) -> const u8[:] {
     put_text(snap, if mine { commit[..] } else { commit[..0] });
     binary::write_u16le(snap, count as u16);
     binary::write_u16le(snap, (if count > 0 { highlight - first } else { 0 }) as u16);
-    binary::write_u16le(snap, page as u16);
-    binary::write_u16le(snap, 0);
+    binary::write_u16le(snap, shown_page as u16);
+    binary::write_u16le(snap, total as u16);
     for i in first..first + count {
         let c = menu.candidates[i];
         put_text(snap, menu.pool[c.text..c.text + c.len]);

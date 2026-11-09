@@ -84,14 +84,33 @@ final class Handler: NSObject, OctoDotHandler {
         else {
             return false
         }
+        if let arrow = Self.emacsNavigation(event),
+           MainActor.assumeIsolated({ Engine.shared.snapshot(session).isComposing }) {
+            return run(TranslatedKey(key: arrow, codepoint: 0, modifiers: []), session, client)
+        }
         return run(Self.translate(event), session, client)
     }
 
-    private func run(_ key: TranslatedKey, _ session: Engine.Session, _ client: any IMKTextInput) -> Bool {
+    private static func emacsNavigation(_ event: NSEvent) -> Engine.Key? {
+        let flags = event.modifierFlags.intersection([.shift, .control, .option, .command])
+        guard flags == .control, let raw = event.charactersIgnoringModifiers?.lowercased() else { return nil }
+        switch raw {
+        case "n": return .down
+        case "p": return .up
+        case "f": return .right
+        case "b": return .left
+        case "a": return .home
+        case "e": return .end
+        default: return nil
+        }
+    }
+
+    private func run(_ key: TranslatedKey, _ session: Engine.Session, _ client: any IMKTextInput,
+                     extra: Engine.KeyFlags = []) -> Bool {
         settle(session)
         let app = clientApp
         let (result, snapshot) = MainActor.assumeIsolated {
-            let outcome = Engine.shared.process(session, key, flags: Learning.flags(forApp: app))
+            let outcome = Engine.shared.process(session, key, flags: Learning.flags(forApp: app).union(extra))
             Learning.noteActivity()
             return outcome
         }
@@ -252,12 +271,24 @@ final class Handler: NSObject, OctoDotHandler {
     /// A click in the candidate window: the same as the key for it.
     fileprivate func panelAction(_ action: CandidatePanel.Action) {
         guard let session, let client = self.client() else { return }
-        let key: TranslatedKey = switch action {
-        case .pick(let position): .character(Character(String(position + 1)))
-        case .previousPage: .special(.pageUp)
-        case .nextPage: .special(.pageDown)
+        switch action {
+        case .pick(let position):
+            let page = MainActor.assumeIsolated { Engine.shared.snapshot(session).page }
+            let index = page * Snapshot.columns + position
+            guard index >= 0 else { return }
+            _ = run(TranslatedKey(key: .other, codepoint: UInt32(index), modifiers: []), session, client, extra: .pick)
+        case .previousPage:
+            _ = run(.special(.pageUp), session, client)
+        case .nextPage:
+            _ = run(.special(.pageDown), session, client)
+        case .row(let delta):
+            guard delta != 0 else { return }
+            if delta < 0 {
+                let snap = MainActor.assumeIsolated { Engine.shared.snapshot(session) }
+                if snap.isExpanded && !snap.hasPreviousPage && snap.highlighted < Snapshot.columns { return }
+            }
+            _ = run(.special(delta < 0 ? .up : .down), session, client)
         }
-        _ = run(key, session, client)
     }
 
     private static func translate(_ event: NSEvent) -> TranslatedKey {

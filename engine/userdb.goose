@@ -52,6 +52,15 @@ let HALF_LIFE_DAYS = 90.0;
 let COLD_DAYS = 365;            // unused this long: dropped when saved
 let FLOOR_BITS = 12.0;          // a learned phrase the lexicon lacks scores at least weight 4096
 let RECENT_SECONDS = 900;       // forget(RECENT): the last 15 minutes
+let CHAR_BONUS_CAP = 2.0;
+let DEMOTE_BITS = 40.0;
+let MAX_TOMBS = 4096;
+let POM_CAP = 512;
+let POM_LIFE = 21600.0;
+let POM_GAIN = 2.0;
+let FNV_OFFSET: u64 = 0xCBF29CE484222325;
+let FNV_PRIME: u64 = 0x100000001B3;
+let TOMB_PREFIX = "#tomb\t";
 
 // How much a use counts: a word the user picked themselves twice as much as
 // one that came along in a sentence the engine proposed, so that an accepted
@@ -104,6 +113,15 @@ var utc_offset: i64 = 0;                // seconds east of UTC, for the local da
 var scope: u8[>..] = [];                // the input scheme choices are kept under: "flypy:vsgo"
 var clock_override: i64 = 0;            // seconds since the epoch, for tests; 0 is the real clock
 
+struct Tomb { start: u32, len: u8, day: u32, live: bool }
+struct Pom { prev: u64, anterior: u64, word: u64, len: u8, uses: f32, at: i64, live: bool }
+var tomb_pairs: lexicon::Pair[>..] = [];
+var tombs: Tomb[>..] = [];
+var tomb_at = dictionary<u64, i64> {};
+var pom: Pom[>..] = [];
+var carry_prev: u64 = 0;
+var carry_ant: u64 = 0;
+
 fn now() -> i64 { if clock_override != 0 { clock_override } else { time_ns() / 1000000000 } }
 fn today() -> u32 { ((now() + utc_offset) / 86400) as u32 }
 
@@ -129,6 +147,12 @@ fn reset() {
     live_english = 0;
     journal.clear();
     dormant.clear();
+    tomb_pairs.clear();
+    tombs.clear();
+    tomb_at.clear();
+    pom.clear();
+    carry_prev = 0;
+    carry_ant = 0;
     changes++;
 }
 
@@ -147,7 +171,10 @@ fn weight(code: const u16[:], uses: f64) -> u16 {
         let best = (lexicon::live.entries[lo].weight as f64) / lexicon::WEIGHT_SCALE;
         if best > base { base = best; }
     }
-    let bits = base + bonus_bits + 2.0 * log2(1.0 + uses) - 2.0;
+    var bonus = bonus_bits + 2.0 * log2(1.0 + uses) - 2.0;
+    if bonus < 0.0 { bonus = 0.0; }
+    if code.len <= 1 && bonus > CHAR_BONUS_CAP { bonus = CHAR_BONUS_CAP; }
+    let bits = base + bonus;
     var q = round(bits * lexicon::WEIGHT_SCALE);
     if q < 0.0 { q = 0.0; }
     if q > 65535.0 { q = 65535.0; }
@@ -261,6 +288,7 @@ fn restat(i: i64, uses: f32, day: u32) {
 // Words longer than MAX_PHRASE syllables are not kept.
 fn learn(pairs: const lexicon::Pair[:], amount: f64, commit: u32) {
     guard pairs.len > 0 && pairs.len <= MAX_PHRASE && lex.pairs.len + pairs.len < lexicon::MAX_PAIRS else { return; }
+    unbury(pairs);
     if lex.toned.len == 0 { lex.toned.append(lexicon::live.toned); }
     var code: u16[>..] = [];
     code_of(pairs, code);
@@ -317,6 +345,7 @@ fn unlearn(pairs: const lexicon::Pair[:]) -> bool {
         remove_index(i);
         removed = true;
     }
+    if pairs.len >= 2 && bury(pairs) { removed = true; }
     if removed { changes++; }
     return removed;
 }
@@ -549,6 +578,15 @@ fn forget(scope: i64) -> i64 {
                 kill_english(e);
             }
         }
+        var buried = false;
+        for i in tombs.len {
+            if tombs[i].live && tombs[i].day >= day {
+                tombs[i].live = false;
+                buried = true;
+                n++;
+            }
+        }
+        if buried { reindex_tombs(); }
         journal.clear();
     }
     if n > 0 { changes++; }
@@ -819,6 +857,199 @@ fn unlearn_english(code: const u8[:], text: const u8[:]) -> bool {
     return true;
 }
 
+fn mix(h: u64, v: u64) -> u64 { (h ^ v) * FNV_PRIME }
+
+fn hash_surface_pairs(pairs: const lexicon::Pair[:]) -> u64 {
+    var h = FNV_OFFSET;
+    for p in pairs { h = mix(h, p.cp as u64); }
+    return if h == 0 { 1 } else { h };
+}
+
+fn hash_reading_pairs(pairs: const lexicon::Pair[:]) -> u64 {
+    var h = FNV_OFFSET;
+    for p in pairs {
+        h = mix(h, p.cp as u64);
+        h = mix(mix(h, p.toned as u64), 0xFF);
+    }
+    return if h == 0 { 1 } else { h };
+}
+
+fn hash_surface_entry(lex: lexicon::Lexicon&, i: i64) -> u64 {
+    let e = lex.entries[i];
+    var h = FNV_OFFSET;
+    for k in e.len { h = mix(h, lex.pairs[lex.runs[e.run + k]].cp as u64); }
+    return if h == 0 { 1 } else { h };
+}
+
+fn hash_reading_entry(lex: lexicon::Lexicon&, i: i64) -> u64 {
+    let e = lex.entries[i];
+    var h = FNV_OFFSET;
+    for k in e.len {
+        let p = lex.pairs[lex.runs[e.run + k]];
+        h = mix(h, p.cp as u64);
+        h = mix(mix(h, p.toned as u64), 0xFF);
+    }
+    return if h == 0 { 1 } else { h };
+}
+
+fn hash_tomb(i: i64) -> u64 {
+    let t = tombs[i];
+    var h = FNV_OFFSET;
+    for k in t.len {
+        let p = tomb_pairs[(t.start as i64) + k];
+        h = mix(h, p.cp as u64);
+        h = mix(mix(h, p.toned as u64), 0xFF);
+    }
+    return if h == 0 { 1 } else { h };
+}
+
+fn same_tomb(pairs: const lexicon::Pair[:], i: i64) -> bool {
+    let t = tombs[i];
+    if !t.live || t.len as i64 != pairs.len { return false; }
+    for k in pairs.len {
+        let p = tomb_pairs[(t.start as i64) + k];
+        if p.cp != pairs[k].cp || p.toned != pairs[k].toned { return false; }
+    }
+    return true;
+}
+
+fn same_entry(lex: lexicon::Lexicon&, entry: i64, i: i64) -> bool {
+    let e = lex.entries[entry];
+    let t = tombs[i];
+    if !t.live || e.len != t.len as i64 { return false; }
+    for k in e.len {
+        let p = lex.pairs[lex.runs[e.run + k]];
+        let q = tomb_pairs[(t.start as i64) + k];
+        if p.cp != q.cp || p.toned != q.toned { return false; }
+    }
+    return true;
+}
+
+fn reindex_tombs() {
+    tomb_at.clear();
+    for i in tombs.len {
+        if tombs[i].live { tomb_at.insert(hash_tomb(i), i); }
+    }
+}
+
+fn find_tomb(pairs: const lexicon::Pair[:]) -> i64 {
+    let h = hash_reading_pairs(pairs);
+    let idx = tomb_at.get(h);
+    if idx && idx < tombs.len && same_tomb(pairs, idx) { return idx; }
+    if idx {
+        for i in tombs.len { if same_tomb(pairs, i) { return i; } }
+    }
+    return -1;
+}
+
+fn bury(pairs: const lexicon::Pair[:]) -> bool {
+    guard pairs.len >= 2 && pairs.len <= MAX_PHRASE else { return false; }
+    if find_tomb(pairs) >= 0 { return false; }
+    if tombs.len >= MAX_TOMBS {
+        tombs[0].live = false;
+        remove_at(tombs, 0);
+        reindex_tombs();
+    }
+    let start = tomb_pairs.len;
+    for p in pairs { tomb_pairs.push(p); }
+    let i = tombs.len;
+    tombs.push(Tomb { start: start as u32, len: pairs.len as u8, day: today(), live: true });
+    tomb_at.insert(hash_reading_pairs(pairs), i);
+    changes++;
+    return true;
+}
+
+fn unbury(pairs: const lexicon::Pair[:]) {
+    let i = find_tomb(pairs);
+    guard i >= 0 else { return; }
+    tombs[i].live = false;
+    tomb_at.remove(hash_reading_pairs(pairs));
+    changes++;
+}
+
+fn demoted(lex: lexicon::Lexicon&, entry: i64) -> bool {
+    guard lex.entries[entry].len >= 2 && tombs.len > 0 else { return false; }
+    let h = hash_reading_entry(lex, entry);
+    let idx = tomb_at.get(h);
+    if idx && idx < tombs.len && same_entry(lex, entry, idx) { return true; }
+    guard idx else { return false; }
+    for i in tombs.len { if same_entry(lex, entry, i) { return true; } }
+    return false;
+}
+
+fn tomb_count() -> i64 {
+    var n: i64 = 0;
+    for t in tombs { if t.live { n++; } }
+    return n;
+}
+
+fn set_carry(ant: u64, prev: u64) {
+    carry_ant = ant;
+    carry_prev = prev;
+}
+
+fn pom_weight(p: Pom, t: i64) -> f64 {
+    if !p.live { return 0.0; }
+    var dt = (t - p.at) as f64;
+    if dt < 0.0 { dt = 0.0; }
+    let x = dt / POM_LIFE;
+    if x >= 1.0 { return 0.0; }
+    var gain = 0.5 * log2(1.0 + (p.uses as f64));
+    if gain > POM_GAIN { gain = POM_GAIN; }
+    return (1.0 - x * x) * gain;
+}
+
+fn touch(prev: u64, anterior: u64, word: u64, len: i64) {
+    let t = now();
+    let n = len as u8;
+    for i in pom.len {
+        if pom[i].live && pom[i].prev == prev && pom[i].anterior == anterior && pom[i].word == word && pom[i].len == n {
+            pom[i].uses = (pom[i].uses as f64 + 1.0) as f32;
+            pom[i].at = t;
+            return;
+        }
+    }
+    var made = Pom { prev: prev, anterior: anterior, word: word, len: n, uses: 1.0, at: t, live: true };
+    if pom.len < POM_CAP {
+        pom.push(made);
+        return;
+    }
+    var worst: i64 = 0;
+    var least = 1.0e30;
+    for i in pom.len {
+        let u = pom_weight(pom[i], t);
+        if u < least { least = u; worst = i; }
+    }
+    pom[worst] = made;
+}
+
+fn observe(prev: u64, anterior: u64, word: u64, len: i64) {
+    guard prev != 0 && word != 0 && len > 0 && len <= MAX_PHRASE else { return; }
+    touch(prev, 0, word, len);
+    if anterior != 0 { touch(prev, anterior, word, len); }
+}
+
+fn recall(prev: u64, anterior: u64, word: u64, len: i64) -> f64 {
+    guard prev != 0 && word != 0 && len > 0 else { return 0.0; }
+    let t = now();
+    let n = len as u8;
+    var best = 0.0;
+    for p in pom {
+        if !p.live || p.word != word || p.len != n || p.prev != prev { continue; }
+        if p.anterior != 0 && p.anterior != anterior { continue; }
+        let u = pom_weight(p, t);
+        if u > best { best = u; }
+    }
+    return best;
+}
+
+fn pom_alive() -> i64 {
+    let t = now();
+    var n: i64 = 0;
+    for p in pom { if pom_weight(p, t) > 0.0 { n++; } }
+    return n;
+}
+
 // ---- persistence -------------------------------------------------------------------
 
 // The dictionary as text: the header, then three sections, each line
@@ -871,6 +1102,18 @@ fn save(out: u8[>..]&) {
         format(out, "\t", e.day, "\n");
         if e.day >= day && e.base_day > 0 { save_base(out, e.base_uses, e.base_day); }
     }
+    for i in tombs.len {
+        if !tombs[i].live { continue; }
+        out.append(TOMB_PREFIX);
+        let t = tombs[i];
+        for k in t.len { push_utf8(out, tomb_pairs[(t.start as i64) + k].cp); }
+        out.push('\t');
+        for k in t.len {
+            if k > 0 { out.push(' '); }
+            out.append(lex.toned[tomb_pairs[(t.start as i64) + k].toned].text);
+        }
+        out.push('\n');
+    }
 }
 
 let BASE_PREFIX = "#base\t";
@@ -912,6 +1155,27 @@ fn restore(data: const u8[:]) -> bool {
     while pos < data.len {
         let line = lexicon::next_line(data, pos);
         if line.len == 0 { continue; }
+        if line.len > TOMB_PREFIX.len && compare(line[..TOMB_PREFIX.len], TOMB_PREFIX) == 0 {
+            let first, second, ok = split_once(line[TOMB_PREFIX.len..], '\t');
+            var cps: u32[>..] = [];
+            var pairs: lexicon::Pair[>..] = [];
+            var known = ok;
+            if ok {
+                each_utf8(first) { cp => cps.push(cp as u32); };
+                var k: i64 = 0;
+                each_split(second, ' ') {
+                    let id = ids.get(it);
+                    if id && k < cps.len { pairs.push(lexicon::Pair { cp: cps[k], toned: id as u16 }); } else { known = false; }
+                    k++;
+                };
+                if k != cps.len || pairs.len < 2 { known = false; }
+            }
+            if known { bury(pairs); } else {
+                dormant.append(line);
+                dormant.push('\n');
+            }
+            continue;
+        }
         if line.len > BASE_PREFIX.len && compare(line[..BASE_PREFIX.len], BASE_PREFIX) == 0 {
             let uses_text, day_text, ok = split_once(line[BASE_PREFIX.len..], '\t');
             let uses, ok1 = parse_flt(uses_text);

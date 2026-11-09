@@ -12,7 +12,7 @@ final class Engine {
     static let shared = Engine()
 
     /// The ABI this host was written against. The engine reports its own.
-    static let abiVersion: UInt32 = 14
+    static let abiVersion: UInt32 = 15
 
     struct Session: Hashable, Sendable {
         fileprivate let handle: UInt64
@@ -30,13 +30,15 @@ final class Engine {
     /// session::KEY_* in engine/session.goose. `.other`: the codepoint alone
     /// describes the key.
     enum Key: UInt32, Sendable {
-        case other = 0, backspace, escape, enter, space, left, right, up, down, pageUp, pageDown
+        case other = 0, backspace, escape, enter, space, left, right, up, down, pageUp, pageDown, home, end
     }
 
     /// session::KEYFLAG_*: the host's privacy policy for one key.
     struct KeyFlags: OptionSet, Sendable {
         let rawValue: UInt32
         static let noLearn = KeyFlags(rawValue: 1)
+        /// `codepoint` is a candidate index to commit (a click in the window).
+        static let pick = KeyFlags(rawValue: 2)
     }
 
     /// What octo_forget takes back.

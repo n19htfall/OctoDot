@@ -4,7 +4,7 @@
 import std;
 import octo from "../../engine";
 
-let ABI_VERSION = 14;
+let ABI_VERSION = 15;
 
 export fn octo_abi_version() -> u32 { ABI_VERSION }
 

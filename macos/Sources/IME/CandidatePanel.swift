@@ -44,6 +44,12 @@ final class CandidatePanel {
         var highlighted: Int
         var hasPrevious: Bool
         var hasNext: Bool
+        var expanded: Bool
+        var columns: Int
+        /// Index of `candidates[0]` in the whole menu.
+        var origin: Int
+        /// Candidates in the whole menu.
+        var menuCount: Int
 
         init(_ snapshot: Snapshot) {
             candidates = snapshot.candidates.map(\.text)
@@ -51,6 +57,10 @@ final class CandidatePanel {
             highlighted = snapshot.highlighted
             hasPrevious = snapshot.hasPreviousPage
             hasNext = snapshot.hasNextPage
+            expanded = snapshot.isExpanded
+            columns = Snapshot.columns
+            origin = snapshot.page * Snapshot.columns
+            menuCount = snapshot.menuCount > 0 ? snapshot.menuCount : snapshot.candidates.count
         }
 
         init(candidates: [String], highlighted: Int, hasPrevious: Bool, hasNext: Bool) {
@@ -59,13 +69,18 @@ final class CandidatePanel {
             self.highlighted = highlighted
             self.hasPrevious = hasPrevious
             self.hasNext = hasNext
+            expanded = false
+            columns = Snapshot.columns
+            origin = 0
+            menuCount = candidates.count
         }
     }
 
     enum Action: Sendable {
-        case pick(Int)          // a position on the page
+        case pick(Int)          // a position on the shown list
         case previousPage
         case nextPage
+        case row(Int)           // one row of the grid, from the scroll wheel or the scrollbar
     }
 
     /// Set by whichever input controller showed the panel last.
@@ -170,7 +185,7 @@ final class CandidateCapsule {
     /// Lays out `page` in the current style; returns the size it needs.
     func update(_ page: CandidatePanel.Page) -> NSSize {
         let size = bar.update(page)
-        let radius = size.height / 2
+        let radius = page.expanded ? min(18, size.height / 2) : size.height / 2
         if #available(macOS 26.0, *), let glass = view as? NSGlassEffectView {
             glass.cornerRadius = radius
         } else {
@@ -195,7 +210,14 @@ final class CandidateBar: NSView {
     private var previousArrow = NSRect.zero
     private var nextArrow = NSRect.zero
     private var divider = NSRect.zero
+    private var track = NSRect.zero
+    private var thumb = NSRect.zero
+    private var separators: [CGFloat] = []
+    private var gridWidth: CGFloat = 0
     private var hovered: Int?
+    private var wheel: CGFloat = 0
+    private var thumbDrag: (startY: CGFloat, origin: Int)?
+    private var dragged = false
     private let backdrop = Passive()            // dark mode: under everything, so white text always reads
     private let pill = Passive()
     private let ink = Passive()                 // above the pill: the text
@@ -223,38 +245,16 @@ final class CandidateBar: NSView {
         let sameStyle = style == CandidateStyle.current
         style = CandidateStyle.current
         let sameList = sameStyle && self.page?.candidates == page.candidates
+            && self.page?.origin == page.origin && self.page?.expanded == page.expanded
         self.page = page
         hovered = nil
         cells.removeAll()
-        let s = style
-        var x = s.inset
-        let cellHeight = s.cellHeight
-        for (i, text) in page.candidates.enumerated() {
-            let width = s.padding * 2 + indexSize(i).width + s.indexGap
-                + attributed(text, highlighted: false).size().width + commentWidth(page.comments[safe: i])
-            cells.append(NSRect(x: x, y: s.inset, width: ceil(width), height: cellHeight))
-            x += ceil(width) + s.gap
-        }
-        if page.hasPrevious || page.hasNext {
-            x += 4
-            let dividerHeight = round(cellHeight * 0.6)
-            divider = NSRect(x: x, y: s.height / 2 - dividerHeight / 2, width: 1, height: dividerHeight)
-            x += 5
-            previousArrow = NSRect(x: x, y: s.inset, width: s.arrowWidth, height: cellHeight)
-            x += s.arrowWidth
-            nextArrow = NSRect(x: x, y: s.inset, width: s.arrowWidth, height: cellHeight)
-            x += s.arrowWidth + s.inset - s.gap
-        } else {
-            divider = .zero
-            previousArrow = .zero
-            nextArrow = .zero
-            x += s.inset - s.gap
-        }
-        let size = NSSize(width: ceil(x), height: s.height)
+        separators.removeAll()
+        let size = page.expanded ? layoutGrid(page) : layoutRow(page)
         frame.size = size
         ink.frame = NSRect(origin: .zero, size: size)
         backdrop.frame = ink.frame
-        backdrop.layer?.cornerRadius = size.height / 2
+        backdrop.layer?.cornerRadius = page.expanded ? min(18, size.height / 2) : size.height / 2
         updateColors()
 
         if page.highlighted >= 0 && page.highlighted < cells.count {
@@ -276,6 +276,94 @@ final class CandidateBar: NSView {
         }
         ink.needsDisplay = true
         return size
+    }
+
+    /// One row, with page arrows when the menu has another page.
+    private func layoutRow(_ page: CandidatePanel.Page) -> NSSize {
+        let s = style
+        var x = s.inset
+        let cellHeight = s.cellHeight
+        track = .zero
+        thumb = .zero
+        gridWidth = 0
+        for (i, text) in page.candidates.enumerated() {
+            let width = s.padding * 2 + indexSize(i).width + s.indexGap
+                + attributed(text, highlighted: false).size().width + commentWidth(page.comments[safe: i])
+            cells.append(NSRect(x: x, y: s.inset, width: ceil(width), height: cellHeight))
+            x += ceil(width) + s.gap
+        }
+        if page.hasPrevious || page.hasNext {
+            x += 4
+            let dividerHeight = round(cellHeight * 0.6)
+            divider = NSRect(x: x, y: s.height / 2 - dividerHeight / 2, width: 1, height: dividerHeight)
+            x += 5
+            previousArrow = NSRect(x: x, y: s.inset, width: s.arrowWidth, height: cellHeight)
+            x += s.arrowWidth
+            nextArrow = NSRect(x: x, y: s.inset, width: s.arrowWidth, height: cellHeight)
+            x += s.arrowWidth + s.inset - s.gap
+        } else {
+            divider = .zero
+            previousArrow = .zero
+            nextArrow = .zero
+            x += s.inset - s.gap
+        }
+        return NSSize(width: ceil(x), height: s.height)
+    }
+
+    /// The grid Down opens: `columns` across, as many rows as fit, a scrollbar
+    /// when the menu continues past them.
+    private func layoutGrid(_ page: CandidatePanel.Page) -> NSSize {
+        let s = style
+        let cols = max(page.columns, 1)
+        let count = page.candidates.count
+        let rows = max((count + cols - 1) / cols, 1)
+        let gutter = indexSize(0).width + s.indexGap
+        var columnWidth = [CGFloat](repeating: 0, count: cols)
+        var contentWidth = [CGFloat](repeating: 0, count: count)
+        for i in 0..<count {
+            let width = s.padding * 2 + gutter
+                + attributed(page.candidates[i], highlighted: false).size().width
+                + commentWidth(page.comments[safe: i])
+            contentWidth[i] = ceil(width)
+            columnWidth[i % cols] = max(columnWidth[i % cols], ceil(width))
+        }
+        divider = .zero
+        previousArrow = .zero
+        nextArrow = .zero
+        let rowGap: CGFloat = 4
+        var y = s.inset
+        for row in 0..<rows {
+            var x = s.inset
+            for col in 0..<cols {
+                let i = row * cols + col
+                guard i < count else { break }
+                cells.append(NSRect(x: x, y: y, width: contentWidth[i], height: s.cellHeight))
+                x += columnWidth[col] + 8
+            }
+            y += s.cellHeight
+            if row + 1 < rows {
+                separators.append(y + rowGap / 2)
+                y += rowGap
+            }
+        }
+        gridWidth = (cells.map(\.maxX).max() ?? s.inset)
+        let showScroll = page.menuCount > count
+        let scrollGutter: CGFloat = showScroll ? 16 : 0
+        let width = ceil(gridWidth + s.inset + scrollGutter)
+        let height = ceil(y + s.inset)
+        if showScroll {
+            track = NSRect(x: width - 16, y: s.inset, width: 12, height: max(height - 2 * s.inset, 1))
+            let total = max(page.menuCount, 1)
+            let thumbH = max(22, track.height * CGFloat(count) / CGFloat(total))
+            let travel = max(track.height - thumbH, 0)
+            let span = CGFloat(max(total - count, 1))
+            let thumbY = track.minY + travel * CGFloat(min(max(page.origin, 0), total - count)) / span
+            thumb = NSRect(x: track.midX - 1.5, y: thumbY, width: 3, height: thumbH)
+        } else {
+            track = .zero
+            thumb = .zero
+        }
+        return NSSize(width: width, height: height)
     }
 
     /// Layer colors are fixed CGColors: set again when light or dark mode changes.
@@ -316,6 +404,14 @@ final class CandidateBar: NSView {
 
     private func drawContent() {
         guard let page else { return }
+        if page.expanded {
+            NSColor.separatorColor.withAlphaComponent(0.55).setFill()
+            for y in separators {
+                NSRect(x: style.inset, y: y, width: max(gridWidth - style.inset, 0), height: 1).fill()
+            }
+        }
+        let cols = max(page.columns, 1)
+        let numberedRow = page.expanded && page.highlighted >= 0 ? page.highlighted / cols : -1
         for (i, cell) in cells.enumerated() {
             let highlighted = i == page.highlighted
             if i == hovered && !highlighted {
@@ -325,7 +421,9 @@ final class CandidateBar: NSView {
             let text = attributed(page.candidates[i], highlighted: highlighted)
             let textSize = text.size()
             let onAccent = style.onAccentColor.withAlphaComponent(0.78)
-            let index = NSAttributedString(string: "\(i + 1)", attributes: [
+            let number = page.expanded ? (i % cols) + 1 : i + 1
+            let showNumber = !page.expanded || i / cols == numberedRow
+            let index = NSAttributedString(string: "\(number)", attributes: [
                 .font: style.indexFont,
                 .foregroundColor: highlighted ? onAccent : NSColor.secondaryLabelColor,
             ])
@@ -334,7 +432,9 @@ final class CandidateBar: NSView {
             // The index sits on the text's baseline, not centered: like a footnote numeral.
             let textY = cell.midY - textSize.height / 2
             let baseline = textY + style.textFont.ascender
-            index.draw(at: NSPoint(x: x, y: baseline - style.indexFont.ascender))
+            if showNumber {
+                index.draw(at: NSPoint(x: x, y: baseline - style.indexFont.ascender))
+            }
             x += indexSize.width + style.indexGap
             text.draw(at: NSPoint(x: x, y: textY))
             x += textSize.width
@@ -345,6 +445,10 @@ final class CandidateBar: NSView {
                 ])
                 small.draw(at: NSPoint(x: x + 4, y: baseline - style.smallFont.ascender))
             }
+        }
+        if !thumb.isEmpty {
+            NSColor.tertiaryLabelColor.setFill()
+            NSBezierPath(roundedRect: thumb, xRadius: thumb.width / 2, yRadius: thumb.width / 2).fill()
         }
         if !divider.isEmpty {
             NSColor.separatorColor.setFill()
@@ -382,12 +486,66 @@ final class CandidateBar: NSView {
         trackingArea = area
     }
 
-    /// A cell's index, -1 for the previous-page arrow, -2 for the next, or nil.
+    /// A cell's index, -1 or -2 for the page arrows, -3 or -4 for the scrollbar
+    /// track above and below the thumb, -5 for the thumb, or nil.
     private func target(at point: NSPoint) -> Int? {
+        if !thumb.isEmpty && thumb.insetBy(dx: -8, dy: -2).contains(point) { return -5 }
+        if track.contains(point) { return point.y < thumb.midY ? -3 : -4 }
         if let i = cells.firstIndex(where: { $0.contains(point) }) { return i }
         if previousArrow.contains(point) { return -1 }
         if nextArrow.contains(point) { return -2 }
         return nil
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        guard page?.expanded == true else { return }
+        let delta = event.scrollingDeltaY
+        guard delta != 0 else { return }
+        if event.hasPreciseScrollingDeltas {
+            wheel += delta
+            let step: CGFloat = 28
+            while wheel <= -step {
+                wheel += step
+                onAction?(.row(1))
+            }
+            while wheel >= step {
+                wheel -= step
+                onAction?(.row(-1))
+            }
+        } else {
+            onAction?(.row(delta > 0 ? -1 : 1))
+        }
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        dragged = false
+        let point = convert(event.locationInWindow, from: nil)
+        if !thumb.isEmpty && thumb.insetBy(dx: -8, dy: -2).contains(point), let page {
+            thumbDrag = (point.y, page.origin)
+        } else {
+            thumbDrag = nil
+        }
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let drag = thumbDrag, let page, page.expanded, page.columns > 0, track.height > thumb.height else { return }
+        dragged = true
+        let point = convert(event.locationInWindow, from: nil)
+        let total = max(page.menuCount, page.candidates.count)
+        let visible = page.candidates.count
+        let span = CGFloat(max(total - visible, 1))
+        let travel = max(track.height - thumb.height, 1)
+        let delta = Int(((point.y - drag.startY) / travel * span).rounded())
+        let wantRow = max(0, drag.origin + delta) / page.columns
+        var safety = 0
+        while safety < 40 {
+            guard let current = self.page, current.columns > 0 else { return }
+            let nowRow = current.origin / current.columns
+            if nowRow == wantRow { return }
+            onAction?(.row(nowRow < wantRow ? 1 : -1))
+            safety += 1
+            if self.page?.origin == current.origin { return }
+        }
     }
 
     override func mouseMoved(with event: NSEvent) {
@@ -404,10 +562,14 @@ final class CandidateBar: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
-        guard let page, let hit = target(at: convert(event.locationInWindow, from: nil)) else { return }
+        defer { dragged = false; thumbDrag = nil }
+        guard !dragged, let page, let hit = target(at: convert(event.locationInWindow, from: nil)) else { return }
         switch hit {
         case -1: if page.hasPrevious { onAction?(.previousPage) }
         case -2: if page.hasNext { onAction?(.nextPage) }
+        case -3: if page.hasPrevious { onAction?(.previousPage) }
+        case -4: if page.hasNext { onAction?(.nextPage) }
+        case -5: break
         default: onAction?(.pick(hit))
         }
     }

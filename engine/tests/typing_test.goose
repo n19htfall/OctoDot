@@ -108,6 +108,26 @@ fn editing(s: u64) {
     check((period & session::HAS_COMMIT) != 0 && compare(session::commit, "你好。") == 0,
           "punctuation while composing commits the best reading, then the mark");
 
+    type_text(s, "nihao");
+    var whole: u8[>..] = [];
+    for i in session::menu.candidates.len {
+        if session::menu.candidates[i].to == session::input.len {
+            whole.append(candidate(i));
+            break;
+        }
+    }
+    let cmd = session::key(s, key_event(session::KEY_OTHER, 's', session::MOD_COMMAND));
+    check((cmd & session::HANDLED) == 0 && (cmd & session::HAS_COMMIT) != 0 && compare(session::commit, whole) == 0 &&
+          !session::composing(), "command while composing commits that reading, then lets the shortcut through");
+
+    type_text(s, "zhong");
+    let n = session::menu.candidates.len;
+    session::key(s, key_event(session::KEY_END, 0, 0));
+    check(n > 1 && session::highlight == n - 1, "end jumps to the last candidate");
+    session::key(s, key_event(session::KEY_HOME, 0, 0));
+    check(session::highlight == 0 && session::page == 0, "home jumps back to the first");
+    press(s, session::KEY_ESCAPE);
+
 
     type_text(s, "shi");
     let pages = session::menu.candidates.len;
@@ -115,6 +135,27 @@ fn editing(s: u64) {
     check(pages > session::PAGE_SIZE && session::page == 1 && session::highlight == session::PAGE_SIZE,
           "page down moves to the next page of candidates");
     press(s, session::KEY_ESCAPE);
+
+    type_text(s, "a");
+    check(session::menu.candidates.len > session::PAGE_SIZE * session::GRID_ROWS, "enough candidates to fill the grid");
+    press(s, session::KEY_RIGHT);
+    check(session::highlight == 1 && !session::expanded, "right moves along the row");
+    press(s, session::KEY_DOWN);
+    check(session::expanded && session::highlight == 1, "down opens the grid where the highlight already is");
+    let grid = session::snapshot(s);
+    let grid_flags: i64 = (grid[6] as i64) | ((grid[7] as i64) << 8);
+    check((grid_flags & session::FLAG_EXPANDED) != 0 && session::grid_row == 0, "the snapshot marks the grid open");
+    press(s, session::KEY_DOWN);
+    check(session::highlight == 1 + session::PAGE_SIZE, "down again moves to the same place on the next row");
+    press(s, session::KEY_UP);
+    check(session::highlight == 1 && session::expanded, "up moves back a row");
+    press(s, session::KEY_UP);
+    check(!session::expanded && session::highlight == 1, "up from the first row closes the grid");
+    press(s, session::KEY_DOWN);
+    let picked = candidate(session::PAGE_SIZE + 2);
+    session::key(s, session::KeyEvent { key: 0, flags: session::KEYFLAG_PICK as u16, modifiers: 0,
+                                        codepoint: (session::PAGE_SIZE + 2) as u32, time_ms: 0 });
+    check(compare(session::commit, picked) == 0 && !session::expanded, "a click in the grid commits that candidate");
 
     session::key(s, key_event(session::KEY_OTHER, 'x', session::MOD_COMMAND));
     check(!session::composing(), "command shortcuts pass through");
@@ -670,6 +711,45 @@ fn learning(s: u64) {
     session::select(rank("給"));                  // commits, so Control-g now would pass through
     decoder::full_charset = false;
     check(!decoder::full_charset && rank_after(s, "gei", "給") >= 0, "a rare character the user chose shows in the daily set");
+
+    userdb::reset();
+    let natural = rank_after(s, "xian", "西安");
+    check(pick(s, "xian", "西安", 0), "bury: 西安 is picked");
+    press(s, session::KEY_ESCAPE);
+    type_text(s, "xian");
+    session::key(s, key_event(session::KEY_BACKSPACE, 0, session::MOD_SHIFT));
+    let buried = rank_after(s, "xian", "西安");
+    check(userdb::tomb_count() >= 1 && (buried < 0 || buried > natural),
+          str("Shift-Backspace buries 西安 under its old rank ", natural, " (now ", buried, ")"));
+    var kept: u8[>..] = [];
+    kept.append(session::user_save());
+    check(find(kept, "#tomb\t西安\t") >= 0, "the burial is stored with the dictionary");
+    press(s, session::KEY_ESCAPE);
+    type_text(s, "xian");
+    let again = rank("西安");
+    if again >= 0 { session::select(again); }
+    check(again >= 0 && userdb::tomb_count() == 0, "picking 西安 again lifts the burial");
+
+    userdb::reset();
+    check(pick(s, "xian", "先", 0), "a character can be picked");
+    press(s, session::KEY_ESCAPE);
+    type_text(s, "xian");
+    session::key(s, key_event(session::KEY_BACKSPACE, 0, session::MOD_SHIFT));
+    check(userdb::tomb_count() == 0 && rank_after(s, "xian", "先") >= 0,
+          "a character is unlearned and not buried");
+    for _ in 30 { pick(s, "shi", "是", 0); }
+    first_is(s, "shijian", "时间", true);
+
+    userdb::reset();
+    userdb::clock_override = 1794000000;
+    userdb::observe(1, 0, 2, 2);
+    check(userdb::recall(1, 0, 2, 2) > 0.0 && userdb::recall(0, 0, 2, 2) == 0.0 && userdb::recall(1, 0, 2, 1) == 0.0 &&
+          userdb::recall(9, 0, 2, 2) == 0.0, "contextual memory boosts that reading only, and not a bare or mismatched one");
+    userdb::observe(1, 5, 2, 2);
+    check(userdb::recall(1, 5, 2, 2) > 0.0 && userdb::recall(1, 8, 2, 2) > 0.0, "a trigram still backs off to its bigram");
+    userdb::clock_override += 7 * 3600;
+    check(userdb::pom_alive() == 0 && userdb::recall(1, 5, 2, 2) == 0.0, "six hours later the quadratic fade is gone");
+
     userdb::reset();
     userdb::clock_override = 0;
 }
