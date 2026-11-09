@@ -103,6 +103,10 @@ final class CandidatePanel {
     private var onScreen = false
     private var expanded = false
     private var originIndex = 0
+    /// Screen x of the first candidate's index while this composition is up.
+    /// A much longer candidate would shove the window left at the screen edge;
+    /// the page then shows fewer candidates instead of moving this point.
+    private var pinnedFirstX: CGFloat?
 
     private init() {
         panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
@@ -122,15 +126,17 @@ final class CandidatePanel {
     /// `caretRect` is the client's line rectangle in screen coordinates.
     func show(_ page: Page, near caretRect: NSRect) {
         guard !page.candidates.isEmpty else { return hide() }
+        let shown = fitted(page, near: caretRect)
         let switching = onScreen && panel.isVisible
-            && (expanded != page.expanded || originIndex != page.origin)
-        expanded = page.expanded
-        originIndex = page.origin
-        let size = capsule.update(page)
+            && (expanded != shown.expanded || originIndex != shown.origin)
+        expanded = shown.expanded
+        originIndex = shown.origin
+        let size = capsule.update(shown)
+        let frame = NSRect(origin: origin(for: size, near: caretRect), size: size)
+        pinnedFirstX = frame.origin.x + bar.style.textInset
         // A page or the grid settles more slowly than a key that only
         // changes how wide the same row is.
-        place(NSRect(origin: origin(for: size, near: caretRect), size: size),
-              response: switching ? 0.38 : 0.2)
+        place(frame, response: switching ? 0.38 : 0.2)
     }
 
     /// Moves the panel, as it is, to follow the composition (a client that
@@ -139,7 +145,67 @@ final class CandidatePanel {
     func move(near caretRect: NSRect) {
         guard panel.isVisible else { return }
         let size = targetFrame.size == .zero ? panel.frame.size : targetFrame.size
-        place(NSRect(origin: origin(for: size, near: caretRect), size: size), response: nil)
+        let frame = NSRect(origin: origin(for: size, near: caretRect), size: size)
+        pinnedFirstX = frame.origin.x + bar.style.textInset
+        place(frame, response: nil)
+    }
+
+    /// While typing, keep the first candidate near where it already is. A
+    /// longer suggestion, or a longer composition, widens the window; at the
+    /// screen edge that slides the whole window sideways. Drop candidates
+    /// from the end of the page until that slide is small. If a narrower
+    /// page does not bring the first candidate back, the caret itself moved,
+    /// and the full page stays.
+    private func fitted(_ page: Page, near caret: NSRect) -> Page {
+        guard let pin = pinnedFirstX else { return page }
+        let limit = max(40, CandidateStyle.current.fontSize * 2)
+        let minCount = min(page.candidates.count, max(1, page.highlighted + 1))
+        guard page.candidates.count > minCount else { return page }
+
+        var count = page.candidates.count
+        var best = page
+        var placed = placement(best, near: caret)
+        var bestDist = abs(placed.x - pin)
+        var bestWidth = placed.width
+        if bestDist <= limit { return page }
+
+        while count > minCount {
+            let next: Int
+            if page.expanded && count > max(page.columns, minCount) {
+                next = max(minCount, page.columns - 1)
+            } else {
+                next = count - 1
+            }
+            if next >= count { break }
+            count = next
+            let trial = trimmed(page, count: count)
+            placed = placement(trial, near: caret)
+            let dist = abs(placed.x - pin)
+            if dist <= limit { return trial }
+            if placed.width < bestWidth - 0.5 && dist < bestDist - 0.5 {
+                best = trial
+                bestDist = dist
+                bestWidth = placed.width
+                continue
+            }
+            if placed.width < bestWidth - 0.5 { break }
+        }
+        return best
+    }
+
+    private func trimmed(_ page: Page, count: Int) -> Page {
+        var next = page
+        let n = min(max(count, 1), page.candidates.count)
+        next.candidates = Array(page.candidates.prefix(n))
+        next.comments = Array(page.comments.prefix(n))
+        if next.highlighted >= n { next.highlighted = n - 1 }
+        return next
+    }
+
+    /// The first candidate's index, in screen points, and the window's width.
+    private func placement(_ page: Page, near caret: NSRect) -> (x: CGFloat, width: CGFloat) {
+        let size = bar.measure(page)
+        return (origin(for: size, near: caret).x + bar.style.textInset, size.width)
     }
 
     /// Shows `frame` at once, or eases toward it from the frame on screen.
@@ -202,6 +268,7 @@ final class CandidatePanel {
         link?.invalidate()
         link = nil
         onScreen = false
+        pinnedFirstX = nil
         motion.snap(.zero)
         targetFrame = .zero
     }
@@ -245,6 +312,7 @@ final class CandidatePanel {
 
     func hide() {
         onScreen = false
+        pinnedFirstX = nil
         pauseLink()
         panel.orderOut(nil)
         bar.forget()
@@ -355,6 +423,12 @@ final class CandidateBar: NSView {
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
+
+    /// The size `page` needs, without moving the highlight.
+    func measure(_ page: CandidatePanel.Page) -> NSSize {
+        style = CandidateStyle.current
+        return page.expanded ? layoutGrid(page) : layoutRow(page)
+    }
 
     /// Lays out `page`; returns the size the panel needs.
     func update(_ page: CandidatePanel.Page) -> NSSize {

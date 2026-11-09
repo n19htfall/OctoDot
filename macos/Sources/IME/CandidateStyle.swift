@@ -2,7 +2,7 @@ import AppKit
 
 /// How the candidate window looks: the user's three choices (Settings →
 /// Appearance), and every measurement that follows from them. The defaults
-/// are the window as designed: 18 pt, the system's accent color, 5 pt
+/// are the window as designed: 18 pt, the system's accent color, 3 pt
 /// between the highlight and the window's edge.
 struct CandidateStyle: Sendable, Equatable {
     var fontSize: CGFloat = 18
@@ -11,7 +11,7 @@ struct CandidateStyle: Sendable, Equatable {
     var accent = "system"
     /// Between the highlight and the window's edge. The window's corners
     /// follow, so the highlight stays concentric with them.
-    var inset: CGFloat = 5
+    var inset: CGFloat = 3
 
     static let fontSizes: ClosedRange<CGFloat> = 12...28
     static let insets: ClosedRange<CGFloat> = 0...12
