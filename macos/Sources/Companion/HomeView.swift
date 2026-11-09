@@ -34,6 +34,7 @@ struct HomeView: View {
                 Text("Only this app checks, over HTTPS, for releases signed with OctoDot's key. The input method itself never uses the network.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            if let share = model.grammarProgress { GrammarDownload(share: share) }
             if let message = model.message {
                 Label(message, systemImage: model.failed ? "exclamationmark.triangle.fill" : "info.circle")
                     .foregroundStyle(model.failed ? .orange : .secondary).font(.callout).textSelection(.enabled)
@@ -163,6 +164,7 @@ private struct UninstallSheet: View {
             message = text
             return
         }
+        GrammarStore.removeAll()                    // not the user's data: 400 MB a reinstall brings back
         model.message = text
         NSApp.terminate(nil)
     }

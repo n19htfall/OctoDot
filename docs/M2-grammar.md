@@ -23,6 +23,7 @@ sentences.
 | Keys | a context of up to 5 characters followed by the start of a word, or a word followed by `$` (how likely it ends a sentence), in octagram's compact encoding |
 | Values | ln(score) × 10000; almost all between 13 and 23 |
 | Pinning | `data/grammar.lock`, by SHA-256: upstream replaces the file in place under the same name |
+| On a Mac | outside the bundles, in the App Group folder: `Grammar/<sha256>/wanxiang-lts-zh-hans.gram` (below) |
 | Settings | 万象's, from `wanxiang.schema.yaml` (pinned in `data/wanxiang.lock`): context 6, minimum 2, penalties −14 / −6 / −100 / rear −18, `max_homophones` 8 |
 
 librime-octagram scores a word after its context like this. Starting from
@@ -78,18 +79,28 @@ engine's one piece of C:
 data/grammar.lock ──fetch──▶ .data/grammar/wanxiang-lts-zh-hans.gram ──────────┐ (hard link)
 wanxiang.schema.yaml ──octo-prep──▶ grammar.tsv ──octo-compile──▶ grammar.img ─┤
                                                                                ▼
-                                                          build/images/, the app's data/
+                                                                         build/images/
 ```
+
+In the app the two part ways. `grammar.img` stays with the images in the
+IME's signed bundle, beside `grammar.pin` (one line from the lock: SHA-256,
+size, name). The `.gram` file lives outside the bundles, in the App Group
+folder, at `Grammar/<sha256>/<name>`: the companion puts it there before it
+installs the IME that pins it (docs/distribution-and-onboarding.md, section
+5), so an update that does not change the model does not carry its 400 MB.
 
 - **`grammar.img`** is a one-section image (kind 5). It records the model's
   file name and size, which bind the two (a different file is refused), and
   万象's settings.
 - **`grammar.goose`** loads the image, hands the settings to `gram.h`, and
-  maps `<language>.gram`.
+  maps `<language>.gram`: beside `grammar.img` if it is there (the images
+  folder, the tests), else in the folder the host names
+  (`octo_set_grammar_folder`, ABI v16; the IME names the App Group's).
 - **`session::open`** maps the model if the images have one. The host can
   turn it on or off at once (ABI v8: `octo_grammar`, `octo_set_grammar`;
   input menu: 语法模型 Grammar Model, remembered). The sandboxed self-test
-  fails if the bundle has no model to map.
+  fails if the bundle pins no model, or if the shared folder holds the
+  pinned one and it does not map.
 
 ## The sentence search
 

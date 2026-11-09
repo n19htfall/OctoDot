@@ -12,7 +12,7 @@ final class Engine {
     static let shared = Engine()
 
     /// The ABI this host was written against. The engine reports its own.
-    static let abiVersion: UInt32 = 15
+    static let abiVersion: UInt32 = 16
 
     struct Session: Hashable, Sendable {
         fileprivate let handle: UInt64
@@ -62,16 +62,18 @@ final class Engine {
     private init() {}
 
     /// Starts the Goose runtime on the main thread (once) and loads the
-    /// images from `dataDirectory`. Returns the engine's status: 0, or what
-    /// failed (see octo_open).
+    /// images from `dataDirectory`, looking for the grammar model's file in
+    /// `grammarFolder` when it is not beside them. Returns the engine's
+    /// status: 0, or what failed (see octo_open).
     @discardableResult
-    func start(dataDirectory: String) -> Int32 {
+    func start(dataDirectory: String, grammarFolder: String? = nil) -> Int32 {
         if !isStarted {
             goose_init(CommandLine.argc, CommandLine.unsafeArgv)
             let abi = octo_abi_version()
             precondition(abi == Self.abiVersion, "engine ABI \(abi), host expects \(Self.abiVersion)")
             isStarted = true
         }
+        withSlice(grammarFolder ?? "") { octo_set_grammar_folder($0) }
         let status = withSlice(dataDirectory) { octo_open($0) }
         isReady = status == 0
         return status

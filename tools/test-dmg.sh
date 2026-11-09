@@ -30,6 +30,9 @@ codesign --verify --deep --strict "$APP" 2>/dev/null; check $? "  intact (codesi
 check $? "  the companion, $COMPANION, signed by team $TEAM"
 [ "$(ident "$APP/Contents/Resources/OctoDotIME.app" Identifier)" = "$IME" ]
 check $? "  with the input method inside, $IME"
+read -r _ pin_size pin_name < "$APP/Contents/Resources/OctoDotIME.app/Contents/Resources/data/grammar.pin" 2>/dev/null
+[ -n "${pin_name:-}" ] && [ "$(stat -f %z "$APP/Contents/Resources/Grammar/$pin_name" 2>/dev/null)" = "${pin_size:-}" ]
+check $? "  and the grammar model it pins, for a first install without a download"
 [ -L "$MOUNT/Applications" ] && [ "$(readlink "$MOUNT/Applications")" = /Applications ]
 check $? "an Applications link, to /Applications"
 [ -f "$MOUNT/.background/background.tiff" ]; check $? "the window's background, hidden in .background"

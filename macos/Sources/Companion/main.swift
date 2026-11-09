@@ -6,7 +6,8 @@ import Foundation
 // XPC service, so development installs take the users' path.
 //   --facts      what the installer sees, and the setup state, as JSON
 //   --install    install or update the input method (reloading it in place
-//                when it can), removing the old com.example install if it is there
+//                when it can), removing the old com.example install if it is
+//                there, after putting its grammar model in the shared folder
 //   --enable     add it to the input sources
 //   --preflight  the input method's own check, in its sandbox
 //   --uninstall  remove it (keeping the user's data) and move this app to the Trash
@@ -35,7 +36,17 @@ enum CLI {
             print("state: \(SetupState.of(facts))")
             return 0
         case "--install":
+            // The grammar model first, as the app does (GrammarStore), from this app's own copy.
+            do {
+                if try await GrammarStore.ensure() { print("The grammar model is in place.") }
+            } catch {
+                print("The grammar model could not be put in place (\(error)); the input method types without it.")
+            }
             let (ok, message) = await installer.installIME()
+            if ok {
+                GrammarStore.prune()
+                IMELink.grammarReady()
+            }
             return say(ok, message)
         case "--enable":
             let ok = await installer.enableIME()
@@ -47,6 +58,7 @@ enum CLI {
             return preflight.ok ? 0 : 1
         case "--uninstall":
             let (ok, message) = await installer.uninstall(wipe: false)
+            if ok { GrammarStore.removeAll() }
             return say(ok, message)
         default:
             print("usage: OctoDot [--facts | --install | --enable | --preflight | --uninstall]")

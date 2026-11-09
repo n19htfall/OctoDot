@@ -74,7 +74,7 @@ enum Maintenance {
             try? FileManager.default.removeItem(at: file)
         }
         let keychain = KeychainKeyProvider(service: Learning.keychainService).key() != nil
-        let images = Engine.shared.start(dataDirectory: Core.dataDirectory) == 0
+        let images = Core.startEngine() == 0
         Engine.shared.stop()
         let ok = sandboxed && container && appGroup && keychain && images
         print("""
@@ -95,7 +95,7 @@ enum Maintenance {
             print("{\"ok\": false, \"why\": \"not a transfer\"}")
             return 1
         }
-        guard Engine.shared.start(dataDirectory: Core.dataDirectory) == 0 else {
+        guard Core.startEngine() == 0 else {
             print("{\"ok\": false, \"why\": \"the images did not load\"}")
             return 1
         }
@@ -177,7 +177,7 @@ enum Maintenance {
     /// them go as Core.stop does, lets the run loop turn, and checks through
     /// weak references that every one was freed. Prints a JSON verdict.
     private static func releaseTest() -> Int32 {
-        guard Engine.shared.start(dataDirectory: Core.dataDirectory) == 0 else {
+        guard Core.startEngine() == 0 else {
             print("the images did not load")
             return 1
         }
@@ -212,7 +212,7 @@ enum Maintenance {
         if arguments.contains("dark") { NSApplication.shared.appearance = NSAppearance(named: .darkAqua) }
         if arguments.contains("light") { NSApplication.shared.appearance = NSAppearance(named: .aqua) }
         let dwell = arguments.compactMap(Double.init).first ?? 1.5
-        guard Engine.shared.start(dataDirectory: Core.dataDirectory) == 0 else {
+        guard Core.startEngine() == 0 else {
             print("the images did not load")
             return 1
         }
@@ -285,7 +285,7 @@ enum Maintenance {
     /// 2026-11-08, both times ending in a crash inside IMK.
     private static func selfTest() -> Int32 {
         let sandboxed = ProcessInfo.processInfo.environment["APP_SANDBOX_CONTAINER_ID"] != nil
-        let status = Engine.shared.start(dataDirectory: Core.dataDirectory)
+        let status = Core.startEngine()
 
         let session = Engine.shared.newSession(clientBundleID: "selftest")
         for c in "zhongguoren" { _ = Engine.shared.key(session, .character(c)) }
@@ -308,10 +308,14 @@ enum Maintenance {
         let stored = store.save(sample) && store.load() == .loaded(sample)
         try? FileManager.default.removeItem(at: directory)
 
-        // The bundle's lexicon sets, all mounted, and its grammar model, mapped
-        // (packaging checks).
+        // The bundle's lexicon sets, all mounted (packaging checks); its grammar
+        // pin, and the model it pins mapped from the shared folder, when that
+        // holds it (the companion puts it there; a fresh Mac has none).
         let sets = Engine.shared.lexiconSets().filter(\.mounted).count
-        let grammar = Engine.shared.grammar == .on
+        let pin = Core.grammarPin
+        let shared = pin?.isInstalled ?? false
+        let grammar = pin != nil && (!shared || Engine.shared.grammar == .on)
+        let grammarState = pin == nil ? "\"no pin\"" : shared ? "\(Engine.shared.grammar == .on)" : "\"not installed\""
         // The reranker's weights, mapped from the bundle inside the sandbox
         // (a bundle built without a model has none: nothing to check).
         let bundled = FileManager.default.fileExists(atPath: Core.dataDirectory + "/rerank.img")
@@ -372,7 +376,7 @@ enum Maintenance {
         print("""
             {"sandboxed": \(sandboxed), "images": \(status), "engine_commit": \(committed), \
             "keychain": \(keychain), "store": \(stored), \
-            "sets": \(sets), "grammar": \(grammar), "rerank": \(bundled ? "\(rerank)" : "\"none\""), \
+            "sets": \(sets), "grammar": \(grammarState), "rerank": \(bundled ? "\(rerank)" : "\"none\""), \
             "phrases": \(phrases), \(phrases ? "" : "\"phrases_status\": \"\(phrasesWhy)\", ")\
             "saved_phrases_apply": {"created": \(created), "in_place": \(inPlace), "replaced": \(replaced), \
             "after_replace": \(rearmed)}, "ok": \(ok)}

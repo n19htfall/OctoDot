@@ -78,6 +78,18 @@ struct Card<Content: View>: View {
     }
 }
 
+/// The grammar model coming down (an update that changes it, or a missing one).
+struct GrammarDownload: View {
+    var share: Double
+    var body: some View {
+        ProgressView(value: share) {
+            Text("Downloading the grammar model…")
+        } currentValueLabel: {
+            Text("\(Int(share * 100))% of \(GrammarStore.pin.map { $0.size / 1_000_000 } ?? 0) MB")
+        }
+    }
+}
+
 private struct Heading: View {
     let title: String
     let detail: String
@@ -127,6 +139,7 @@ private struct InstallStep: View {
                 .buttonStyle(.borderedProminent)
                 .disabled(model.busy)
             }
+            if let share = model.grammarProgress { GrammarDownload(share: share) }
             if model.showSettingsHelp && !model.enabled {
                 Card {
                     Text("Turn OctoDot on in System Settings").font(.headline)

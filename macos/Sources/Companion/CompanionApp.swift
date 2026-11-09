@@ -29,7 +29,14 @@ struct RootView: View {
     var body: some View {
         switch model.screen {
         case .loading:
-            ProgressView("Looking at this Mac…").frame(width: 620, height: 500)
+            Group {
+                if let share = model.grammarProgress {
+                    GrammarDownload(share: share).frame(width: 360)
+                } else {
+                    ProgressView("Looking at this Mac…")
+                }
+            }
+            .frame(width: 620, height: 500)
         case .wizard:
             OnboardingView(model: model)
         case .home:

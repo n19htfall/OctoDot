@@ -4,7 +4,7 @@
 import std;
 import octo from "../../engine";
 
-let ABI_VERSION = 15;
+let ABI_VERSION = 16;
 
 export fn octo_abi_version() -> u32 { ABI_VERSION }
 
@@ -115,8 +115,13 @@ export fn octo_trim() { session::trim(); }
 // calls goose_exit (to load a new build of the engine, or to quit).
 export fn octo_close() { session::close(); }
 
-// The grammar model: -1 if the images have none, 0 off, 1 on.
+// The grammar model: -1 if the images have none (or its file is not there), 0 off, 1 on.
 export fn octo_grammar() -> i32 { session::grammar_state() }
+
+// Where else the grammar model's .gram file may be, when it is not beside
+// grammar.img: the IME's shared folder, where it lives outside the bundle.
+// Before octo_open.
+export fn octo_set_grammar_folder(directory: const u8[:]) { session::set_grammar_folder(directory); }
 
 // Turns the grammar model on (1) or off (0) at once: 0, or 1 if it cannot be turned on.
 export fn octo_set_grammar(on: u32) -> i32 { session::set_grammar(on != 0) }

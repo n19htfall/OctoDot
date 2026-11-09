@@ -614,7 +614,14 @@ var sets_text: u8[>..];
 // images have none, 0 off, 1 on.
 fn grammar_state() -> i32 {
     if grammar::on { return 1; }
-    return if ready && file_exists(str(data_dir, "/grammar.img")) { 0 } else { -1 };
+    return if ready && grammar::available(data_dir) { 0 } else { -1 };
+}
+
+// Where the grammar model's .gram file is when it is not beside grammar.img
+// (the IME keeps it outside its signed bundle). Before open().
+fn set_grammar_folder(directory: const u8[:]) {
+    grammar::elsewhere.clear();
+    grammar::elsewhere.append(directory);
 }
 
 // Turns the model on or off and remembers it for the next open: 0, or 1 if

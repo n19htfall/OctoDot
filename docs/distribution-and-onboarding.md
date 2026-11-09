@@ -78,7 +78,9 @@ caller is the companion (same team, its identifier) on every connection.
 ### OctoDotIME.app (`~/Library/Input Methods`)
 
 Today's input method, renamed: executable `OctoDotIME`, everything else as
-now (launcher + `Contents/Frameworks/OctoDotCore-<hash>.dylib` + data).
+now (launcher + `Contents/Frameworks/OctoDotCore-<hash>.dylib` + data),
+except the grammar model: the bundle pins it (`data/grammar.pin`) and reads
+it from the App Group folder (section 5).
 `LSUIElement` true, `InputMethodConnectionName`, `ComponentInputModeDict`
 unchanged. Entitlements:
 
@@ -103,8 +105,9 @@ The input menu gets "Check for Updates…", which opens `octodot://update`
   container. Only the IME reads them. Updates never touch them.
 - **App Group** `G4JRQAX252.octodot`: macOS form (team prefix), which needs
   no provisioning profile; macOS 15 and later refuse `group.`-style names
-  without one. Holds only hand-over files: the pre-flight result, an export
-  the user asked for.
+  without one. Holds hand-over files (the pre-flight result, an export the
+  user asked for) and the grammar model the IME pins, in
+  `Grammar/<sha256>/` (section 5).
 - **Keychain.** The key stays a login-Keychain item of the IME, readable by
   its signature. The pre-flight (the IME binary itself, in its sandbox)
   reads or creates it during onboarding, so any confirmation macOS asks for
@@ -210,6 +213,22 @@ launch (Phrases.start already compares their dates with the core's).
   runs, off unless the user turns it on.
 - **Applying.** The installer swaps `/Applications/OctoDot.app`, the
   companion relaunches, and section 4 brings the IME along.
+- **The grammar model stays out of updates.** It is 400 MB of a 488 MB app
+  and changes only with `data/grammar.lock`, so it lives outside the
+  bundles, in the App Group folder at `Grammar/<sha256>/<name>.gram`, which
+  the IME maps (`Sources/Setup/GrammarPin.swift`). The disk image's
+  companion carries a copy (`Contents/Resources/Grammar/`); the update's
+  (`build/update/OctoDot.app`, the zip) is the same bundles without it,
+  the companion signed again around them: a 41 MiB download instead of
+  394. Before it installs an IME, the companion makes sure the folder holds
+  the model that IME pins (`GrammarStore`): from its own copy, or else
+  downloaded from the model's own release, `grammar-<sha256 prefix>`
+  (`make grammar-release`, once per lock). Either way the file must have
+  the SHA-256 the IME's signed bundle pins, and goes in through a staging
+  folder renamed into place. Models one folder each, so a new one arrives
+  beside the one in use; after the install the others are removed. Without
+  the model the IME types as it does with the model turned off, and the
+  companion tries again when it is next opened.
 
 ## 6. Uninstall
 
@@ -220,7 +239,8 @@ dictionary and phrases (the IME's `--export` writes them, still sealed, plus
 its key, wrapped under a password the user gives, to the App Group, and the
 companion saves them where the user picks) or wipe them (the IME's `--wipe`
 deletes its files and its Keychain key); then the companion moves itself to
-the Trash.
+the Trash and removes the grammar models from the App Group (not the user's
+data: a reinstall brings them back).
 
 ## 7. Building and signing
 
@@ -307,8 +327,10 @@ Verified:
   copy whose IME was re-signed with `network.client`, `get-task-allow` and
   `disable-library-validation`.
 - Gate 2: `make dmg-dev` builds a 400 MB UDZO image that `tools/test-dmg.sh`
-  verifies, mounts read-only, finds the companion, the IME inside it and the
-  `Applications` link in, and detaches.
+  verifies, mounts read-only, finds the companion, the IME inside it, the
+  grammar model it pins and the `Applications` link in, and detaches. The
+  model is 82% of it and barely compresses (zlib 0.885, xz −9e 0.807); LZMA
+  (ULMO) saves 9% but takes 14 s instead of 2 to verify, so the image stays UDZO.
 - Gates 3 and 4: `build/octo-setup-test`, 29 checks (every setup state, the
   verifier against good and tampered manifests, downgrades, foreign keys).
 - The sandboxed companion reaches its unsandboxed installer (`OctoDot

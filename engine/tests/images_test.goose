@@ -432,6 +432,20 @@ fn the_grammar_model_answers(prepared: const u8[:], images: const u8[:]) {
           grammar::query("我们", "一起", false) == -6.0, "  one that matches maps, and an empty one knows no n-gram");
     check(grammar::open(images) == 0 && grammar::query("我们", "一起", false) == together,
           "  and the real one maps again in its place");
+    // The IME keeps the model outside its bundle, in a folder `elsewhere`
+    // names: grammar.img alone in a folder finds it there, and a model beside
+    // grammar.img still comes first.
+    let alone = str(images, "-grammar-alone");
+    make_dir(alone);
+    check(write_file(str(alone, "/grammar.img"), img) && !grammar::available(alone) && grammar::open(alone) == 3,
+          "grammar.img with no model beside it and nowhere else to look: no model");
+    grammar::elsewhere.append(images);
+    check(grammar::available(alone) && grammar::open(alone) == 0 &&
+          grammar::query("我们", "一起", false) == together, "  with the model's folder named, it maps from there");
+    check(grammar::open(elsewhere) == 0 && grammar::query("我们", "一起", false) == -6.0,
+          "  and a model beside grammar.img is the one used");
+    grammar::elsewhere.clear();
+    delete_file(str(alone, "/grammar.img"));
     grammar::close();
 }
 

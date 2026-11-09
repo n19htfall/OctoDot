@@ -29,8 +29,11 @@ final class SetupModel {
     var preflight: Preflight?
     var scheme = "fullpinyin"
     var fullCharset = false
+    /// The grammar model's download, while there is one: the share done.
+    var grammarProgress: Double?
 
     private var poll: Timer?
+    private var placingGrammar = false
 
     /// Steps this install goes through (the location step only when needed).
     var steps: [Step] { (state == .wrongLocation ? [.location] : []) + [.install, .privacy, .tryIt] }
@@ -60,14 +63,55 @@ final class SetupModel {
             screen = .wizard
         case .outdated:
             busy = true
-            let (ok, text) = await InstallerClient.shared.installIME()
+            let (ok, text, note) = await installWithGrammar()
             busy = false
-            report(ok, text)
+            report(ok && note == nil, [text, note].compactMap { $0 }.joined(separator: " "))
             if ok { await refresh(openSettingsWhenReady: openSettingsWhenReady) } else { screen = .home }
         case .ready:
             screen = .home
             if openSettingsWhenReady { IMELink.showSettings() }
+            if GrammarStore.isMissing {
+                if let note = await placeGrammar() { report(false, note) } else { IMELink.grammarReady() }
+            }
         }
+    }
+
+    // MARK: The grammar model
+
+    /// The grammar model into the shared folder (GrammarStore), before the
+    /// input method that wants it is installed: copied from this app, or
+    /// downloaded, its progress shown. nil, or what to tell the user: the
+    /// input method types without the model, less accurately, until it is there.
+    func placeGrammar() async -> String? {
+        placingGrammar = true
+        defer {
+            placingGrammar = false
+            grammarProgress = nil
+        }
+        do {
+            try await GrammarStore.ensure { [weak self] share in
+                Task { @MainActor in
+                    if let self, self.placingGrammar { self.grammarProgress = share }
+                }
+            }
+            return nil
+        } catch {
+            return "The grammar model could not be put in place (\(error)). OctoDot types without it, " +
+                   "less accurately, until you open OctoDot again."
+        }
+    }
+
+    /// The model, then the input method; once that is installed, the models
+    /// it no longer wants go. The installer's answer, and a note if the model
+    /// is not in place.
+    private func installWithGrammar() async -> (Bool, String, String?) {
+        let note = await placeGrammar()
+        let (ok, text) = await InstallerClient.shared.installIME()
+        if ok {
+            GrammarStore.prune()
+            if note == nil { IMELink.grammarReady() }
+        }
+        return (ok, text, note)
     }
 
     // MARK: Step A: location
@@ -91,12 +135,12 @@ final class SetupModel {
     /// and moves on the moment it is.
     func install() async {
         busy = true
-        let (ok, text) = await InstallerClient.shared.installIME()
+        let (ok, text, note) = await installWithGrammar()
         guard ok else {
             busy = false
             return report(false, text)
         }
-        report(true, text)
+        report(note == nil, [text, note].compactMap { $0 }.joined(separator: " "))
         enabled = await InstallerClient.shared.enableIME()
         busy = false
         if enabled { return step = .privacy }

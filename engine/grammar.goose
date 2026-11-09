@@ -36,6 +36,12 @@ root struct Settings {
 var live = Settings {};
 var on = false;
 
+// Where else the .gram file may be when it is not beside grammar.img: the
+// IME keeps the model in a folder outside its signed bundle, so that an
+// update need not carry 400 MB it already has (docs/M2-grammar.md). Empty:
+// only beside grammar.img.
+var elsewhere: u8[>..] = [];
+
 extern fn octo_gram_settings(max_length: i32, min_length: i32, collocation: f64, non_collocation: f64,
                              weak_collocation: f64, rear: f64);
 extern fn octo_gram_open(path: const u8[:], size: u64) -> i32;
@@ -82,11 +88,28 @@ fn write(s: Settings&, out: u8[>..]&) {
     image::finish(out, w);
 }
 
+// The .gram file named `language`: beside grammar.img in `directory` if it
+// is there, else in `elsewhere` (which may not hold it either).
+fn path(directory: const u8[:], language: const u8[:]) -> u8[>..] {
+    let beside = str(directory, "/", language, ".gram");
+    if elsewhere.len == 0 || file_exists(beside) { return beside; }
+    return str(elsewhere, "/", language, ".gram");
+}
+
+// Whether `directory` has a model to turn on: its grammar.img verifies and
+// the .gram file it names is there (not yet checked against it).
+fn available(directory: const u8[:]) -> bool {
+    var img: u8[>..] = [];
+    var s = Settings {};
+    return read_file(str(directory, "/grammar.img"), img) && load_into(s, img) &&
+           file_exists(path(directory, s.meta[0].language));
+}
+
 // Turns the model in `directory` on: grammar.img, then the .gram file it
-// names, which must have the size it records. 0; 1 if there is no
-// grammar.img (no model: nothing changes); 2 if it does not verify; 3 if
-// the .gram file cannot be mapped or is not the one recorded. On failure
-// the model is off.
+// names (beside it, or in `elsewhere`), which must have the size it
+// records. 0; 1 if there is no grammar.img (no model: nothing changes); 2 if
+// it does not verify; 3 if the .gram file cannot be mapped or is not the one
+// recorded. On failure the model is off.
 fn open(directory: const u8[:]) -> i32 {
     close();
     var img: u8[>..] = [];
@@ -96,7 +119,7 @@ fn open(directory: const u8[:]) -> i32 {
     let m = s.meta[0];
     octo_gram_settings(m.max_length as i32, m.min_length as i32, m.collocation as f64, m.non_collocation as f64,
                        m.weak_collocation as f64, m.rear as f64);
-    if octo_gram_open(str(directory, "/", m.language, ".gram"), m.file_size) != 0 { return 3; }
+    if octo_gram_open(path(directory, m.language), m.file_size) != 0 { return 3; }
     live.meta.clear();
     live.meta.append(s.meta);
     on = true;

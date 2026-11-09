@@ -69,16 +69,26 @@ NOTARY_PROFILE ?= OctoDot
 GEN          := build/gen
 IME_APP      := build/OctoDotIME.app
 APP          := build/OctoDot.app
+# An update's companion: the app without the grammar model, which lives
+# outside the bundles (Sources/Setup/GrammarPin.swift) and changes only with
+# data/grammar.lock. The disk image's app carries it; an update brings it,
+# from its own release (make grammar-release), only when it changed.
+UPDATE_APP   := build/update/OctoDot.app
 XPC          := $(APP)/Contents/XPCServices/OctoDotInstaller.xpc
 DMG          := build/OctoDot-$(VERSION)$(DMG_SUFFIX).dmg
 IMAGES       := ../build/images
+GRAMMAR_NAME := $(shell awk '$$1 == "file" && $$3 ~ /\.gram$$/ { print $$3 }' ../data/grammar.lock)
+GRAMMAR_SHA  := $(shell awk '$$1 == "file" && $$3 ~ /\.gram$$/ { print $$2 }' ../data/grammar.lock)
+GRAMMAR_TAG  := grammar-$(shell printf %.12s $(GRAMMAR_SHA))
+GRAMMAR_URL  := $(RELEASES)/download/$(GRAMMAR_TAG)/$(GRAMMAR_NAME)
 WANXIANG_TAG := $(shell awk '$$1 == "tag" { print $$2 }' ../data/wanxiang.lock)
 UNIHAN_VERSION := $(shell awk '$$1 == "version" { print $$2 }' ../data/unihan.lock)
 SWIFTC       := $(shell xcrun --find swiftc)
 ENGINE       := $(wildcard ../engine/*.goose) ../engine/gram.h ../engine/rerank.h ../engine/blas.c \
                 ../engine/octo.build engine/ime.goose
 SHARED_SWIFT := $(wildcard Sources/Shared/*.swift)
-IME_SWIFT    := $(wildcard Sources/IME/*.swift) Sources/Setup/Transfer.swift $(GEN)/Identity.swift
+IME_SWIFT    := $(wildcard Sources/IME/*.swift) Sources/Setup/Transfer.swift Sources/Setup/GrammarPin.swift \
+                $(GEN)/Identity.swift
 LAUNCHER_SWIFT := $(wildcard Sources/Launcher/*.swift)
 SMOKE_SWIFT  := $(wildcard Sources/Smoke/*.swift)
 SETUP_SWIFT  := $(wildcard Sources/Setup/*.swift) $(GEN)/Identity.swift
@@ -98,7 +108,8 @@ SWIFTFLAGS   := $(BASEFLAGS) -import-objc-header Sources/Shared/Bridging.h -I $(
 CORE_INPUTS  := $(SHARED_SWIFT) $(IME_SWIFT) Sources/IME/Core.h Sources/Shared/Bridging.h \
                 Sources/Launcher/CoreABI.h build/libocto_engine.a
 
-.PHONY: all test install enable uninstall clean dmg test-dmg release audit check-identity release-key appcast
+.PHONY: all test install enable uninstall clean dmg test-dmg release audit check-identity release-key appcast \
+        grammar-release
 all: $(APP) build/octo-smoke build/octo-setup-test
 
 check-identity:
@@ -153,7 +164,8 @@ build/BadgeOutlined.tiff: build/make-icon
 	build/make-icon $@ build/BadgeFilled.tiff
 
 $(IME_APP): $(CORE_INPUTS) build/launcher/OctoDotIME Info.plist.in InfoPlist.strings.in IME.entitlements.in \
-            build/BadgeOutlined.tiff $(IMAGES)/lexicon.img ../NOTICE ../LICENSE ../LICENSE-weights ../VERSION | check-identity
+            build/BadgeOutlined.tiff $(IMAGES)/lexicon.img ../data/grammar.lock ../NOTICE ../LICENSE ../LICENSE-weights \
+            ../VERSION | check-identity
 	rm -rf $@.partial $@
 	mkdir -p $@.partial/Contents/MacOS $@.partial/Contents/Frameworks $@.partial/Contents/Resources/data
 	id=$$(cat $(CORE_INPUTS) | shasum | cut -c1-12) && \
@@ -175,7 +187,8 @@ $(IME_APP): $(CORE_INPUTS) build/launcher/OctoDotIME Info.plist.in InfoPlist.str
 	cp $(IMAGES)/lexicon*.img $(IMAGES)/spellings.*.img $(IMAGES)/aux.*.img $(IMAGES)/grammar.img \
 	    $(IMAGES)/english.img \
 	    $(IMAGES)/syllables.tsv $@.partial/Contents/Resources/data/
-	cp -c $(IMAGES)/*.gram $@.partial/Contents/Resources/data/ 2>/dev/null || cp $(IMAGES)/*.gram $@.partial/Contents/Resources/data/
+	printf '%s %s %s\n' $(GRAMMAR_SHA) $$(stat -f %z $(IMAGES)/$(GRAMMAR_NAME)) $(GRAMMAR_NAME) \
+	    > $@.partial/Contents/Resources/data/grammar.pin
 	for f in rerank.img rerank.weights; do \
 	    if [ -f $(IMAGES)/$$f ]; then cp -c $(IMAGES)/$$f $@.partial/Contents/Resources/data/ 2>/dev/null || \
 	        cp $(IMAGES)/$$f $@.partial/Contents/Resources/data/; fi; \
@@ -231,9 +244,23 @@ $(APP): $(IME_APP) build/companion/OctoDot build/installer/OctoDotInstaller buil
 	cp ../LICENSE $@.partial/Contents/Resources/LICENSE.txt
 	cp ../NOTICE $@.partial/Contents/Resources/NOTICE.txt
 	ditto $(IME_APP) $@.partial/Contents/Resources/OctoDotIME.app
+	mkdir -p $@.partial/Contents/Resources/Grammar
+	cp -c $(IMAGES)/$(GRAMMAR_NAME) $@.partial/Contents/Resources/Grammar/ 2>/dev/null || \
+	    cp $(IMAGES)/$(GRAMMAR_NAME) $@.partial/Contents/Resources/Grammar/
 	sed -e 's/@APP_GROUP@/$(APP_GROUP)/g' Companion.entitlements.in > build/Companion.entitlements
 	cp Installer.entitlements.in build/Installer.entitlements
 	$(CODESIGN) --entitlements build/Installer.entitlements $@.partial/Contents/XPCServices/OctoDotInstaller.xpc
+	$(CODESIGN) --entitlements build/Companion.entitlements $@.partial
+	codesign --verify --deep --strict $@.partial
+	mv $@.partial $@
+
+# The update's companion: the same bundles without the grammar model, the
+# companion signed again around them (the IME and the installer keep theirs).
+$(UPDATE_APP): $(APP)
+	rm -rf $@.partial $@
+	@mkdir -p $(dir $@)
+	ditto $(APP) $@.partial
+	rm -rf $@.partial/Contents/Resources/Grammar
 	$(CODESIGN) --entitlements build/Companion.entitlements $@.partial
 	codesign --verify --deep --strict $@.partial
 	mv $@.partial $@
@@ -293,14 +320,27 @@ build/dmg-background.tiff: build/make-dmg-background
 # (xcrun notarytool store-credentials $(NOTARY_PROFILE)).
 release:
 	@test "$(SIGN_PROFILE)" = release || { echo "make release needs SIGN_PROFILE=release"; exit 1; }
-	$(MAKE) check-identity $(APP) audit
+	$(MAKE) check-identity $(APP) $(UPDATE_APP) audit
+	../tools/audit-bundle.sh $(UPDATE_APP) $(TEAM_ID) $(SIGN_PROFILE)
 	../tools/notarize.sh $(APP) $(NOTARY_PROFILE)
+	../tools/notarize.sh $(UPDATE_APP) $(NOTARY_PROFILE)
 	$(MAKE) dmg
 	../tools/notarize.sh $(DMG) $(NOTARY_PROFILE)
 	spctl -a -t open --context context:primary-signature -v $(DMG)
 	../tools/test-dmg.sh $(DMG) $(COMPANION_ID) $(IME_ID) $(TEAM_ID)
-	rm -f build/OctoDot-$(VERSION).zip && ditto -c -k --keepParent $(APP) build/OctoDot-$(VERSION).zip
+	rm -f build/OctoDot-$(VERSION).zip && ditto -c -k --keepParent $(UPDATE_APP) build/OctoDot-$(VERSION).zip
 	@echo "release: $(DMG), and build/OctoDot-$(VERSION).zip for the update (make appcast)"
+	@curl -sfIL -o /dev/null $(GRAMMAR_URL) || echo "the grammar model is not published yet: make grammar-release"
+
+# The grammar model's own release, once per data/grammar.lock: what an update
+# downloads when the model it brings is not on the Mac yet (GrammarStore).
+grammar-release:
+	@if curl -sfIL -o /dev/null $(GRAMMAR_URL); then echo "$(GRAMMAR_TAG) is published"; else \
+	    test "$$(shasum -a 256 ../.data/grammar/$(GRAMMAR_NAME) | cut -d' ' -f1)" = $(GRAMMAR_SHA) && \
+	    gh release create $(GRAMMAR_TAG) ../.data/grammar/$(GRAMMAR_NAME) ../.data/grammar/LICENSE \
+	        --repo $(patsubst https://github.com/%/releases,%,$(RELEASES)) --title "Grammar model $(GRAMMAR_TAG)" \
+	        --notes "万象's grammar model (RIME-LMDG, by amzxyz; CC BY 4.0), as data/grammar.lock pins it. OctoDot updates download it from here when it changes." \
+	        --latest=false; fi
 
 # The update signing key, once (tools/release-key.sh), and a release's
 # signed appcast.json, from the update archive `make release` made.
@@ -319,6 +359,7 @@ appcast: build/octo-update-sign
 	    --file build/OctoDot-$(VERSION).zip --notes "$(NOTES)" > build/appcast.json
 	build/octo-update-sign verify --public "$(UPDATE_KEY)" --running 0 --prefix $(RELEASES)/download/ < build/appcast.json
 	@echo "attach build/OctoDot-$(VERSION).dmg, build/OctoDot-$(VERSION).zip and build/appcast.json to the v$(VERSION) release"
+	@curl -sfIL -o /dev/null $(GRAMMAR_URL) || echo "and publish the grammar model first: make grammar-release"
 
 clean:
 	rm -rf build

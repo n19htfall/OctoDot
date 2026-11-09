@@ -105,6 +105,12 @@ enum Learning {
         if Engine.shared.setGrammar(on: on) || !on { grammarOn = on }
     }
 
+    /// The companion has put the grammar model in the shared folder: turned
+    /// on now, unless the user turned it off.
+    static func reopenGrammar() {
+        if grammarOn && Engine.shared.grammar != .on { Engine.shared.setGrammar(on: true) }
+    }
+
     /// The shape-code scheme, remembered across launches.
     static var auxScheme: String {
         get { UserDefaults.standard.string(forKey: auxSchemeKey) ?? "wanxiang" }

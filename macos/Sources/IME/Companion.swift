@@ -11,13 +11,13 @@ enum Companion {
 
     /// Listens for the companion (distributed notifications, which a
     /// sandboxed app may post as long as they carry no data, so the request
-    /// is in the name): "show the settings", and the onboarding's scheme and
-    /// character set. Only while this core runs: a newer core, loaded in
-    /// place, listens instead.
+    /// is in the name): "show the settings", the onboarding's scheme and
+    /// character set, and "the grammar model is in the shared folder now".
+    /// Only while this core runs: a newer core, loaded in place, listens instead.
     static func start() {
         let observer = SettingsObserver()
         let center = DistributedNotificationCenter.default()
-        var names = ["showSettings", "charset.full", "charset.daily"]
+        var names = ["showSettings", "charset.full", "charset.daily", "grammar.reopen"]
         names += Engine.shared.schemes().map { "scheme." + $0.id }
         for name in names {
             center.addObserver(observer, selector: #selector(SettingsObserver.request(_:)),
@@ -32,6 +32,7 @@ enum Companion {
         case "showSettings": SettingsWindow.show()
         case "charset.full": Learning.useFullCharset(true)
         case "charset.daily": Learning.useFullCharset(false)
+        case "grammar.reopen": Learning.reopenGrammar()
         default:
             if request.hasPrefix("scheme.") { Learning.useScheme(String(request.dropFirst("scheme.".count))) }
         }

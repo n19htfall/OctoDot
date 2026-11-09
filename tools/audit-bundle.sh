@@ -72,6 +72,18 @@ bad=$(/usr/libexec/PlistBuddy -c Print "$ime" 2>/dev/null |
 extra=$(ls "$IME/Contents/Frameworks" | grep -v '^OctoDotCore-[0-9a-f]*\.dylib$')
 [ -z "$extra" ]; check $? "OctoDotIME.app: no code but its own cores (no updater or other frameworks)${extra:+ (has: $extra)}"
 ! grep -rqiE 'sparkle|SUFeedURL' "$IME/Contents/Info.plist" 2>/dev/null; check $? "OctoDotIME.app: no updater settings"
+# The grammar model lives outside the bundles (Sources/Setup/GrammarPin.swift):
+# the IME pins it, and a companion that carries it carries exactly that file.
+pin=$(cat "$IME/Contents/Resources/data/grammar.pin" 2>/dev/null)
+read -r pin_sha pin_size pin_name <<< "$pin"
+[[ "$pin_sha" =~ ^[0-9a-f]{64}$ && "$pin_size" =~ ^[0-9]+$ && "$pin_name" == *.gram ]]
+check $? "OctoDotIME.app: pins its grammar model (data/grammar.pin: sha256 size name)"
+[ -z "$(find "$IME" -name '*.gram')" ]; check $? "OctoDotIME.app: no grammar model inside (it is shared, outside the bundles)"
+if [ -d "$APP/Contents/Resources/Grammar" ]; then
+    [ "$(ls "$APP/Contents/Resources/Grammar")" = "$pin_name" ] &&
+        [ "$(stat -f %z "$APP/Contents/Resources/Grammar/$pin_name" 2>/dev/null)" = "$pin_size" ]
+    check $? "OctoDot.app: carries the grammar model the IME pins, and nothing else there"
+fi
 
 # The companion and its installer.
 app=$(entitlements "$APP")

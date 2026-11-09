@@ -14,6 +14,16 @@ final class Core: NSObject, OctoDotCore {
         Bundle.main.resourceURL?.appendingPathComponent("data").path ?? ""
     }
 
+    /// The grammar model the bundle pins, which lives outside it, in the
+    /// folder shared with the companion (GrammarPin); nil in a bundle with no pin.
+    static var grammarPin: GrammarPin? { GrammarPin(contentsOf: URL(fileURLWithPath: dataDirectory + "/grammar.pin")) }
+
+    /// Starts the engine on the bundle's images and the shared grammar model.
+    @MainActor @discardableResult
+    static func startEngine() -> Int32 {
+        Engine.shared.start(dataDirectory: dataDirectory, grammarFolder: grammarPin?.folder?.path)
+    }
+
     /// This library's own file (the process's executable is the launcher,
     /// which an update leaves alone): what compiled caches are dated against.
     static let imageURL: URL? = {
@@ -26,7 +36,7 @@ final class Core: NSObject, OctoDotCore {
         MainActor.assumeIsolated {
             // The Goose runtime starts on the main thread, before IMK can deliver
             // a key. If the images fail to load, keys pass through to the app.
-            let status = Engine.shared.start(dataDirectory: Self.dataDirectory)
+            let status = Self.startEngine()
             if status != 0 { log.error("engine images failed to load: status \(status, privacy: .public)") }
             Health.start()
             if status == 0 {

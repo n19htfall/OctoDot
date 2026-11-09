@@ -20,6 +20,10 @@ enum IMELink {
     /// The full character set, or the daily one.
     static func useFullCharset(_ on: Bool) { ensureRunning { post(on ? "charset.full" : "charset.daily") } }
 
+    /// The grammar model is in the shared folder now: a running IME turns it
+    /// on (a new core, loaded by an install, opens it by itself). Not started for it.
+    static func grammarReady() { post("grammar.reopen") }
+
     private static func post(_ name: String) {
         DistributedNotificationCenter.default().postNotificationName(
             Notification.Name(Identity.ime + "." + name), object: nil, userInfo: nil, deliverImmediately: true)
