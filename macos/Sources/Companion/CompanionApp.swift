@@ -92,7 +92,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task {
             if model.screen == .loading { await model.refresh() }
             if model.screen == .wizard && model.state == .ready { model.screen = .home }
-            await updater.check()
+            await updater.check(interactive: true)
         }
     }
 }

@@ -65,7 +65,10 @@ DMG_SUFFIX    := -dev
 endif
 CODESIGN       = codesign --force --options runtime $(TIMESTAMP) --sign "$(SIGN_IDENTITY)"
 NOTARY_PROFILE ?= OctoDot
-
+# The identity the bundles were last signed with. When it changes (dev to
+# release, or another certificate) they are built again, so a release never
+# keeps the development signature of an earlier build.
+SIGNING      := build/signing
 GEN          := build/gen
 IME_APP      := build/OctoDotIME.app
 APP          := build/OctoDot.app
@@ -109,12 +112,17 @@ CORE_INPUTS  := $(SHARED_SWIFT) $(IME_SWIFT) Sources/IME/Core.h Sources/Shared/B
                 Sources/Launcher/CoreABI.h build/libocto_engine.a
 
 .PHONY: all test install enable uninstall clean dmg test-dmg release audit check-identity release-key appcast \
-        grammar-release
+        grammar-release FORCE
 all: $(APP) build/octo-smoke build/octo-setup-test
 
 check-identity:
 	@test -n "$(SIGN_IDENTITY)" || { echo "no $(SIGN_PROFILE) signing identity of team $(TEAM_ID) in the Keychain" \
 	    "(release: a Developer ID Application certificate; or set SIGN_IDENTITY)"; exit 1; }
+
+# Rewritten only when the identity changed, so its date says when that was.
+$(SIGNING): FORCE
+	@mkdir -p build
+	@echo '$(SIGN_IDENTITY) $(TIMESTAMP)' | cmp -s - $@ || echo '$(SIGN_IDENTITY) $(TIMESTAMP)' > $@
 
 # One source for the identity, which every bundle's Swift reads.
 $(GEN)/Identity.swift: Makefile ../VERSION
@@ -165,7 +173,7 @@ build/BadgeOutlined.tiff: build/make-icon
 
 $(IME_APP): $(CORE_INPUTS) build/launcher/OctoDotIME Info.plist.in InfoPlist.strings.in IME.entitlements.in \
             build/BadgeOutlined.tiff $(IMAGES)/lexicon.img ../data/grammar.lock ../NOTICE ../LICENSE ../LICENSE-weights \
-            ../VERSION | check-identity
+            ../VERSION $(SIGNING) | check-identity
 	rm -rf $@.partial $@
 	mkdir -p $@.partial/Contents/MacOS $@.partial/Contents/Frameworks $@.partial/Contents/Resources/data
 	id=$$(cat $(CORE_INPUTS) | shasum | cut -c1-12) && \
@@ -230,7 +238,8 @@ build/AppIcon.icns: build/make-app-icon
 # Signed inside out (section 7): the IME (above, with its entitlements), then
 # the installer, then the companion around both.
 $(APP): $(IME_APP) build/companion/OctoDot build/installer/OctoDotInstaller build/AppIcon.icns \
-        Companion.plist.in Installer.plist.in Companion.entitlements.in Installer.entitlements.in update-public-key.txt
+        Companion.plist.in Installer.plist.in Companion.entitlements.in Installer.entitlements.in update-public-key.txt \
+        $(SIGNING)
 	rm -rf $@.partial $@
 	mkdir -p $@.partial/Contents/MacOS $@.partial/Contents/Resources $@.partial/Contents/XPCServices/OctoDotInstaller.xpc/Contents/MacOS
 	cp build/companion/OctoDot $@.partial/Contents/MacOS/OctoDot
@@ -320,6 +329,10 @@ build/dmg-background.tiff: build/make-dmg-background
 # (xcrun notarytool store-credentials $(NOTARY_PROFILE)).
 release:
 	@test "$(SIGN_PROFILE)" = release || { echo "make release needs SIGN_PROFILE=release"; exit 1; }
+	@test -n "$(UPDATE_KEY)" || { echo "no update key in macos/update-public-key.txt: make release-key and commit" \
+	    "the key first; a release built without it can never update itself"; exit 1; }
+	@test -z "$$(git -C .. status --porcelain)" || { echo "commit or stash these first: a release is built from" \
+	    "a commit, whose count is its build number"; git -C .. status --short; exit 1; }
 	$(MAKE) check-identity $(APP) $(UPDATE_APP) audit
 	../tools/audit-bundle.sh $(UPDATE_APP) $(TEAM_ID) $(SIGN_PROFILE)
 	../tools/notarize.sh $(APP) $(NOTARY_PROFILE)
@@ -354,8 +367,11 @@ release-key: build/octo-update-sign
 
 appcast: build/octo-update-sign
 	@test -f build/OctoDot-$(VERSION).zip || { echo "no build/OctoDot-$(VERSION).zip: make release first"; exit 1; }
+	@# The build the archive holds, not the commit count now: the installer
+	@# refuses an update whose app is not the build its manifest names.
+	build=$$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' $(UPDATE_APP)/Contents/Info.plist) && \
 	security find-generic-password -s $(UPDATE_KEY_SERVICE) -w | build/octo-update-sign sign --version $(VERSION) \
-	    --build $(BUILD_NUMBER) --min $(MACOS_MIN) --url $(RELEASES)/download/v$(VERSION)/OctoDot-$(VERSION).zip \
+	    --build $$build --min $(MACOS_MIN) --url $(RELEASES)/download/v$(VERSION)/OctoDot-$(VERSION).zip \
 	    --file build/OctoDot-$(VERSION).zip --notes "$(NOTES)" > build/appcast.json
 	build/octo-update-sign verify --public "$(UPDATE_KEY)" --running 0 --prefix $(RELEASES)/download/ < build/appcast.json
 	@echo "attach build/OctoDot-$(VERSION).dmg, build/OctoDot-$(VERSION).zip and build/appcast.json to the v$(VERSION) release"

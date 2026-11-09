@@ -46,19 +46,27 @@ final class Updater {
     }
 
     private func checkIfDue() {
-        guard automatic, phase == .idle || phase == .upToDate else { return }
+        guard automatic, phase == .idle || phase == .upToDate, !UpdateNotice.shared.isVisible else { return }
         let last = UserDefaults.standard.double(forKey: "lastUpdateCheck")
         if Date().timeIntervalSince1970 - last > 86_400 { Task { await check() } }
     }
 
-    func check() async {
+    /// `interactive` is a click on "检查更新…": the update window opens and
+    /// shows the outcome. The daily check leaves it closed.
+    func check(interactive: Bool = false) async {
+        if phase == .checking || phase == .downloading || phase == .installing {
+            if interactive { UpdateNotice.shared.present(self) }
+            return
+        }
         guard let key = Self.publicKey,
               let verifier = try? UpdateVerifier(publicKeyBase64: key, releasesPrefix: Identity.releasesPrefix),
               let url = URL(string: Identity.appcastURL) else {
             phase = .failed("这个 OctoDot 构建没有更新密钥，无法检查更新。")
+            if interactive { UpdateNotice.shared.present(self) }
             return
         }
         phase = .checking
+        if interactive { UpdateNotice.shared.present(self) }
         let session = URLSession(configuration: .ephemeral)
         do {
             let (data, response) = try await session.data(from: url)

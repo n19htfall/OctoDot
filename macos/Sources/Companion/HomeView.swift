@@ -99,7 +99,7 @@ private struct UpdateRow: View {
             if case .available = updater.phase {
                 Button("安装并重新打开") { Task { await updater.install() } }.buttonStyle(.borderedProminent)
             } else {
-                Button("检查更新…") { Task { await updater.check() } }
+                Button("检查更新…") { Task { await updater.check(interactive: true) } }
                     .disabled(updater.phase == .checking || updater.phase == .downloading || updater.phase == .installing)
             }
         }
