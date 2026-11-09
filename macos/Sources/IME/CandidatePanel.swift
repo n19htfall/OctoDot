@@ -7,6 +7,9 @@ import AppKit
 /// One page at a time, numbered for the digit keys. The highlighted
 /// candidate, what Space picks, sits in an accent-colored pill that slides
 /// when the highlight moves. Candidates and the page arrows can be clicked.
+/// A page turn or the grid changes the window's size and place: that eases
+/// from wherever the window is, including mid-transition. Reduce Motion
+/// moves it at once.
 @MainActor
 final class CandidatePanel {
     /// Made on first use, and let go when the core stops (`release`): the
@@ -23,6 +26,7 @@ final class CandidatePanel {
     /// The core stops: the window is closed and let go, views and all.
     static func release() {
         guard let instance else { return }
+        instance.halt()
         instance.onAction = nil
         instance.bar.onAction = nil
         instance.panel.orderOut(nil)
@@ -89,6 +93,16 @@ final class CandidatePanel {
     private let panel: NSPanel
     private let capsule = CandidateCapsule()
     private var bar: CandidateBar { capsule.bar }
+    /// Where the window is going, and the critically damped motion toward it.
+    /// Velocity carries over when a new page arrives mid-way, so the frame
+    /// retargets instead of jumping to the previous destination.
+    private var targetFrame = NSRect.zero
+    private var motion = PanelMotion()
+    private var link: CADisplayLink?
+    private var linkTime: CFTimeInterval = 0
+    private var onScreen = false
+    private var expanded = false
+    private var originIndex = 0
 
     private init() {
         panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
@@ -108,16 +122,108 @@ final class CandidatePanel {
     /// `caretRect` is the client's line rectangle in screen coordinates.
     func show(_ page: Page, near caretRect: NSRect) {
         guard !page.candidates.isEmpty else { return hide() }
+        let switching = onScreen && panel.isVisible
+            && (expanded != page.expanded || originIndex != page.origin)
+        expanded = page.expanded
+        originIndex = page.origin
         let size = capsule.update(page)
-        panel.setFrame(NSRect(origin: origin(for: size, near: caretRect), size: size), display: true)
-        panel.orderFrontRegardless()
+        // A page or the grid settles more slowly than a key that only
+        // changes how wide the same row is.
+        place(NSRect(origin: origin(for: size, near: caretRect), size: size),
+              response: switching ? 0.38 : 0.2)
     }
 
     /// Moves the panel, as it is, to follow the composition (a client that
-    /// reported its place late).
+    /// reported its place late). The size stays the one the layout asked for,
+    /// not whatever size the ease happens to be at.
     func move(near caretRect: NSRect) {
         guard panel.isVisible else { return }
-        panel.setFrameOrigin(origin(for: panel.frame.size, near: caretRect))
+        let size = targetFrame.size == .zero ? panel.frame.size : targetFrame.size
+        place(NSRect(origin: origin(for: size, near: caretRect), size: size), response: nil)
+    }
+
+    /// Shows `frame` at once, or eases toward it from the frame on screen.
+    private func place(_ frame: NSRect, response: Double?) {
+        if let response { motion.response = response }
+        targetFrame = frame
+        let reduce = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        let snap = !onScreen || !panel.isVisible || reduce
+        if snap || motion.settled && !displaced(panel.frame, frame) {
+            motion.snap(frame)
+            panel.setFrame(frame, display: true)
+            capsule.applyCornerRadius(cornerRadius(for: frame.height))
+            pauseLink()
+        } else {
+            if motion.settled { motion.snap(panel.frame) }
+            capsule.applyCornerRadius(cornerRadius(for: panel.frame.height))
+            startLink()
+        }
+        panel.orderFrontRegardless()
+        onScreen = true
+    }
+
+    /// A tall grid keeps a small corner; a single row is a pill. In between,
+    /// the corner follows the height, so a resize does not pop from one to
+    /// the other.
+    fileprivate static func radius(for height: CGFloat, row: CGFloat) -> CGFloat {
+        if height <= row + 1 { return height / 2 }
+        let t = min(1, (height - row) / max(row, 1))
+        return min(18, height / 2) * t + height / 2 * (1 - t)
+    }
+
+    private func cornerRadius(for height: CGFloat) -> CGFloat {
+        Self.radius(for: height, row: bar.style.height)
+    }
+
+    private func displaced(_ a: NSRect, _ b: NSRect) -> Bool {
+        abs(a.minX - b.minX) > 0.5 || abs(a.minY - b.minY) > 0.5
+            || abs(a.width - b.width) > 0.5 || abs(a.height - b.height) > 0.5
+    }
+
+    private func startLink() {
+        if link == nil {
+            let link = panel.displayLink(target: self, selector: #selector(step(_:)))
+            link.add(to: .main, forMode: .common)
+            link.isPaused = true
+            self.link = link
+        }
+        if link?.isPaused != false { linkTime = 0 }
+        link?.isPaused = false
+    }
+
+    private func pauseLink() {
+        link?.isPaused = true
+        linkTime = 0
+    }
+
+    /// Drops the display link. `release` needs this: the link retains its
+    /// target, and the core's window must be free to deallocate.
+    private func halt() {
+        link?.invalidate()
+        link = nil
+        onScreen = false
+        motion.snap(.zero)
+        targetFrame = .zero
+    }
+
+    @objc nonisolated private func step(_ link: CADisplayLink) {
+        let timestamp = link.timestamp
+        let duration = link.duration
+        MainActor.assumeIsolated { self.tick(timestamp: timestamp, duration: duration) }
+    }
+
+    private func tick(timestamp: CFTimeInterval, duration: CFTimeInterval) {
+        let now = timestamp
+        var dt = linkTime == 0 ? duration : now - linkTime
+        linkTime = now
+        if dt <= 0 || dt > 0.05 { dt = 1.0 / 60 }
+        let moving = motion.step(to: targetFrame, dt: dt)
+        var frame = motion.frame
+        if frame.width < 1 { frame.size.width = 1 }
+        if frame.height < 1 { frame.size.height = 1 }
+        panel.setFrame(frame, display: true)
+        capsule.applyCornerRadius(cornerRadius(for: frame.height))
+        if !moving { pauseLink() }
     }
 
     /// Below the composition's line, with the first candidate's text under
@@ -138,6 +244,8 @@ final class CandidatePanel {
     }
 
     func hide() {
+        onScreen = false
+        pauseLink()
         panel.orderOut(nil)
         bar.forget()
     }
@@ -185,14 +293,21 @@ final class CandidateCapsule {
     /// Lays out `page` in the current style; returns the size it needs.
     func update(_ page: CandidatePanel.Page) -> NSSize {
         let size = bar.update(page)
-        let radius = page.expanded ? min(18, size.height / 2) : size.height / 2
+        applyCornerRadius(CandidatePanel.radius(for: size.height, row: bar.style.height))
+        if #available(macOS 26.0, *), view is NSGlassEffectView {
+            // The glass sizes its content view to itself.
+        } else {
+            bar.frame = NSRect(origin: .zero, size: size)
+        }
+        return size
+    }
+
+    func applyCornerRadius(_ radius: CGFloat) {
         if #available(macOS 26.0, *), let glass = view as? NSGlassEffectView {
             glass.cornerRadius = radius
         } else {
             view.layer?.cornerRadius = radius
-            bar.frame = NSRect(origin: .zero, size: size)
         }
-        return size
     }
 }
 
@@ -228,6 +343,7 @@ final class CandidateBar: NSView {
     init() {
         super.init(frame: .zero)
         wantsLayer = true
+        layer?.masksToBounds = true
         pill.wantsLayer = true
         pill.layer?.cornerCurve = .continuous
         backdrop.wantsLayer = true
@@ -405,7 +521,7 @@ final class CandidateBar: NSView {
     private func drawContent() {
         guard let page else { return }
         if page.expanded {
-            NSColor.separatorColor.withAlphaComponent(0.55).setFill()
+            NSColor.separatorColor.withAlphaComponent(0.22).setFill()
             for y in separators {
                 NSRect(x: style.inset, y: y, width: max(gridWidth - style.inset, 0), height: 1).fill()
             }
@@ -583,6 +699,55 @@ final class Passive: NSView {
     override var isFlipped: Bool { true }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
     override func draw(_ dirtyRect: NSRect) { draws?() }
+}
+
+/// A critically damped spring on a window frame. No overshoot: the panel
+/// stays on the side of the caret it was placed, instead of bouncing past it.
+private struct PanelMotion {
+    var frame = NSRect.zero
+    var response = 0.32
+    var settled = true
+    private var vx = 0.0
+    private var vy = 0.0
+    private var vw = 0.0
+    private var vh = 0.0
+
+    mutating func snap(_ next: NSRect) {
+        frame = next
+        vx = 0
+        vy = 0
+        vw = 0
+        vh = 0
+        settled = true
+    }
+
+    /// Advances toward `target`. False once the frame has arrived.
+    mutating func step(to target: NSRect, dt: Double) -> Bool {
+        let omega = 2 * Double.pi / response
+        var left = dt
+        var moving = false
+        while left > 0 {
+            let h = min(left, 1.0 / 60.0)
+            left -= h
+            let x = Self.advance(target.origin.x, &frame.origin.x, &vx, h, omega)
+            let y = Self.advance(target.origin.y, &frame.origin.y, &vy, h, omega)
+            let w = Self.advance(target.width, &frame.size.width, &vw, h, omega)
+            let hMove = Self.advance(target.height, &frame.size.height, &vh, h, omega)
+            moving = x || y || w || hMove
+        }
+        if !moving { snap(target) }
+        else { settled = false }
+        return moving
+    }
+
+    private static func advance(_ goal: CGFloat, _ value: inout CGFloat, _ velocity: inout Double,
+                                _ dt: Double, _ omega: Double) -> Bool {
+        let delta = Double(value) - Double(goal)
+        let accel = -omega * omega * delta - 2 * omega * velocity
+        velocity += accel * dt
+        value += CGFloat(velocity * dt)
+        return abs(Double(value) - Double(goal)) > 0.3 || abs(velocity) > 12
+    }
 }
 
 private extension Array {
