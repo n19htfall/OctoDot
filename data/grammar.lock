@@ -1,0 +1,10 @@
+# 万象's grammar model (RIME-LMDG, by amzxyz; CC BY 4.0), which M2's
+# sentence search reads: librime-octagram's .gram format, about 63.7 million
+# character n-grams in a double-array trie. Upstream replaces the file in
+# place under the same name, so it is pinned by SHA-256: a new upload fails
+# the fetch, for review (tools/fetch-pinned.sh data/grammar.lock .data/grammar --rehash).
+# Its settings are 万象's, from wanxiang.schema.yaml (data/wanxiang.lock).
+#
+#    sha256 path url
+file 769854c83f6c914a05a1e1abb67c31c00f1ae622a41878e05957bcdee3dbda9a wanxiang-lts-zh-hans.gram https://github.com/amzxyz/RIME-LMDG/releases/download/LTS/wanxiang-lts-zh-hans.gram
+file 9e5f1b3c610b9c2da5c313bf81d577a7d1acec686bdb0384edefa6df0f90cd94 LICENSE https://raw.githubusercontent.com/amzxyz/RIME-LMDG/593fe785437bdf0d5769a0f3e30483019dcb6a3d/LICENSE

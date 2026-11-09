@@ -1,0 +1,11 @@
+# Characters OctoDot's daily character set shows although 通用规范汉字表
+# (2013) leaves them out: in common use today, and not old or variant forms
+# the table retired (後, 馀 stay hidden). Single characters outside the
+# table and this list appear only with the full set (Control-g while
+# composing); words that contain them always appear.
+# One character per line; after a tab, why it is here. octo-prep marks
+# these "extra" in charsets.tsv.
+诶	éi, ēi: an interjection people type daily; in GB2312, dropped in 2013
+囧	jiǒng: "embarrassed", from internet writing
+𰻞	biáng, as in 𰻞𰻞面 (simplified form); 万象 adds it too
+𰻝	biáng, the traditional form

@@ -1,0 +1,21 @@
+# Pinned Goose compiler, built by toolchain/bootstrap-goose.sh, and its caches
+/.toolchain/
+
+# Build outputs
+build/
+*.o
+*.a
+*.dSYM/
+
+# macOS
+.DS_Store
+
+# Pinned upstream data, fetched by tools/fetch-wanxiang.sh
+/.data/
+
+# SwiftPM
+.build/
+.swiftpm/
+
+# Python bytecode
+__pycache__/

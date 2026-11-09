@@ -1,0 +1,34 @@
+# make test on Apple silicon: the privacy check, octo-prep, the images, typing
+# through the engine, the Swift bridge and the sandboxed self-test.
+#
+# Started by hand for now: on a private repository, macOS runner minutes
+# count ten times against the plan's allowance, and one run takes about ten
+# minutes once the caches are warm. Add `push:` under `on:` to run it on
+# every push.
+name: test
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: macos-26                   # Apple silicon; Xcode with Swift 6 and the macOS 26 SDK (Liquid Glass)
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache the pinned Goose compiler
+        uses: actions/cache@v4
+        with:
+          path: .toolchain
+          key: goose-${{ runner.os }}-${{ hashFiles('toolchain/goose.lock', 'toolchain/bootstrap-goose.sh') }}
+
+      - name: Cache the pinned data (万象, Unihan, the grammar model, the reranker, the accuracy set's sources)
+        uses: actions/cache@v4
+        with:
+          path: .data
+          key: data-${{ hashFiles('data/wanxiang.lock', 'data/unihan.lock', 'data/grammar.lock', 'data/rerank.lock', 'data/accuracy.lock') }}
+
+      - name: make test
+        run: make test
+        env:
+          OCTO_SELFTEST_ALLOW_NO_KEYCHAIN: "1"

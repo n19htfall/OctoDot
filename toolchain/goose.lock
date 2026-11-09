@@ -1,0 +1,6 @@
+# The one Goose compiler OctoDot builds with. bootstrap-goose.sh checks out
+# exactly this commit, refuses to continue if the tag no longer points at it,
+# and builds it into .toolchain/. Bump all three lines together.
+GOOSE_REPO=https://github.com/aardappel/goose
+GOOSE_TAG=v2026.4
+GOOSE_COMMIT=6c1fbc788f6eb1f17db4cab998353d7540ed825d

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- The companion app: sandboxed. What it may not do itself (write
+	     ~/Library/Input Methods, replace itself, the input-source calls) its
+	     embedded installer does (Contents/XPCServices). -->
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+	<!-- Update checks and downloads, of releases signed with OctoDot's key. -->
+	<key>com.apple.security.network.client</key>
+	<true/>
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>@APP_GROUP@</string>
+	</array>
+	<!-- Saving a backup where the user chooses, and opening one. -->
+	<key>com.apple.security.files.user-selected.read-write</key>
+	<true/>
+</dict>
+</plist>

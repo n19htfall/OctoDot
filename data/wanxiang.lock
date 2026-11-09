@@ -1,0 +1,22 @@
+# 万象拼音 (rime-wanxiang) files OctoDot builds its default lexicon from,
+# pinned by commit and SHA-256: the seven dictionaries of the Base edition's
+# wanxiang.dict.yaml, its spelling rules, the per-character auxiliary codes,
+# its English dictionary, the manifest itself and the license.
+# tools/fetch-wanxiang.sh fetches exactly these. To move to a new release,
+# run tools/fetch-wanxiang.sh --relock TAG and review the import report.
+repo https://github.com/amzxyz/rime-wanxiang
+tag v18.1.9
+commit 880ac18dd08ecc1c64f59c35aa5b8920593c7496
+file 9e5f1b3c610b9c2da5c313bf81d577a7d1acec686bdb0384edefa6df0f90cd94 LICENSE
+file 8c61a89f522a911eecfbe7807c44d06f17845c5859358992d80023b69402a092 wanxiang.dict.yaml
+file 77eba1cd7d56e6de45f1d378c8a09475774052d168cf0fa001a1e05ccb608042 wanxiang_algebra.yaml
+file 7a3d887463bc256cc319833baa7f4f5b8d01863a0c78ba257d46283e94d27dfe dicts/zi.dict.yaml
+file 1e03f4c3aa634f9320d50bd660833d2d3a855793fcface30b1509d75409c52bc dicts/jichu.dict.yaml
+file d699a3a620ca1ad8203747e525e4f366f8f15df0185dd1acaa4c1480cfd5b75a dicts/cuoyin.dict.yaml
+file f89a50949e93ac60746aa3058f67bc3a6bbd4a9a5c2d43652df0cb2ae973d555 dicts/duoyin.dict.yaml
+file 34939c7ae4bcfa35b311627c0804c955c3ff30d19d4d378420e4570180c1a4e6 dicts/diming.dict.yaml
+file dfce3102cd4f26fc70d1100f5a94ff4501217253912132019c4be9d48f5ac886 dicts/mingren.dict.yaml
+file 9415d1b603ac429e5d849c6c207bced1507bc61174034d1514c6c6134b3088c2 dicts/yiren.dict.yaml
+file 72115023097cc99babed229adbb605eb2a60117f5e6edcd1adcf7938948b2e26 dicts/en.dict.yaml
+file 7c53eb354fc1fc4fb7a7b87a9aea0c6204346234ed70bb36375957f80c8c7131 custom/aux_code.csv
+file cac4de78acf77bac62f3082e8e43ec7e1c2ca25807d45bf43873a0710fedf2e3 wanxiang.schema.yaml

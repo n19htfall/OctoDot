@@ -1,0 +1,10 @@
+# custom phrases
+雾凇奇观	wu song qi guan
+量子纠缠态	liangzijiuchantai
+重庆小面	chóng qìng xiǎo miàn	5000
+我的邮箱	yx
+me@example.com	yx	2000000
+no tab
+某某	zzz9
+李·卡斯利	li ka si li
+好	hǎo

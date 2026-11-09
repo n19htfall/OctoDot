@@ -1,0 +1,9 @@
+# OctoDot user dictionary 1
+# words: text, toned pinyin, uses, local day
+西安	xī ān	2.000	20764
+说好分为	shuō hǎo fēn wéi	1.000	20764
+乂	yìx	1	20000
+# choices: input as typed, text, uses, local day
+fullpinyin:xian	西安	1.000	20764
+flypy:xijn	西安	1	20764
+shishi	实时	1	20764

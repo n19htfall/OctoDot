@@ -1,0 +1,9 @@
+# Unicode's Unihan database, which OctoDot takes character sets from:
+# 通用规范汉字表 (kTGH), GB2312 (kGB0), Big5 (kBigFive), and which code
+# points are ideographs (kRSUnicode). Pinned by Unicode version and SHA-256,
+# with Unicode's license (its URL is not versioned: if it changes, fetching
+# fails on the hash, for review).
+# tools/fetch-unihan.sh fetches exactly these; --relock VERSION moves the pin.
+version 18.0.0
+file 4c93ea9c1f636451729a840978f1667a53886af37ba854fdcce109721c63d43e Unihan.zip
+file e7a93b009565cfce55919a381437ac4db883e9da2126fa28b91d12732bc53d96 license.txt

@@ -1,0 +1,58 @@
+OctoDot includes material from these projects.
+
+万象拼音 (rime-wanxiang)
+  https://github.com/amzxyz/rime-wanxiang
+  By amzxyz and contributors. Licensed under the Creative Commons
+  Attribution 4.0 International License (CC BY 4.0):
+  https://creativecommons.org/licenses/by/4.0/
+  OctoDot's default lexicon, full-pinyin spellings and English word list
+  are built from its dictionaries and spelling rules, at the release pinned
+  in data/wanxiang.lock. OctoDot converts them to its own format: codes are
+  normalized, rows it cannot read are left out, and the spelling rules are
+  evaluated ahead of time. The English list is dicts/en.dict.yaml.
+
+万象语法模型 (RIME-LMDG: wanxiang-lts-zh-hans.gram)
+  https://github.com/amzxyz/RIME-LMDG
+  By amzxyz. Licensed under the Creative Commons Attribution 4.0
+  International License (CC BY 4.0):
+  https://creativecommons.org/licenses/by/4.0/
+  OctoDot's sentence search reads this grammar model, unchanged, from the
+  file pinned in data/grammar.lock, with the settings 万象's schema gives
+  it.
+
+FineWeb-2 (HuggingFaceFW/fineweb-2, cmn_Hani)
+  https://huggingface.co/datasets/HuggingFaceFW/fineweb-2
+  By Hugging Face. Made available under the Open Data Commons Attribution
+  License (ODC-By) v1.0: https://opendatacommons.org/licenses/by/1-0/
+  OctoDot's reranker (rerank.weights, rerank.img) is a language model
+  OctoDot trained on clauses of this dataset's Mandarin web text; its
+  character set is the 8,000 most frequent characters there. The weights
+  are released (data/rerank.lock) under CC BY-NC-SA 4.0 (LICENSE-weights).
+  No text of the dataset is in the app.
+
+librime-octagram
+  https://github.com/lotem/librime-octagram
+  © RIME Developers. Licensed under the BSD 3-Clause License.
+  engine/gram.h ports its file format and its Query (gram_db.cc,
+  gram_encoding.cc, octagram.cc), and engine/decoder.goose follows
+  librime's sentence search (Poet's beam search, also BSD 3-Clause).
+
+darts-clone
+  https://github.com/s-yata/darts-clone
+  © Susumu Yata. Licensed under the BSD 2-Clause License.
+  engine/gram.h reads darts-clone's double-array units.
+
+Unicode Character Database: Unihan
+  https://www.unicode.org/reports/tr38/
+  © Unicode, Inc. Licensed under the Unicode License v3:
+  https://www.unicode.org/license.txt
+  OctoDot marks each character of its lexicon with the character sets
+  Unihan records for it (通用规范汉字表, GB2312, Big5), at the Unicode
+  version pinned in data/unihan.lock.
+
+Goose
+  https://github.com/aardappel/goose
+  Licensed under the Apache License, Version 2.0:
+  https://www.apache.org/licenses/LICENSE-2.0
+  The OctoDot engine is written in Goose, and the Goose runtime's C is
+  compiled into it.

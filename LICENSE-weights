@@ -1,0 +1,24 @@
+OctoDot's reranker weights
+
+The released files of OctoDot's reranker model (rerank.weights, rerank.tsv
+and rerank.check.tsv: each release tagged rerank-N of this repository,
+pinned by data/rerank.lock), and rerank.img built from them, are
+
+  © 2026 Ziheng Liu
+
+licensed under the Creative Commons Attribution-NonCommercial-ShareAlike
+4.0 International License (CC BY-NC-SA 4.0):
+
+  https://creativecommons.org/licenses/by-nc-sa/4.0/
+  https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode
+
+You may share and adapt them for non-commercial purposes, giving credit to
+OctoDot and licensing what you make from them under the same license.
+
+The model was trained on FineWeb-2 (HuggingFaceFW/fineweb-2, Mandarin web
+text), made available under the Open Data Commons Attribution License
+(ODC-By) v1.0: https://opendatacommons.org/licenses/by/1-0/
+
+OctoDot's source code is licensed separately, under the GNU General Public
+License v3.0 (LICENSE). The weights are data the program reads at run time;
+the engine runs without them.

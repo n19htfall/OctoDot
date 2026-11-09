@@ -1,0 +1,11 @@
+# AGID, the Automatically Generated Inflection Database (Kevin Atkinson,
+# SCOWL; MIT-style: "Permission to use, copy, modify, distribute and sell
+# this database ... provided that the above copyright notice appears"), its
+# last release, 2016.01.19, from SCOWL's repository. octo-prep reads it at
+# build time only, to leave plural nouns and third-person -s verbs (changes,
+# cars) out of the English candidates; nothing of it is in the app.
+# tools/fetch-pinned.sh data/agid.lock .data/agid fetches these.
+#
+#    sha256 path url
+file df0c8f6edd4193d823abfad9e4ff6f42b4526211516649e1c73d4533aef749fa infl.txt https://raw.githubusercontent.com/en-wl/wordlist/b22230cc5250887737fdefe9ca4c9d9d01230eaa/agid/infl.txt
+file 57cadafd8f11481454a5e269a04ffde7951cc72845643613ca4235a84b10db32 README https://raw.githubusercontent.com/en-wl/wordlist/b22230cc5250887737fdefe9ca4c9d9d01230eaa/agid/README

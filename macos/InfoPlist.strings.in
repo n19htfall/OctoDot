@@ -1,0 +1,5 @@
+/* The names macOS shows for OctoDot: the input menu's heading (CFBundleName),
+   and the input source in the menu bar and in System Settings. */
+"CFBundleName" = "OctoDot";
+"@BUNDLE_ID@" = "OctoDot";
+"@BUNDLE_ID@.Hans" = "OctoDot";

@@ -1,0 +1,30 @@
+# The accuracy set's outside sources (make accuracy, make test), each pinned
+# to a commit and a SHA-256. Fetched into .data/accuracy/ on developer
+# machines and CI only, for testing: none of it is committed or shipped.
+#
+#   rime-schema-compare (the jidzhang fork of gaboolic's benchmark): zhihu120,
+#     120 sentences of Zhihu text, and words234, 450 frequent words, each
+#     with readings audited by hand, and the whole Zhihu corpus they come
+#     from. Its reports give librime's results on the same sentences (万象 on
+#     zhihu120: 48.33% whole, 89.27% of characters; on the corpus, 54.33% and
+#     90.34%, and with its grammar model 63.85% and 92.47%). The
+#     repository states no license, and the text is Zhihu users': fetched
+#     for testing here, never redistributed.
+#   THUOCL (Tsinghua University, MIT): names, places and idioms with how
+#     many documents use each, for taking the most used.
+#   phrase-pinyin-data (mozillazg, MIT): readings of words that do not come
+#     from 万象, which also decide what counts as a word.
+#
+# tools/fetch-pinned.sh data/accuracy.lock .data/accuracy fetches exactly
+# these; --rehash rewrites the hashes after the URLs are moved to other commits.
+#
+#    sha256 path url
+file 0bc9a9274ef95f3dd591294b006c078a0be29e61c63cca14ba924fbb0a070629 rime-schema-compare/zhihu120.pin.tsv https://raw.githubusercontent.com/jidzhang/rime-schema-compare/21471ed4b1d0679e4203ab87d2fb1b7371198564/data/corpus/zhihu120.pin.tsv
+file 0d2c4535772db5db1037c2c0b637064c1d16e68f9c92227334de71e52b896d0c rime-schema-compare/words234.pin.tsv https://raw.githubusercontent.com/jidzhang/rime-schema-compare/21471ed4b1d0679e4203ab87d2fb1b7371198564/data/corpus/words234.pin.tsv
+file 498bfad80141d509594951dfc231b450ab643dcc1e0a69ef223cea3ef9189471 rime-schema-compare/zhihu_hotlist_2026-08-30.txt https://raw.githubusercontent.com/jidzhang/rime-schema-compare/21471ed4b1d0679e4203ab87d2fb1b7371198564/data/corpus/zhihu_hotlist_2026-08-30.txt
+file d0e5094016e6db8c55d363dc022f48f7b1753cf6d07e216f63cf522ce8e53605 thuocl/THUOCL_lishimingren.txt https://raw.githubusercontent.com/thunlp/THUOCL/a30ce79d895d01ab5132a5c74c29703ff7efb4cc/data/THUOCL_lishimingren.txt
+file ca5574399da5750a2c36dc373f36e31a66ed1f8a4b21646df6ca44ec0b888d89 thuocl/THUOCL_diming.txt https://raw.githubusercontent.com/thunlp/THUOCL/a30ce79d895d01ab5132a5c74c29703ff7efb4cc/data/THUOCL_diming.txt
+file c339d5d6e37d4f8ecdcb82f2a02b7fdfc66796f0a5215155f2aff8a77e89a7eb thuocl/THUOCL_chengyu.txt https://raw.githubusercontent.com/thunlp/THUOCL/a30ce79d895d01ab5132a5c74c29703ff7efb4cc/data/THUOCL_chengyu.txt
+file db4b8cca414db4cf487b933d07a0514f77caf44f9f3d392f2bc9d7ba0d511c58 thuocl/LICENSE https://raw.githubusercontent.com/thunlp/THUOCL/a30ce79d895d01ab5132a5c74c29703ff7efb4cc/LICENSE
+file 7e34c0e09ad398a7a07c0964bebb9677ace2114ed9d1c2ccdfce939102db2134 phrase-pinyin-data/large_pinyin.txt https://raw.githubusercontent.com/mozillazg/phrase-pinyin-data/4afa3226ce53c9138b939e83c3bb294dbe0da511/large_pinyin.txt
+file 89ac55df747e4776088c3e77531ef61b973a1a59dd8e6a4548a58996da9a4f70 phrase-pinyin-data/LICENSE https://raw.githubusercontent.com/mozillazg/phrase-pinyin-data/4afa3226ce53c9138b939e83c3bb294dbe0da511/LICENSE

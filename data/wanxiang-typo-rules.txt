@@ -1,0 +1,42 @@
+# 全拼 typo spellings (万象's 容错). octo-prep drops these rules from the
+# schemes' rule lists, so a slip is not a reading. Checked 2026-11-09
+# against 万象 v18.1.9. A make relock to a 万象 release that changes them
+# must update this list: octo-prep fails if a listed rule is in no scheme.
+derive/([zcs])h(a|e|i|u|ai|ei|an|en|ou|uo|ua|un|ui|uan|uai|uang|ang|eng|ong)$/h$1$2/
+derive/([zcs])h([aeiu])$/$1$2h/
+derive/^([wghk])ai$/$1ia/
+derive/([qjx])ia$/$1ai/
+derive/([wtfghkz])ei$/$1ie/
+derive/([jqx])ie$/$1ei/
+derive/([rtypsdghklzcbnm])ao$/$1oa/
+derive/([ypfm])ou$/$1uo/
+derive/([wrtypsdfghklzcbnm])ang$/$1nag/
+derive/([wrtypsdfghklzcbnm])ang$/$1agn/
+derive/([wrtpsdfghklzcbnm])eng$/$1wng/
+derive/([wrtpsdfghklzcbnm])eng$/$1neg/
+derive/([wrtpsdfghklzcbnm])eng$/$1egn/
+derive/([qtypdjlxbnm])ing$/$1nig/
+derive/([qtypdjlxbnm])ing$/$1ign/
+derive/([rtysdghklzcn])ong$/$1nog/
+derive/([rtysdghklzcn])ong$/$1ogn/
+derive/([qtpdjlxbnm])iao$/$1ioa/
+derive/([qtpdjlxbnm])iao$/$1oia/
+derive/([rtsghkzc])ui$/$1iu/
+derive/([qjlxnm])iu$/$1ui/
+derive/([qjlxn])iang$/$1aing/
+derive/([qjlxn])iang$/$1inag/
+derive/(g|k|h|zh|sh)ua$/$1au/
+derive/(g|h|k|zh|ch|sh)uai$/$1aui/
+derive/(g|h|k|zh|ch|sh)uai$/$1uia/
+derive/([qrtysdghjklzxc])un$/$1nu/
+derive/([nlyjqx])ue$/$1eu/
+derive/(g|h|k|zh|ch|sh)uang$/$1aung/
+derive/(g|h|k|zh|ch|sh)uang$/$1uagn/
+derive/(g|h|k|zh|ch|sh)uang$/$1unag/
+derive/(g|h|k|zh|ch|sh)uang$/$1augn/
+derive/([jqx])iong$/$1inog/
+derive/([jqx])iong$/$1oing/
+derive/([jqx])iong$/$1iogn/
+derive/([jqx])iong$/$1oign/
+derive/ong$/on/
+derive/([tl])eng$/$1en/

@@ -1,0 +1,19 @@
+# OctoDot's reranker (docs/rerank-design.md): a character-level language
+# model OctoDot trained on FineWeb-2's Mandarin web text (ODC-By 1.0; NOTICE).
+# The weights are released, under CC BY-NC-SA 4.0 (LICENSE-weights), not
+# the training code: each model is a release of this repository (tag
+# rerank-N) holding these three files, pinned here by SHA-256. make fetch
+# puts them in .data/rerank/; make images builds rerank.img from rerank.tsv
+# and links the weights beside it.
+#
+#   rerank.tsv        the shape, the weights' size, the weight, the shortlist's search, the characters
+#   rerank.weights    the tensors as float32 after an "OLM1" header, memory-mapped by engine/rerank.h
+#   rerank.check.tsv  the trained model's scores for 11 sentences, which the images test checks the engine against
+#
+# A new model: upload its three files to a new tag, point the URLs at it, and
+# run tools/fetch-pinned.sh data/rerank.lock .data/rerank --rehash.
+#
+#    sha256 path url
+file 6706d19df972a8966515678070d7192d65a56b20fdbec63166bc367640e8ad46 rerank.tsv https://github.com/n19htfall/OctoDot/releases/download/rerank-1/rerank.tsv
+file e62a2174b1a71b3a8f73096178c0b618b11cc37253cf3d99bcfba825fdb0989f rerank.weights https://github.com/n19htfall/OctoDot/releases/download/rerank-1/rerank.weights
+file b25ad83980b2df18cc30460c634f677c12302fcb71cc23b8da50320932365001 rerank.check.tsv https://github.com/n19htfall/OctoDot/releases/download/rerank-1/rerank.check.tsv

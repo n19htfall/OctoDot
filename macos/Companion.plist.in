@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>OctoDot</string>
+	<key>CFBundleIdentifier</key>
+	<string>@COMPANION_ID@</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>OctoDot</string>
+	<key>CFBundleDisplayName</key>
+	<string>OctoDot</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@BUILD@</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.utilities</string>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>OctoDot: a private Chinese input method. Licenses in NOTICE.txt.</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>@COMPANION_ID@</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>@URL_SCHEME@</string>
+			</array>
+		</dict>
+	</array>
+	<!-- The Ed25519 key releases are signed with (empty: this build checks no updates). -->
+	<key>OctoDotUpdatePublicKey</key>
+	<string>@UPDATE_KEY@</string>
+</dict>
+</plist>

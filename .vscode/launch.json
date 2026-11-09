@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:OctoDot}/tools/octo-prep",
+            "name": "Debug octo-prep (tools/octo-prep)",
+            "target": "octo-prep",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug octo-prep (tools/octo-prep)"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:OctoDot}/tools/octo-prep",
+            "name": "Release octo-prep (tools/octo-prep)",
+            "target": "octo-prep",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release octo-prep (tools/octo-prep)"
+        }
+    ]
+}

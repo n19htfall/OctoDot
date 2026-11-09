@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- The input method, which sees every key typed: sandboxed, and nothing
+	     more than it needs. No network, no user files, no devices, no
+	     get-task-allow; tools/audit-bundle.sh checks it stays so. -->
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+	<!-- IMKServer registers this Mach name; the sandbox blocks that otherwise. -->
+	<key>com.apple.security.temporary-exception.mach-register.global-name</key>
+	<string>@BUNDLE_ID@_Connection</string>
+	<!-- The folder it shares with the companion app (team-prefixed, the
+	     macOS form, which needs no provisioning profile): hand-over files only. -->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>@APP_GROUP@</string>
+	</array>
+</dict>
+</plist>
