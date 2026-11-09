@@ -19,19 +19,19 @@ struct HomeView: View {
                 }
             }
             Card {
-                Label(model.enabled ? "The input method is installed and among your input sources."
-                                    : "The input method is installed, but not among your input sources.",
+                Label(model.enabled ? "输入法已安装，并在输入源中。"
+                                    : "输入法已安装，但还没有加入输入源。",
                       systemImage: model.enabled ? "checkmark.seal.fill" : "exclamationmark.circle")
                     .foregroundStyle(model.enabled ? Color.green : Color.orange)
                 HStack {
-                    Button("Open Settings…") { IMELink.showSettings() }.buttonStyle(.borderedProminent)
-                    if !model.enabled { Button("Set Up…") { model.screen = .wizard; model.step = .install } }
+                    Button("打开设置…") { IMELink.showSettings() }.buttonStyle(.borderedProminent)
+                    if !model.enabled { Button("去设置…") { model.screen = .wizard; model.step = .install } }
                 }
             }
             Card {
                 UpdateRow(updater: updater)
-                Toggle("Check for updates automatically", isOn: $updater.automatic)
-                Text("Only this app checks, over HTTPS, for releases signed with OctoDot's key. The input method itself never uses the network.")
+                Toggle("自动检查更新", isOn: $updater.automatic)
+                Text("只有这个应用会通过 HTTPS 检查由 OctoDot 密钥签名的发布。输入法本身从不使用网络。")
                     .font(.caption).foregroundStyle(.secondary)
             }
             if let share = model.grammarProgress { GrammarDownload(share: share) }
@@ -41,9 +41,9 @@ struct HomeView: View {
             }
             Spacer()
             HStack {
-                Button("Restore a Backup…") { restore() }
+                Button("恢复备份…") { restore() }
                 Spacer()
-                Button("Uninstall OctoDot…", role: .destructive) { uninstalling = true }
+                Button("卸载 OctoDot…", role: .destructive) { uninstalling = true }
             }
         }
         .padding(28)
@@ -54,20 +54,20 @@ struct HomeView: View {
     private var versionLine: String {
         let info = Bundle.main.infoDictionary ?? [:]
         let app = "\(info["CFBundleShortVersionString"] as? String ?? "?") (\(info["CFBundleVersion"] as? String ?? "?"))"
-        guard let ime = model.facts?.installed else { return "Version \(app)" }
-        return "Version \(app) · input method \(ime.version) (\(ime.build))"
+        guard let ime = model.facts?.installed else { return "版本 \(app)" }
+        return "版本 \(app) · 输入法 \(ime.version)（\(ime.build)）"
     }
 
     private func restore() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [UTType(filenameExtension: Backup.fileExtension) ?? .data]
         guard panel.runModal() == .OK, let url = panel.url, let data = try? Data(contentsOf: url),
-              let passphrase = PassphrasePrompt.ask(title: "Restore Backup",
-                                                    message: "The passphrase this backup was made with.",
+              let passphrase = PassphrasePrompt.ask(title: "恢复备份",
+                                                    message: "请输入制作这份备份时用的口令。",
                                                     confirm: false) else { return }
         guard let transfer = Backup.open(data, passphrase: passphrase) else {
             model.failed = true
-            model.message = "Wrong passphrase, or not an OctoDot backup."
+            model.message = "口令不对，或这不是 OctoDot 的备份。"
             return
         }
         Task {
@@ -83,23 +83,23 @@ private struct UpdateRow: View {
     var body: some View {
         HStack {
             switch updater.phase {
-            case .idle: Text("Software Update")
-            case .checking: ProgressView().controlSize(.small); Text("Checking…")
-            case .upToDate: Label("OctoDot is up to date.", systemImage: "checkmark.circle")
+            case .idle: Text("软件更新")
+            case .checking: ProgressView().controlSize(.small); Text("正在检查…")
+            case .upToDate: Label("OctoDot 已是最新。", systemImage: "checkmark.circle")
             case .available(let manifest):
                 VStack(alignment: .leading) {
-                    Text("OctoDot \(manifest.version) is available.").font(.headline)
+                    Text("OctoDot \(manifest.version) 可供更新。").font(.headline)
                     if !manifest.notes.isEmpty { Text(manifest.notes).font(.callout).foregroundStyle(.secondary) }
                 }
-            case .downloading: ProgressView().controlSize(.small); Text("Downloading…")
-            case .installing: ProgressView().controlSize(.small); Text("Installing…")
+            case .downloading: ProgressView().controlSize(.small); Text("正在下载…")
+            case .installing: ProgressView().controlSize(.small); Text("正在安装…")
             case .failed(let why): Label(why, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
             }
             Spacer()
             if case .available = updater.phase {
-                Button("Install and Relaunch") { Task { await updater.install() } }.buttonStyle(.borderedProminent)
+                Button("安装并重新打开") { Task { await updater.install() } }.buttonStyle(.borderedProminent)
             } else {
-                Button("Check for Updates…") { Task { await updater.check() } }
+                Button("检查更新…") { Task { await updater.check() } }
                     .disabled(updater.phase == .checking || updater.phase == .downloading || updater.phase == .installing)
             }
         }
@@ -119,20 +119,20 @@ private struct UninstallSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Uninstall OctoDot").font(.title2.weight(.semibold))
-            Text("The input method is removed from your input sources and from ~/Library/Input Methods, and this app moves to the Trash.")
+            Text("卸载 OctoDot").font(.title2.weight(.semibold))
+            Text("输入法会从输入源和 ~/Library/Input Methods 中移除，这个应用会移到废纸篓。")
                 .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            Picker("Your learned words and custom phrases", selection: $choice) {
-                Text("Keep them on this Mac").tag(Choice.keep)
-                Text("Save an encrypted backup, then delete them").tag(Choice.backup)
-                Text("Delete them").tag(Choice.wipe)
+            Picker("已学词条和自定义短语", selection: $choice) {
+                Text("保留在这台 Mac 上").tag(Choice.keep)
+                Text("先保存加密备份，再删除").tag(Choice.backup)
+                Text("删除").tag(Choice.wipe)
             }
             .pickerStyle(.radioGroup)
             if let message { Text(message).foregroundStyle(.orange).font(.callout) }
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button("Uninstall", role: .destructive) { Task { await uninstall() } }
+                Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("卸载", role: .destructive) { Task { await uninstall() } }
                     .keyboardShortcut(.defaultAction).disabled(working)
             }
         }
@@ -145,17 +145,17 @@ private struct UninstallSheet: View {
         defer { working = false }
         if choice == .backup {
             guard let transfer = await InstallerClient.shared.exportUserData() else {
-                message = "Your data could not be read for the backup; nothing was removed."
+                message = "无法读取数据来制作备份，什么都没有移除。"
                 return
             }
-            guard let passphrase = PassphrasePrompt.ask(title: "Backup Passphrase",
-                                                        message: "The backup is sealed with this passphrase; you need it to restore.",
+            guard let passphrase = PassphrasePrompt.ask(title: "备份口令",
+                                                        message: "备份用这个口令封存，恢复时需要它。",
                                                         confirm: true),
                   let sealed = try? Backup.seal(transfer, passphrase: passphrase) else { return }
             let panel = NSSavePanel()
             panel.nameFieldStringValue = "OctoDot.\(Backup.fileExtension)"
             guard panel.runModal() == .OK, let url = panel.url, (try? sealed.write(to: url, options: .atomic)) != nil else {
-                message = "The backup was not saved; nothing was removed."
+                message = "备份没有保存，什么都没有移除。"
                 return
             }
         }
@@ -177,12 +177,12 @@ enum PassphrasePrompt {
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = message
-        alert.addButton(withTitle: "OK")
-        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "确定")
+        alert.addButton(withTitle: "取消")
         let first = NSSecureTextField(frame: NSRect(x: 0, y: confirm ? 30 : 0, width: 260, height: 24))
-        first.placeholderString = "Passphrase"
+        first.placeholderString = "口令"
         let second = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
-        second.placeholderString = "Again"
+        second.placeholderString = "再输入一次"
         let box = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: confirm ? 54 : 24))
         box.addSubview(first)
         if confirm { box.addSubview(second) }

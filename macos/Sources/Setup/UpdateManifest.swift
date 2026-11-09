@@ -40,12 +40,27 @@ enum UpdateError: Error, Equatable, CustomStringConvertible {
 
     var description: String {
         switch self {
-        case .malformed(let why): "the update's description is malformed: \(why)"
-        case .badSignature: "the update is not signed with OctoDot's key"
-        case .notNewer(let offered, let running): "the offered build \(offered) is not newer than this one (\(running))"
-        case .systemTooOld(let needed): "this update needs macOS \(needed) or later"
-        case .sizeMismatch: "the download is not the size the update says"
-        case .hashMismatch: "the download is not the file the update says (SHA-256)"
+        case .malformed(let why): "更新说明格式不正确：\(Self.reason(why))"
+        case .badSignature: "更新没有用 OctoDot 的密钥签名"
+        case .notNewer(let offered, let running): "提供的构建 \(offered) 并不比当前的（\(running)）新"
+        case .systemTooOld(let needed): "这个更新需要 macOS \(needed) 或更高版本"
+        case .sizeMismatch: "下载的大小与更新说明不符"
+        case .hashMismatch: "下载的文件与更新说明不符（SHA-256）"
+        }
+    }
+
+    /// The words shown for a malformed manifest. The case itself keeps the
+    /// English token the tests match.
+    private static func reason(_ why: String) -> String {
+        switch why {
+        case "the public key built into the app": "应用内置的公钥"
+        case "too large": "过大"
+        case "not the expected JSON": "不是预期的 JSON"
+        case "sha256": "SHA-256"
+        case "size": "大小"
+        case "the download is not from OctoDot's releases": "下载地址不是 OctoDot 的发布地址"
+        case "minimumSystemVersion": "最低系统版本"
+        default: why
         }
     }
 }

@@ -38,9 +38,9 @@ enum CLI {
         case "--install":
             // The grammar model first, as the app does (GrammarStore), from this app's own copy.
             do {
-                if try await GrammarStore.ensure() { print("The grammar model is in place.") }
+                if try await GrammarStore.ensure() { print("语法模型已就位。") }
             } catch {
-                print("The grammar model could not be put in place (\(error)); the input method types without it.")
+                print("语法模型未能就位（\(error)）；输入法在没有它的情况下继续工作。")
             }
             let (ok, message) = await installer.installIME()
             if ok {

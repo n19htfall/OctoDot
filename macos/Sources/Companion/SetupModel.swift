@@ -44,7 +44,7 @@ final class SetupModel {
     func refresh(openSettingsWhenReady: Bool = false) async {
         guard let facts = await InstallerClient.shared.facts() else {
             screen = .wizard
-            report(false, "OctoDot's installer did not answer. Reinstall OctoDot from its disk image.")
+            report(false, "OctoDot 的安装程序没有响应。请从磁盘映像重新安装 OctoDot。")
             return
         }
         self.facts = facts
@@ -96,8 +96,7 @@ final class SetupModel {
             }
             return nil
         } catch {
-            return "The grammar model could not be put in place (\(error)). OctoDot types without it, " +
-                   "less accurately, until you open OctoDot again."
+            return "语法模型未能就位（\(error)）。在你再次打开 OctoDot 之前，输入仍可使用，但准确度会低一些。"
         }
     }
 
@@ -178,7 +177,7 @@ final class SetupModel {
         busy = true
         preflight = await InstallerClient.shared.preflight()
         busy = false
-        if preflight == nil { report(false, "The input method's check did not run.") }
+        if preflight == nil { report(false, "输入法检查没有运行。") }
     }
 
     // MARK: Step D: try it

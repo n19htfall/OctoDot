@@ -15,10 +15,10 @@ enum GrammarStore {
 
         var description: String {
             switch self {
-            case .noPin: "the input method inside OctoDot names no grammar model"
-            case .noSharedFolder: "the folder OctoDot shares with its input method is not there"
-            case .wrongSize, .wrongHash: "the file is not the model the input method wants"
-            case .http(let status): "the server answered \(status)"
+            case .noPin: "随附的输入法没有指定语法模型"
+            case .noSharedFolder: "与输入法共享的文件夹不存在"
+            case .wrongSize, .wrongHash: "文件不是输入法所需要的模型"
+            case .http(let status): "服务器返回 \(status)"
             }
         }
     }

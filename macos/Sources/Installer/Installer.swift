@@ -70,36 +70,36 @@ final class Installer: NSObject, InstallerProtocol, @unchecked Sendable {
 
     private func installCurrent() -> (Bool, String) {
         guard let embedded = BundleStamp.of(embeddedIME), Signatures.valid(embeddedIME, identifier: Identity.ime) else {
-            return (false, "The input method inside OctoDot is damaged, or not OctoDot's.")
+            return (false, "OctoDot 内的输入法已损坏，或不是 OctoDot 的输入法。")
         }
         let before = BundleStamp.of(installedIME)
         if before == embedded && Signatures.valid(installedIME, identifier: Identity.ime) {
-            return (InputSources.register(installedIME), "OctoDot is up to date.")
+            return (InputSources.register(installedIME), "OctoDot 已是最新。")
         }
         let looksBefore = looks(installedIME)
         do {
             try fm.createDirectory(at: inputMethods, withIntermediateDirectories: true)
             try place(embeddedIME, at: installedIME)
         } catch {
-            return (false, "Could not install the input method: \(error.localizedDescription)")
+            return (false, "无法安装输入法：\(error.localizedDescription)")
         }
         guard Signatures.valid(installedIME, identifier: Identity.ime) else {
-            return (false, "The installed input method does not verify.")
+            return (false, "已安装的输入法未能通过校验。")
         }
         guard InputSources.register(installedIME) else {
-            return (false, "Installed, but macOS did not register it (TISRegisterInputSource).")
+            return (false, "已安装，但 macOS 没有注册它（TISRegisterInputSource）。")
         }
         if looks(installedIME) != looksBefore { restartMenuAgent() }
-        guard let before else { return (true, "Installed OctoDot \(embedded.version) (\(embedded.build)).") }
+        guard let before else { return (true, "已安装 OctoDot \(embedded.version)（\(embedded.build)）。") }
         if before.launcher != embedded.launcher {
             restartIME(Identity.ime)
-            return (true, "Updated to \(embedded.version) (\(embedded.build)) with a new launcher: the input method " +
-                    "restarted. Chromium-based apps (Chrome, VS Code) may need reopening once.")
+            return (true, "已更新到 \(embedded.version)（\(embedded.build)），并换了新的启动程序：输入法已重启。" +
+                    "基于 Chromium 的应用（Chrome、VS Code）可能需要重新打开一次。")
         }
         let loaded = reloadIME(wanting: embedded.core)
-        return (true, "Updated to \(embedded.version) (\(embedded.build)); " +
-                (loaded ? "the running input method now uses it, and no app needs restarting."
-                        : "it is used from the input method's next start."))
+        return (true, "已更新到 \(embedded.version)（\(embedded.build)）；" +
+                (loaded ? "正在运行的输入法已开始使用它，无需重启任何应用。"
+                        : "将在输入法下次启动时生效。"))
     }
 
     /// Puts a copy of `source` at `destination` in one step: a staged copy
@@ -134,12 +134,11 @@ final class Installer: NSObject, InstallerProtocol, @unchecked Sendable {
         let running = NSRunningApplication.runningApplications(withBundleIdentifier: Identity.legacyIME)
         for app in running { kill(app.processIdentifier, SIGTERM) }
         do { try fm.removeItem(at: legacyIME) } catch {
-            return "The earlier OctoDot could not be removed: \(error.localizedDescription)"
+            return "无法移除先前的 OctoDot：\(error.localizedDescription)"
         }
         if wasEnabled { InputSources.enable(Identity.ime) }
         restartMenuAgent()
-        return "The earlier OctoDot is removed; its learned words were left in ~/Library/Containers/\(Identity.legacyIME), " +
-            "which can be deleted."
+        return "先前的 OctoDot 已移除；它学到的词仍留在 ~/Library/Containers/\(Identity.legacyIME)，可以删除。"
     }
 
     /// Asks the running IME to load the core its bundle names now, and waits
@@ -224,12 +223,12 @@ final class Installer: NSObject, InstallerProtocol, @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         guard (try? JSONDecoder().decode(Transfer.self, from: transfer)) != nil else {
-            reply(false, "That is not OctoDot's data.")
+            reply(false, "这不是 OctoDot 的数据。")
             return
         }
         let result = runIME(installedIME, ["--import"], input: transfer)
-        reply(result.status == 0, result.status == 0 ? "Your data is back." :
-              "The input method could not take the data: " + String(decoding: result.output ?? Data(), as: UTF8.self))
+        reply(result.status == 0, result.status == 0 ? "数据已恢复。" :
+              "输入法无法接收这些数据：" + String(decoding: result.output ?? Data(), as: UTF8.self))
     }
 
     /// Runs the IME's executable with a command, in the IME's own sandbox
@@ -246,7 +245,7 @@ final class Installer: NSObject, InstallerProtocol, @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         guard Signatures.valid(companion, identifier: Identity.companion) else {
-            reply(false, "This copy of OctoDot does not verify.")
+            reply(false, "这份 OctoDot 未能通过校验。")
             return
         }
         let destination = URL(fileURLWithPath: "/Applications/OctoDot.app")
@@ -254,7 +253,7 @@ final class Installer: NSObject, InstallerProtocol, @unchecked Sendable {
             try place(companion, at: destination)
             reply(true, destination.path)
         } catch {
-            reply(false, "Could not copy OctoDot to Applications: \(error.localizedDescription)")
+            reply(false, "无法把 OctoDot 复制到“应用程序”：\(error.localizedDescription)")
         }
     }
 
@@ -275,7 +274,7 @@ final class Installer: NSObject, InstallerProtocol, @unchecked Sendable {
                   "OctoDotUpdatePublicKey"] as? String), !key.isEmpty,
               let verifier = try? UpdateVerifier(publicKeyBase64: key, releasesPrefix: Identity.releasesPrefix),
               let running = BundleStamp.of(companion)?.build else {
-            return (false, "This build of OctoDot has no update key.")
+            return (false, "这个 OctoDot 构建没有更新密钥。")
         }
         let manifest: UpdateManifest
         do { manifest = try verifier.verify(json, runningBuild: running) } catch {
@@ -293,22 +292,22 @@ final class Installer: NSObject, InstallerProtocol, @unchecked Sendable {
             try out.close()
             try verifier.verifyPayload(at: archive, for: manifest)
             guard run("/usr/bin/ditto", ["-x", "-k", archive.path, work.path]).status == 0 else {
-                return (false, "The update could not be unpacked.")
+                return (false, "无法解压更新。")
             }
         } catch {
             return (false, "\(error)")
         }
         let app = work.appendingPathComponent("OctoDot.app")
         guard Signatures.valid(app, identifier: Identity.companion), BundleStamp.of(app)?.build == manifest.build
-        else { return (false, "The update's app is not OctoDot's, or not the build it says.") }
+        else { return (false, "更新里的应用不是 OctoDot，或不是清单所说的构建。") }
         if Signatures.isDeveloperID(companion) && !Signatures.notarized(app) {
-            return (false, "The update is not notarized by Apple.")
+            return (false, "这份更新没有经过 Apple 公证。")
         }
         do { try place(app, at: companion) } catch {
-            return (false, "Could not replace OctoDot: \(error.localizedDescription)")
+            return (false, "无法替换 OctoDot：\(error.localizedDescription)")
         }
         try? fm.removeItem(at: work)
-        return (true, "Updated to OctoDot \(manifest.version).")
+        return (true, "已更新到 OctoDot \(manifest.version)。")
     }
 
     // MARK: Uninstalling
@@ -320,7 +319,7 @@ final class Installer: NSObject, InstallerProtocol, @unchecked Sendable {
         if wipe && fm.fileExists(atPath: installedIME.path) {
             let wiped = runIME(installedIME, ["--wipe"], input: nil)
             guard wiped.status == 0 else {
-                reply(false, "Your data could not be wiped; nothing was removed.")
+                reply(false, "无法清除你的数据，什么都没有移除。")
                 return
             }
         }
@@ -331,9 +330,9 @@ final class Installer: NSObject, InstallerProtocol, @unchecked Sendable {
             restartMenuAgent()
             var trashed: NSURL?
             try fm.trashItem(at: companion, resultingItemURL: &trashed)
-            reply(true, wipe ? "OctoDot and your data are removed." : "OctoDot is removed; your data is kept.")
+            reply(true, wipe ? "OctoDot 和你的数据已移除。" : "OctoDot 已移除，你的数据已保留。")
         } catch {
-            reply(false, "Could not remove OctoDot: \(error.localizedDescription)")
+            reply(false, "无法移除 OctoDot：\(error.localizedDescription)")
         }
     }
 

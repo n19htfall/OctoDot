@@ -55,7 +55,7 @@ final class Updater {
         guard let key = Self.publicKey,
               let verifier = try? UpdateVerifier(publicKeyBase64: key, releasesPrefix: Identity.releasesPrefix),
               let url = URL(string: Identity.appcastURL) else {
-            phase = .failed("This build of OctoDot was made without an update key, so it cannot check for updates.")
+            phase = .failed("这个 OctoDot 构建没有更新密钥，无法检查更新。")
             return
         }
         phase = .checking
@@ -64,7 +64,7 @@ final class Updater {
             let (data, response) = try await session.data(from: url)
             UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "lastUpdateCheck")
             guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-                phase = .failed("The update server answered \((response as? HTTPURLResponse)?.statusCode ?? 0).")
+                phase = .failed("更新服务器返回 \((response as? HTTPURLResponse)?.statusCode ?? 0)。")
                 return
             }
             do {

@@ -55,10 +55,10 @@ private struct StepBar: View {
 
     private func title(_ step: SetupModel.Step) -> String {
         switch step {
-        case .location: "Applications"
-        case .install: "Input Method"
-        case .privacy: "Privacy"
-        case .tryIt: "Try It"
+        case .location: "应用程序"
+        case .install: "输入法"
+        case .privacy: "隐私"
+        case .tryIt: "试一试"
         }
     }
 }
@@ -83,9 +83,9 @@ struct GrammarDownload: View {
     var share: Double
     var body: some View {
         ProgressView(value: share) {
-            Text("Downloading the grammar model…")
+            Text("正在下载语法模型…")
         } currentValueLabel: {
-            Text("\(Int(share * 100))% of \(GrammarStore.pin.map { $0.size / 1_000_000 } ?? 0) MB")
+            Text("已完成 \(Int(share * 100))%，共 \(GrammarStore.pin.map { $0.size / 1_000_000 } ?? 0) MB")
         }
     }
 }
@@ -106,12 +106,12 @@ private struct LocationStep: View {
     let model: SetupModel
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Heading(title: "Move OctoDot to Applications",
-                    detail: "OctoDot is running from its disk image. It needs to be in your Applications folder to install its input method and keep itself up to date.")
+            Heading(title: "把 OctoDot 移到“应用程序”",
+                    detail: "OctoDot 正在从磁盘映像里运行。要安装输入法并保持更新，需要先把它放到“应用程序”文件夹。")
             Button {
                 Task { await model.moveToApplications() }
             } label: {
-                Label("Move to Applications and Reopen", systemImage: "folder.badge.plus")
+                Label("移到“应用程序”并重新打开", systemImage: "folder.badge.plus")
             }
             .controlSize(.large)
             .buttonStyle(.borderedProminent)
@@ -124,16 +124,16 @@ private struct InstallStep: View {
     let model: SetupModel
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Heading(title: "Set Up the Input Method",
-                    detail: "OctoDot installs its input method for you alone (in ~/Library/Input Methods, no password needed) and adds it to your input sources.")
+            Heading(title: "设置输入法",
+                    detail: "OctoDot 只为当前用户安装输入法（放在 ~/Library/Input Methods，不需要密码），并把它加入输入源。")
             if model.enabled {
-                Label("OctoDot is among your input sources.", systemImage: "checkmark.seal.fill").foregroundStyle(.green)
-                Button("Continue") { model.next() }.buttonStyle(.borderedProminent).controlSize(.large)
+                Label("OctoDot 已在输入源中。", systemImage: "checkmark.seal.fill").foregroundStyle(.green)
+                Button("继续") { model.next() }.buttonStyle(.borderedProminent).controlSize(.large)
             } else {
                 Button {
                     Task { await model.install() }
                 } label: {
-                    if model.busy { ProgressView().controlSize(.small) } else { Label("Set Up OctoDot Input Method", systemImage: "keyboard") }
+                    if model.busy { ProgressView().controlSize(.small) } else { Label("设置 OctoDot 输入法", systemImage: "keyboard") }
                 }
                 .controlSize(.large)
                 .buttonStyle(.borderedProminent)
@@ -142,10 +142,10 @@ private struct InstallStep: View {
             if let share = model.grammarProgress { GrammarDownload(share: share) }
             if model.showSettingsHelp && !model.enabled {
                 Card {
-                    Text("Turn OctoDot on in System Settings").font(.headline)
-                    Text("Keyboard → Text Input → Input Sources → Edit…, then + and Chinese, Simplified → OctoDot. This step goes on by itself the moment it is on.")
+                    Text("在系统设置中打开 OctoDot").font(.headline)
+                    Text("键盘 → 文本输入 → 输入法 → 编辑…，点 +，再选「简体中文」→ OctoDot。一旦打开，这一步会自动继续。")
                         .foregroundStyle(.secondary)
-                    Button("Open Keyboard Settings…") { model.openKeyboardSettings() }
+                    Button("打开键盘设置…") { model.openKeyboardSettings() }
                 }
             }
         }
@@ -156,31 +156,31 @@ private struct PrivacyStep: View {
     let model: SetupModel
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Heading(title: "Private by Design",
-                    detail: "OctoDot uses macOS's own input method framework. Its input method never asks for:")
+            Heading(title: "默认保护隐私",
+                    detail: "OctoDot 使用 macOS 自带的输入法框架。它的输入法不会请求这些权限：")
             Card {
                 HStack(spacing: 18) {
-                    ForEach(["Accessibility", "Input Monitoring", "Clipboard", "Network"], id: \.self) { item in
+                    ForEach(["辅助功能", "输入监控", "剪贴板", "网络"], id: \.self) { item in
                         Label(item, systemImage: "nosign").font(.callout)
                     }
                 }
-                Text("What you type, and what OctoDot learns from it, stays on this Mac, sealed in the input method's sandbox.")
+                Text("你输入的内容，以及 OctoDot 据此学到的词，都留在这台 Mac 上，封在输入法的沙盒里。")
                     .foregroundStyle(.secondary).font(.callout)
             }
             if let preflight = model.preflight {
                 Card {
-                    Check(ok: preflight.sandboxed && preflight.container, text: "The input method's private storage works, inside its sandbox")
-                    Check(ok: preflight.appGroup, text: "Its shared folder with this app is there")
-                    Check(ok: preflight.keychain, text: "Its key for your learned words is in your Keychain")
-                    Check(ok: preflight.images, text: "Its dictionaries load")
+                    Check(ok: preflight.sandboxed && preflight.container, text: "输入法的私有存储可用，且位于沙盒内")
+                    Check(ok: preflight.appGroup, text: "与本应用共享的文件夹已就绪")
+                    Check(ok: preflight.keychain, text: "已学词条的密钥在「钥匙串」中")
+                    Check(ok: preflight.images, text: "词库可以加载")
                 }
-                Button("Continue") { model.next() }.buttonStyle(.borderedProminent).controlSize(.large)
+                Button("继续") { model.next() }.buttonStyle(.borderedProminent).controlSize(.large)
                     .disabled(!preflight.ok)
             } else {
                 Button {
                     Task { await model.runPreflight() }
                 } label: {
-                    if model.busy { ProgressView().controlSize(.small) } else { Label("Check", systemImage: "checklist") }
+                    if model.busy { ProgressView().controlSize(.small) } else { Label("检查", systemImage: "checklist") }
                 }
                 .buttonStyle(.borderedProminent).controlSize(.large).disabled(model.busy)
             }
@@ -204,26 +204,26 @@ private struct TryStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Heading(title: "Try It",
-                    detail: "Click the field: OctoDot becomes the input source. Type nihao (or wussqigr in 小鹤双拼), pick with Space or a number.")
-            TextField("Type here…", text: $text, axis: .vertical)
+            Heading(title: "试一试",
+                    detail: "点一下输入框，OctoDot 即成为当前输入法。输入 nihao（小鹤双拼输入 wussqigr），用空格或数字选词。")
+            TextField("在这里输入…", text: $text, axis: .vertical)
                 .font(.title3)
                 .lineLimit(2...4)
                 .textFieldStyle(.roundedBorder)
                 .focused($focused)
                 .onChange(of: focused) { _, now in if now { model.selectIME() } }
             Card {
-                Picker("Scheme", selection: Binding(get: { model.scheme }, set: { model.useScheme($0) })) {
-                    Text("全拼 Full Pinyin").tag("fullpinyin")
-                    Text("小鹤双拼 Xiaohe Shuangpin").tag("flypy")
+                Picker("方案", selection: Binding(get: { model.scheme }, set: { model.useScheme($0) })) {
+                    Text("全拼").tag("fullpinyin")
+                    Text("小鹤双拼").tag("flypy")
                 }
                 .pickerStyle(.segmented)
-                Toggle("全部汉字 All characters (not only everyday ones)",
+                Toggle("全部汉字（不只常用字）",
                        isOn: Binding(get: { model.fullCharset }, set: { model.useFullCharset($0) }))
             }
             HStack {
                 Spacer()
-                Button("Done") { model.finish() }.buttonStyle(.borderedProminent).controlSize(.large)
+                Button("完成") { model.finish() }.buttonStyle(.borderedProminent).controlSize(.large)
             }
         }
     }

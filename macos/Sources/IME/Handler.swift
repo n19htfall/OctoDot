@@ -154,7 +154,7 @@ final class Handler: NSObject, OctoDotHandler {
     /// companion app's (the IME has no network), which the item opens.
     func inputMenu() -> NSMenu? {
         let menu = NSMenu()
-        for (title, tag) in [("OctoDot Settings…", MenuItem.settings), ("Check for Updates…", MenuItem.updates)] {
+        for (title, tag) in [("八千点 - 设置", MenuItem.settings), ("八千点 - 检查更新", MenuItem.updates)] {
             let entry = NSMenuItem(title: title, action: #selector(menuAction(_:)), keyEquivalent: "")
             entry.target = self
             entry.tag = tag.rawValue

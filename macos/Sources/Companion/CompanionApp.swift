@@ -15,7 +15,7 @@ struct CompanionApp: App {
         .windowResizability(.contentSize)
         .commands {
             CommandGroup(after: .appInfo) {
-                Button("Check for Updates…") { delegate.checkForUpdates() }
+                Button("检查更新…") { delegate.checkForUpdates() }
             }
             CommandGroup(replacing: .newItem) {}
         }
@@ -33,7 +33,7 @@ struct RootView: View {
                 if let share = model.grammarProgress {
                     GrammarDownload(share: share).frame(width: 360)
                 } else {
-                    ProgressView("Looking at this Mac…")
+                    ProgressView("正在查看这台 Mac…")
                 }
             }
             .frame(width: 620, height: 500)
