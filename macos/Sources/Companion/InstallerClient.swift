@@ -62,6 +62,7 @@ final class InstallerClient {
     func enableIME() async -> Bool { await call(false) { proxy, done in proxy.enableIME { done($0) } } }
     func isEnabled() async -> Bool { await call(false) { proxy, done in proxy.isEnabled { done($0) } } }
     func selectIME() async -> Bool { await call(false) { proxy, done in proxy.selectIME { done($0) } } }
+    func launchIME() async -> Bool { await call(false) { proxy, done in proxy.launchIME { done($0) } } }
 
     func preflight() async -> Preflight? {
         let data: Data? = await call(nil) { proxy, done in proxy.preflight { done($0) } }

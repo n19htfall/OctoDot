@@ -6,17 +6,6 @@ import AppKit
 /// the name. The IME listens (Sources/IME/Companion.swift).
 @MainActor
 enum IMELink {
-    /// The user's real home: inside the sandbox, the home directory is the
-    /// companion's container.
-    static var home: URL {
-        guard let entry = getpwuid(getuid()), let dir = entry.pointee.pw_dir else {
-            return FileManager.default.homeDirectoryForCurrentUser
-        }
-        return URL(fileURLWithPath: String(cString: dir))
-    }
-
-    static var installedIME: URL { home.appendingPathComponent("Library/Input Methods/OctoDotIME.app") }
-
     static var isRunning: Bool { !NSRunningApplication.runningApplications(withBundleIdentifier: Identity.ime).isEmpty }
 
     /// Shows the IME's settings window, starting the IME first if it is not
@@ -36,16 +25,20 @@ enum IMELink {
             Notification.Name(Identity.ime + "." + name), object: nil, userInfo: nil, deliverImmediately: true)
     }
 
+    /// Not through NSWorkspace: the app that opens the IME becomes its
+    /// parent, and macOS 27 then keeps this app in the Dock, "Running in
+    /// Background", for as long as the IME runs. The installer opens it as
+    /// /usr/bin/open does, with no parent.
     private static func ensureRunning(then action: @escaping @MainActor () -> Void) {
         if isRunning {
             action()
             return
         }
-        let configuration = NSWorkspace.OpenConfiguration()
-        configuration.activates = false
-        NSWorkspace.shared.openApplication(at: installedIME, configuration: configuration) { _, _ in
+        Task { @MainActor in
+            guard await InstallerClient.shared.launchIME() else { return }
             // The IME listens once its core has started: a moment after launch.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { MainActor.assumeIsolated { action() } }
+            try? await Task.sleep(for: .seconds(1))
+            action()
         }
     }
 }

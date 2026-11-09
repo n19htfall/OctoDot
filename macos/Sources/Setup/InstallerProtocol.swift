@@ -21,6 +21,11 @@ import Foundation
     func isEnabled(reply: @escaping (Bool) -> Void)
     /// Makes it the current input source (for the wizard's test field).
     func selectIME(reply: @escaping (Bool) -> Void)
+    /// Starts the installed IME when it is not running, the way /usr/bin/open
+    /// does, so it is nobody's child: an app that launches it through
+    /// NSWorkspace is its parent, and macOS 27 keeps that app in the Dock,
+    /// "Running in Background", for as long as the IME runs.
+    func launchIME(reply: @escaping (Bool) -> Void)
 
     /// The installed IME's --preflight, as its JSON.
     func preflight(reply: @escaping (Data?) -> Void)

@@ -205,6 +205,9 @@ final class Installer: NSObject, InstallerProtocol, @unchecked Sendable {
     func enableIME(reply: @escaping (Bool) -> Void) { reply(InputSources.enable(Identity.ime)) }
     func isEnabled(reply: @escaping (Bool) -> Void) { reply(InputSources.isEnabled(Identity.ime)) }
     func selectIME(reply: @escaping (Bool) -> Void) { reply(InputSources.select(Identity.ime)) }
+    func launchIME(reply: @escaping (Bool) -> Void) {
+        reply(run("/usr/bin/open", ["-g", installedIME.path]).status == 0)
+    }
 
     // MARK: The IME's own commands
 
