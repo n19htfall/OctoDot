@@ -16,8 +16,8 @@ struct CandidateStyle: Sendable, Equatable {
     static let fontSizes: ClosedRange<CGFloat> = 12...28
     static let insets: ClosedRange<CGFloat> = 0...12
     static let presets: [(id: String, name: String)] = [
-        ("blue", "Blue"), ("purple", "Purple"), ("pink", "Pink"), ("red", "Red"),
-        ("orange", "Orange"), ("yellow", "Yellow"), ("green", "Green"), ("graphite", "Graphite"),
+        ("blue", "蓝色"), ("purple", "紫色"), ("pink", "粉色"), ("red", "红色"),
+        ("orange", "橙色"), ("yellow", "黄色"), ("green", "绿色"), ("graphite", "石墨色"),
     ]
 
     /// What the candidate window draws with now. Set when a choice changes.

@@ -118,10 +118,10 @@ enum Pane: String, CaseIterable, Identifiable, Sendable {
 
     var title: String {
         switch self {
-        case .input: "Input"
-        case .appearance: "Appearance"
-        case .lexicon: "Lexicon"
-        case .privacy: "Privacy"
+        case .input: "输入"
+        case .appearance: "外观"
+        case .lexicon: "词库"
+        case .privacy: "隐私"
         }
     }
 
@@ -140,15 +140,6 @@ enum Pane: String, CaseIterable, Identifiable, Sendable {
         case .appearance: .purple
         case .lexicon: .orange
         case .privacy: .blue
-        }
-    }
-
-    var blurb: String {
-        switch self {
-        case .input: "How your keys become Chinese: the scheme you type in, shape codes, and how sentences are ranked."
-        case .appearance: "How the candidate window looks: the size of its text, the highlight's color, and its padding."
-        case .lexicon: "The words OctoDot knows beyond its core lexicon, your own phrases among them."
-        case .privacy: "What OctoDot learns from your typing, and forgetting it. Nothing you type ever leaves this Mac."
         }
     }
 }
@@ -197,7 +188,7 @@ private struct PaneIcon: View {
     }
 }
 
-/// The top of a pane, as in System Settings: its tile, title and purpose.
+/// The top of a pane, as in System Settings: its tile and title.
 private struct PaneHeader: View {
     let pane: Pane
 
@@ -206,11 +197,6 @@ private struct PaneHeader: View {
             VStack(spacing: 8) {
                 PaneIcon(pane: pane, size: 54)
                 Text(pane.title).font(.title2.weight(.semibold))
-                Text(pane.blurb)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 12)
@@ -296,9 +282,9 @@ final class SettingsModel {
     func forget(_ scope: Engine.ForgetScope) {
         Learning.forget(scope)
         forgot = switch scope {
-        case .lastFifteenMinutes: "Forgot what was learned in the last 15 minutes."
-        case .today: "Forgot what was learned today."
-        case .everything: "Forgot everything learned."
+        case .lastFifteenMinutes: "已忘记最近 15 分钟学到的内容。"
+        case .today: "已忘记今天学到的内容。"
+        case .everything: "已忘记所有学到的内容。"
         }
     }
 }
@@ -310,19 +296,17 @@ private struct InputPane: View {
         Form {
             PaneHeader(pane: .input)
             Section {
-                Picker("输入方案 Scheme", selection: Binding(get: { model.scheme }, set: { model.useScheme($0) })) {
+                Picker("输入方案", selection: Binding(get: { model.scheme }, set: { model.useScheme($0) })) {
                     ForEach(model.schemes, id: \.id) { Text($0.name).tag($0.id) }
                 }
                 if !model.auxSchemes.isEmpty {
-                    Picker("形码 Shape codes", selection: Binding(get: { model.auxScheme },
+                    Picker("形码", selection: Binding(get: { model.auxScheme },
                                                                  set: { model.useAuxScheme($0) })) {
                         ForEach(model.auxSchemes, id: \.id) { Text($0.name).tag($0.id) }
                     }
                 }
-                Toggle("全部汉字 All characters", isOn: Binding(get: { model.fullCharset },
+                Toggle("全部汉字", isOn: Binding(get: { model.fullCharset },
                                                               set: { model.useFullCharset($0) }))
-            } footer: {
-                Note("A change applies at once, to the next word you type. All characters offers rare ones too; Control-G switches while typing.")
             }
             if !model.fuzzy.isEmpty {
                 Section {
@@ -333,32 +317,23 @@ private struct InputPane: View {
                         }
                     }
                 } header: {
-                    Text("模糊音 Fuzzy pinyin")
-                } footer: {
-                    Note("Each pair counts as one sound: typing either spelling offers the words of both (with z = zh, zong gives 中 and 总). An exact spelling still ranks a little ahead. All off by default.")
+                    Text("模糊音")
                 }
             }
             if model.grammar != .absent {
                 Section {
-                    Toggle("语法模型 Grammar model", isOn: Binding(get: { model.grammar == .on },
-                                                                 set: { model.useGrammar($0) }))
-                } footer: {
-                    Note("Ranks whole sentences by how words go together.")
+                    Toggle("语法模型", isOn: Binding(get: { model.grammar == .on },
+                                                   set: { model.useGrammar($0) }))
                 }
             }
             if let rerank = model.rerank {
                 Section {
-                    Toggle("整句模型 Sentence model", isOn: Binding(get: { rerank }, set: { model.useRerank($0) }))
-                } footer: {
-                    Note("A small neural model, on this Mac, reads the best few sentences and puts the most natural first, a moment after you type.")
+                    Toggle("整句模型", isOn: Binding(get: { rerank }, set: { model.useRerank($0) }))
                 }
             }
             Section {
-                Toggle("英文单词 English words", isOn: Binding(get: { model.english }, set: { model.useEnglish($0) }))
-                Toggle("英文后加空格 Space after English words",
-                       isOn: Binding(get: { model.englishSpace }, set: { model.useEnglishSpace($0) }))
-            } footer: {
-                Note("Offers an English word beside the Chinese. It comes first when the letters have no Chinese reading, or you type a capital. A space is added between English words only when you ask.")
+                Toggle("英文单词", isOn: Binding(get: { model.english }, set: { model.useEnglish($0) }))
+                Toggle("英文后加空格", isOn: Binding(get: { model.englishSpace }, set: { model.useEnglishSpace($0) }))
             }
         }
         .formStyle(.grouped)
@@ -374,25 +349,22 @@ private struct AppearancePane: View {
         Form {
             PaneHeader(pane: .appearance)
             Section {
-                LabeledContent("字号 Font size") {
+                LabeledContent("字号") {
                     Measure(value: Binding(get: { Double(model.style.fontSize) }, set: { model.setFontSize($0) }),
                             range: CandidateStyle.fontSizes)
                 }
-                LabeledContent("强调色 Accent color") {
+                LabeledContent("强调色") {
                     AccentPicker(model: model)
                 }
-                LabeledContent("高亮边距 Highlight padding") {
+                LabeledContent("高亮边距") {
                     Measure(value: Binding(get: { Double(model.style.inset) }, set: { model.setInset($0) }),
                             range: CandidateStyle.insets)
                 }
             } footer: {
-                VStack(alignment: .leading, spacing: 12) {
-                    Note("Highlight padding is the space between the highlighted candidate and the window's edge.")
-                    HStack {
-                        Spacer()
-                        Button("Restore Defaults") { model.resetAppearance() }
-                            .disabled(model.style == CandidateStyle())
-                    }
+                HStack {
+                    Spacer()
+                    Button("恢复默认") { model.resetAppearance() }
+                        .disabled(model.style == CandidateStyle())
                 }
             }
         }
@@ -427,7 +399,7 @@ private struct AccentPicker: View {
         HStack(spacing: 4) {
             Swatch(fill: AnyShapeStyle(AngularGradient(colors: [.blue, .purple, .pink, .red, .orange, .yellow, .green, .blue],
                                                        center: .center)),
-                   selected: model.style.accent == "system", help: "System accent color") {
+                   selected: model.style.accent == "system", help: "系统强调色") {
                 model.setAccent("system")
             }
             ForEach(CandidateStyle.presets, id: \.id) { preset in
@@ -455,8 +427,8 @@ private struct AccentPicker: View {
                 .overlay(Circle().strokeBorder(own != nil ? Color.primary.opacity(0.55) : .clear, lineWidth: 2))
             }
             .buttonStyle(.plain)
-            .help("A color of your own")
-            .accessibilityLabel("A color of your own")
+            .help("自定义颜色")
+            .accessibilityLabel("自定义颜色")
         }
     }
 }
@@ -520,18 +492,16 @@ private struct LexiconPane: View {
         Form {
             PaneHeader(pane: .lexicon)
             if !model.sets.isEmpty {
-                Section("词库 Lexicon sets") {
+                Section("词库") {
                     ForEach(model.sets, id: \.id) { set in
                         Toggle(set.name, isOn: Binding(get: { set.mounted }, set: { model.useSet(set.id, on: $0) }))
                     }
                 }
             }
             Section {
-                LabeledContent("自定义短语 Custom phrases") {
-                    Button("Edit…") { model.editPhrases() }
+                LabeledContent("自定义短语") {
+                    Button("编辑…") { model.editPhrases() }
                 }
-            } footer: {
-                Note(model.phrases)
             }
         }
         .formStyle(.grouped)
@@ -548,42 +518,38 @@ private struct PrivacyPane: View {
         Form {
             PaneHeader(pane: .privacy)
             Section {
-                Toggle("Incognito: learn nothing", isOn: Binding(get: { model.incognito },
-                                                                  set: { model.setIncognito($0) }))
+                Toggle("无痕模式", isOn: Binding(get: { model.incognito }, set: { model.setIncognito($0) }))
             } footer: {
-                Note("While it is on, nothing you type teaches the dictionary. "
-                     + "Password fields and password managers never do.")
+                Note("无痕模式下不学习用户的输入习惯")
             }
             Section {
-                LabeledContent("The last 15 minutes") {
-                    Button("Forget") { model.forget(.lastFifteenMinutes) }
+                LabeledContent("最近 15 分钟") {
+                    Button("忘记") { model.forget(.lastFifteenMinutes) }
                 }
-                LabeledContent("Today") {
-                    Button("Forget") { model.forget(.today) }
+                LabeledContent("今天") {
+                    Button("忘记") { model.forget(.today) }
                 }
-                LabeledContent("Everything") {
-                    Button("Forget…", role: .destructive) { confirmingEverything = true }
+                LabeledContent("全部") {
+                    Button("忘记…", role: .destructive) { confirmingEverything = true }
                 }
             } header: {
-                Text("Forget what was learned")
+                Text("忘记已学内容")
             } footer: {
                 if let forgot = model.forgot {
                     Note(forgot)
-                } else if let health = model.health {
-                    Note(health)
                 }
             }
         }
         .formStyle(.grouped)
-        .confirmationDialog("Forget everything OctoDot learned?", isPresented: $confirmingEverything) {
-            Button("Forget Everything", role: .destructive) { model.forget(.everything) }
+        .confirmationDialog("忘记八千点学到的所有内容？", isPresented: $confirmingEverything) {
+            Button("全部忘记", role: .destructive) { model.forget(.everything) }
         } message: {
-            Text("The words and phrases it learned from your typing are deleted. This cannot be undone.")
+            Text("从你的输入中学到的词和短语会被删除，无法撤销。")
         }
     }
 }
 
-/// A section's explanation, under it and aligned with its rows, as in System Settings.
+/// A short line under a section, aligned with its rows, as in System Settings.
 private struct Note: View {
     let text: String
     init(_ text: String) { self.text = text }
@@ -600,7 +566,7 @@ private struct Note: View {
 
 private struct NotReady: View {
     var body: some View {
-        Text("The lexicon did not load, so typing passes through unchanged.")
+        Text("词库未能加载，输入将原样通过。")
             .foregroundStyle(.secondary)
             .padding()
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
