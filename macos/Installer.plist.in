@@ -25,6 +25,11 @@
 		<!-- A run loop on the main thread: the reload answer is a distributed notification. -->
 		<key>RunLoopType</key>
 		<string>NSRunLoop</string>
+		<!-- The companion's security session, not a new one: there the login
+		     Keychain is locked, so the input method it runs (--preflight,
+		     --import, --export, --wipe) could not reach its key. -->
+		<key>JoinExistingSession</key>
+		<true/>
 	</dict>
 </dict>
 </plist>

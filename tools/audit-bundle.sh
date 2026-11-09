@@ -79,6 +79,10 @@ app=$(entitlements "$APP")
 ! has "$app" com.apple.security.network.server; check $? "OctoDot.app: no incoming network"
 xpc=$(entitlements "$XPC")
 ! /usr/libexec/PlistBuddy -c Print "$xpc" 2>/dev/null | grep -q 'network'; check $? "OctoDotInstaller.xpc: no network entitlement"
+# In a session of its own the login Keychain is locked, and the input method
+# it runs cannot reach its key.
+[ "$(value "$XPC/Contents/Info.plist" XPCService:JoinExistingSession)" = true ]
+check $? "OctoDotInstaller.xpc: joins the companion's security session (JoinExistingSession)"
 
 if [ "$PROFILE" = release ]; then
     for code in "$APP" "$XPC" "$IME"; do
