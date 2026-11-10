@@ -629,9 +629,6 @@ function Top() {
             <p className="hero-lede">
               <span className="nowrap">八千点是隐私优先的中文输入法，</span>
               <span className="nowrap">目前支持全拼与小鹤双拼。</span>
-              <br />
-              <span className="nowrap">运行在系统沙盒，</span>
-              <span className="nowrap">没有任何网络权限。</span>
             </p>
             <div className="hero-actions">
               <DownloadButton icon="github" />
