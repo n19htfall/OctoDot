@@ -1,5 +1,5 @@
-import CoreServices
 import Foundation
+import SQLite3
 @preconcurrency import Translation
 
 /// The privacy policy for candidate lookups. Incognito requires an explicit
@@ -32,15 +32,12 @@ struct CandidateLookupKey: Hashable, Sendable {
 
 enum CandidateLookupResult: Equatable, Sendable {
     case translation(String)
-    /// Dictionary Services returns an unstructured entry, not necessarily a translation.
-    case dictionary(String)
     case needsLanguages
     case unavailable
 
     var caption: String {
         switch self {
         case .translation(let text): text
-        case .dictionary(let text): "词典: " + text
         case .needsLanguages: "请下载翻译语言"
         case .unavailable: "—"
         }
@@ -53,21 +50,15 @@ enum MachineTranslation: Equatable, Sendable {
     case unavailable
 }
 
-private enum LookupPart: Sendable {
-    case dictionary(String?)
-    case machine(MachineTranslation)
-}
-
 /// A fake provider can control timing and replies in the typing tests.
 @MainActor
 protocol CandidateLookupProvider: AnyObject, Sendable {
-    func dictionary(_ text: String) async -> String?
+    func glossary(_ key: CandidateLookupKey) async -> String?
     func translate(_ key: CandidateLookupKey) async -> MachineTranslation
 }
 
-/// One serial, replaceable queue for the visible page. A synchronous system
-/// dictionary call cannot be interrupted, so it is allowed to finish, but
-/// older pages never build up a backlog or update a newer page.
+/// Replaceable queues for the visible page. The fast glossary can make
+/// progress while one slower system translation is in flight.
 @MainActor
 final class CandidateTranslations {
     private struct Cached {
@@ -83,6 +74,9 @@ final class CandidateTranslations {
     private var queued: [CandidateLookupKey] = []
     private var inFlight: CandidateLookupKey?
     private var worker: Task<Void, Never>?
+    private var fallbackQueued: [CandidateLookupKey] = []
+    private var fallbackInFlight: CandidateLookupKey?
+    private var fallbackWorker: Task<Void, Never>?
     private var epoch: UInt64 = 0
     private var policy: CandidateLookupPolicy = .disabled
     private var optionDown = false
@@ -102,7 +96,9 @@ final class CandidateTranslations {
     func setPage(_ candidates: [String], highlighted: Int, policy: CandidateLookupPolicy) {
         if self.policy != policy {
             epoch &+= 1
+            cancelWorkers()
             queued.removeAll()
+            fallbackQueued.removeAll()
             cache.removeAll()
             order.removeAll()
         }
@@ -113,6 +109,7 @@ final class CandidateTranslations {
         }
         if policy == .incognito && nextPage != page {
             epoch &+= 1
+            cancelWorkers()
             cache.removeAll()
             order.removeAll()
         }
@@ -125,8 +122,11 @@ final class CandidateTranslations {
         }
         var seen = Set<CandidateLookupKey>()
         priority = candidates.filter { seen.insert($0).inserted }
-        queued = priority.filter { $0 != inFlight && cached($0) == nil }
-        if policy == .normal || optionDown { startWorker() }
+        fallbackQueued = priority.filter { fallbackQueued.contains($0) && cached($0) == nil }
+        queued = priority.filter {
+            $0 != inFlight && $0 != fallbackInFlight && !fallbackQueued.contains($0) && cached($0) == nil
+        }
+        if policy == .normal || optionDown { startWorkers() }
     }
 
     func setOptionDown(_ down: Bool) {
@@ -134,13 +134,17 @@ final class CandidateTranslations {
         optionDown = down
         if policy == .incognito && !down {
             epoch &+= 1
+            cancelWorkers()
             queued.removeAll()
+            fallbackQueued.removeAll()
             cache.removeAll()
             order.removeAll()
         } else if down {
             // An incognito page is not prefetched; make its requests now.
-            queued = priority.filter { $0 != inFlight && cached($0) == nil }
-            startWorker()
+            queued = priority.filter {
+                $0 != inFlight && $0 != fallbackInFlight && !fallbackQueued.contains($0) && cached($0) == nil
+            }
+            startWorkers()
         }
     }
 
@@ -152,12 +156,12 @@ final class CandidateTranslations {
     }
 
     /// What replaces each candidate while Option is held. Empty until there is
-    /// a translation, a dictionary excerpt, or the missing-language notice.
+    /// a translation or the missing-language notice.
     func replacements() -> [String] {
         page.map { key in
             guard let key, let result = cached(key) else { return "" }
             switch result {
-            case .translation, .dictionary, .needsLanguages: return result.caption
+            case .translation, .needsLanguages: return result.caption
             case .unavailable: return ""
             }
         }
@@ -172,22 +176,37 @@ final class CandidateTranslations {
         return text
     }
 
-    /// Drop both retained results and pending work. A live dictionary call is
-    /// not cancellable; epoch makes its eventual answer harmless.
+    /// Drop both retained results and pending work. Epoch makes any eventual
+    /// answer from an already-running lookup harmless.
     func clear() {
         epoch &+= 1
+        cancelWorkers()
         page.removeAll()
         priority.removeAll()
         queued.removeAll()
+        fallbackQueued.removeAll()
         cache.removeAll()
         order.removeAll()
         policy = .disabled
         optionDown = false
     }
 
+    /// Keep visible replacements usable while Option is held. Otherwise the
+    /// next hold can repopulate the small cache from the current page.
+    func trim() {
+        guard !optionDown else { return }
+        cache.removeAll()
+        order.removeAll()
+    }
+
     private func cached(_ key: CandidateLookupKey) -> CandidateLookupResult? {
         guard let item = cache[key] else { return nil }
-        if item.expires <= Date() { cache.removeValue(forKey: key); order.removeAll { $0 == key }; return nil }
+        // Do not let a visible replacement expire while it can be selected.
+        if item.expires <= Date() && !(optionDown && page.contains(key)) {
+            cache.removeValue(forKey: key)
+            order.removeAll { $0 == key }
+            return nil
+        }
         order.removeAll { $0 == key }
         order.append(key)
         return item.result
@@ -196,7 +215,7 @@ final class CandidateTranslations {
     private func remember(_ result: CandidateLookupResult, for key: CandidateLookupKey) {
         let seconds: TimeInterval
         switch result {
-        case .translation, .dictionary: seconds = 120
+        case .translation: seconds = 120
         case .needsLanguages, .unavailable: seconds = 15
         }
         cache[key] = Cached(result: result, expires: Date().addingTimeInterval(seconds))
@@ -205,81 +224,134 @@ final class CandidateTranslations {
         while order.count > maxEntries { cache.removeValue(forKey: order.removeFirst()) }
     }
 
-    private func startWorker() {
-        guard worker == nil, !queued.isEmpty, policy != .disabled, policy == .normal || optionDown else { return }
-        worker = Task { [weak self] in await self?.drain() }
+    private func startWorkers() {
+        guard policy != .disabled, policy == .normal || optionDown else { return }
+        if worker == nil, !queued.isEmpty { worker = Task { [weak self] in await self?.drainGlossary() } }
+        if fallbackWorker == nil, !fallbackQueued.isEmpty {
+            fallbackWorker = Task { [weak self] in await self?.drainFallback() }
+        }
     }
 
-    private func drain() async {
-        while !queued.isEmpty && policy != .disabled && (policy == .normal || optionDown) {
+    private func cancelWorkers() {
+        worker?.cancel()
+        fallbackWorker?.cancel()
+    }
+
+    private func drainGlossary() async {
+        while !Task.isCancelled && !queued.isEmpty && policy != .disabled && (policy == .normal || optionDown) {
             let key = queued.removeFirst()
             inFlight = key
             let started = epoch
-            let provider = self.provider
-            await withTaskGroup(of: LookupPart.self) { group in
-                group.addTask { .dictionary(await provider.dictionary(key.text)) }
-                group.addTask { .machine(await provider.translate(key)) }
-                var entry: String?
-                var dictionaryFinished = false
-                var machine: MachineTranslation?
-                for await part in group {
-                    switch part {
-                    case .dictionary(let value): entry = value; dictionaryFinished = true
-                    case .machine(let value): machine = value
-                    }
-                    guard epoch == started, page.contains(key), policy != .disabled,
-                          policy == .normal || optionDown else { continue }
-                    let result: CandidateLookupResult?
-                    switch machine {
-                    case .text(let text): result = .translation(text)
-                    case .needsLanguages: result = entry.map { .dictionary($0) } ?? .needsLanguages
-                    case .unavailable: result = entry.map { .dictionary($0) } ?? (dictionaryFinished ? .unavailable : nil)
-                    case nil: result = entry.map { .dictionary($0) }
-                    }
-                    if let result {
-                        remember(result, for: key)
-                        if optionDown { changed() }
-                    }
+            let entry = await provider.glossary(key)
+            if isCurrent(key, epoch: started) {
+                if let entry {
+                    remember(.translation(entry), for: key)
+                    if optionDown { changed() }
+                } else if fallbackInFlight != key && !fallbackQueued.contains(key) {
+                    fallbackQueued.append(key)
+                    startWorkers()
                 }
             }
             inFlight = nil
-            guard epoch == started, page.contains(key), policy != .disabled,
-                  policy == .normal || optionDown else {
-                // A privacy change may have invalidated an in-flight request
-                // for a word that is visible again. Ask for it afresh.
-                if page.contains(key), policy != .disabled, (policy == .normal || optionDown),
-                   cached(key) == nil, !queued.contains(key) { queued.insert(key, at: 0) }
-                continue
-            }
+            if !isCurrent(key, epoch: started) { requeueIfNeeded(key) }
         }
         worker = nil
-        // A page may have arrived while a stale request was finishing.
-        startWorker()
+        startWorkers()
+    }
+
+    private func drainFallback() async {
+        while !Task.isCancelled && !fallbackQueued.isEmpty && policy != .disabled && (policy == .normal || optionDown) {
+            let key = fallbackQueued.removeFirst()
+            fallbackInFlight = key
+            let started = epoch
+            let result = await provider.translate(key)
+            if isCurrent(key, epoch: started) {
+                switch result {
+                case .text(let text): remember(.translation(text), for: key)
+                case .needsLanguages: remember(.needsLanguages, for: key)
+                case .unavailable: remember(.unavailable, for: key)
+                }
+                if optionDown { changed() }
+            }
+            fallbackInFlight = nil
+            if !isCurrent(key, epoch: started) { requeueIfNeeded(key) }
+        }
+        fallbackWorker = nil
+        startWorkers()
+    }
+
+    private func requeueIfNeeded(_ key: CandidateLookupKey) {
+        // A privacy change may have invalidated a request for a word that is
+        // visible again. Ask for it afresh, without duplicating in-flight work.
+        if page.contains(key), policy != .disabled, (policy == .normal || optionDown),
+           key != inFlight, key != fallbackInFlight, cached(key) == nil,
+           !queued.contains(key), !fallbackQueued.contains(key) { queued.insert(key, at: 0) }
+    }
+
+    private func isCurrent(_ key: CandidateLookupKey, epoch started: UInt64) -> Bool {
+        epoch == started && page.contains(key) && policy != .disabled && (policy == .normal || optionDown)
     }
 }
 
-/// Apple Dictionary and its installed, on-device Translation languages. The
-/// latter never requests a download from the candidate window.
+/// Reads the build-time TSV index without retaining it as a Swift dictionary.
+/// All SQLite work is serial and off the typing thread, with a small page cache.
+private final class GlossaryIndex: @unchecked Sendable {
+    private let url: URL
+    private let queue = DispatchQueue(label: "OctoDot.glossary", qos: .userInitiated)
+    private var database: OpaquePointer?
+    private var attemptedOpen = false
+
+    init(url: URL) { self.url = url }
+
+    deinit {
+        if let database { sqlite3_close(database) }
+    }
+
+    func lookup(_ key: CandidateLookupKey) async -> String? {
+        await withCheckedContinuation { continuation in
+            queue.async { continuation.resume(returning: self.read(key)) }
+        }
+    }
+
+    private func read(_ key: CandidateLookupKey) -> String? {
+        if !attemptedOpen {
+            attemptedOpen = true
+            var opened: OpaquePointer?
+            if sqlite3_open_v2(url.path, &opened, SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, nil) == SQLITE_OK {
+                database = opened
+                sqlite3_exec(opened, "PRAGMA query_only=ON; PRAGMA cache_size=-256", nil, nil, nil)
+            } else if let opened { sqlite3_close(opened) }
+        }
+        guard let database else { return nil }
+        let sql = key.language == .chinese
+            ? "SELECT translation FROM zh WHERE term = ?1"
+            : "SELECT translation FROM en WHERE term = ?1"
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK,
+              let statement else { return nil }
+        defer { sqlite3_finalize(statement) }
+        var term = key.text.trimmingCharacters(in: .whitespacesAndNewlines).precomposedStringWithCanonicalMapping
+        if key.language == .english { term = term.lowercased() }
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        guard sqlite3_bind_text(statement, 1, term, -1, transient) == SQLITE_OK,
+              sqlite3_step(statement) == SQLITE_ROW,
+              let value = sqlite3_column_text(statement, 0) else { return nil }
+        return String(cString: value)
+    }
+}
+
+/// The supplied glossary, then Apple's installed, on-device Translation
+/// languages. Candidate lookups never request a language download.
 @available(macOS 26.0, *)
 @MainActor
 final class SystemCandidateLookup: CandidateLookupProvider {
-    private let dictionaryQueue = DispatchQueue(label: "OctoDot.dictionary", qos: .userInitiated)
+    private let index: GlossaryIndex
     private var availability: [CandidateLanguage: (LanguageAvailability.Status, Date)] = [:]
     private var sessions: [CandidateLanguage: TranslationSession] = [:]
 
-    func dictionary(_ text: String) async -> String? {
-        await withCheckedContinuation { continuation in
-            dictionaryQueue.async {
-                let result: String? = autoreleasepool {
-                    let source = text as CFString
-                    guard let value = DCSCopyTextDefinition(nil, source, CFRange(location: 0, length: CFStringGetLength(source)))?
-                        .takeRetainedValue() as String? else { return nil }
-                    return Self.excerpt(value)
-                }
-                continuation.resume(returning: result)
-            }
-        }
-    }
+    init(glossaryURL: URL) { index = GlossaryIndex(url: glossaryURL) }
+
+    func glossary(_ key: CandidateLookupKey) async -> String? { await index.lookup(key).flatMap(Self.excerpt) }
 
     func translate(_ key: CandidateLookupKey) async -> MachineTranslation {
         let source = Locale.Language(identifier: key.language == .chinese ? "zh-Hans" : "en")
@@ -318,6 +390,8 @@ final class SystemCandidateLookup: CandidateLookupProvider {
     nonisolated private static func excerpt(_ text: String) -> String? {
         let compact = text.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
         guard !compact.isEmpty else { return nil }
-        return String(compact.prefix(160))
+        var excerpt = String(compact.prefix(160))
+        while excerpt.utf8.count > 512 { excerpt.removeLast() }
+        return excerpt
     }
 }

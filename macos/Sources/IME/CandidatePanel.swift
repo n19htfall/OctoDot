@@ -43,9 +43,11 @@ final class CandidatePanel {
 
     /// Do not create a panel just to clear its temporary lookup cache.
     static func clearTranslations() { instance?.clearTranslations() }
+    static func trimTranslations() { instance?.translations?.trim() }
 
     static func machineTranslation(of candidate: String) -> String? {
-        guard let instance, instance.lookupPolicy != .disabled else { return nil }
+        guard let instance, let app = instance.lookupApp, instance.lookupPolicy != .disabled,
+              Learning.candidateLookupPolicy(forApp: app) != .disabled else { return nil }
         return instance.translations?.committedText(for: candidate)
     }
 
@@ -147,15 +149,19 @@ final class CandidatePanel {
     /// `caretRect` is the client's line rectangle in screen coordinates.
     func show(_ page: Page, near caretRect: NSRect, clientApp: String? = nil) {
         guard !page.candidates.isEmpty else { return hide() }
+        bar.maximumWidth = screen(near: caretRect).map { max(1, $0.visibleFrame.width - 8) }
         var shown = fitted(page, near: caretRect)
         visiblePage = shown
         visibleCaret = caretRect
         lookupApp = clientApp
         if #available(macOS 26.0, *), let clientApp {
             let service = translationService()
-            lookupPolicy = Learning.candidateLookupPolicy(forApp: clientApp)
+            let policy = Learning.candidateLookupPolicy(forApp: clientApp)
+            let down = NSEvent.modifierFlags.contains(.option)
+            if policy != lookupPolicy || (policy == .incognito && optionDown && !down) { bar.forget() }
+            lookupPolicy = policy
             service.setPage(shown.candidates, highlighted: shown.highlighted, policy: lookupPolicy)
-            optionDown = NSEvent.modifierFlags.contains(.option)
+            optionDown = down
             service.setOptionDown(optionDown)
             if optionDown && lookupPolicy != .disabled { shown.translations = service.replacements() }
             startOptionTimer()
@@ -169,6 +175,7 @@ final class CandidatePanel {
     }
 
     private func render(_ shown: Page, near caretRect: NSRect) {
+        bar.maximumWidth = screen(near: caretRect).map { max(1, $0.visibleFrame.width - 8) }
         let switching = onScreen && panel.isVisible
             && (expanded != shown.expanded || originIndex != shown.origin)
         expanded = shown.expanded
@@ -187,6 +194,12 @@ final class CandidatePanel {
     func move(near caretRect: NSRect) {
         guard panel.isVisible else { return }
         visibleCaret = caretRect
+        let width = screen(near: caretRect).map { max(1, $0.visibleFrame.width - 8) }
+        if width != bar.maximumWidth {
+            bar.maximumWidth = width
+            refreshTranslationDisplay()
+            return
+        }
         let size = targetFrame.size == .zero ? panel.frame.size : targetFrame.size
         let frame = NSRect(origin: origin(for: size, near: caretRect), size: size)
         pinnedFirstX = frame.origin.x + bar.style.textInset
@@ -343,18 +356,22 @@ final class CandidatePanel {
         if !moving { pauseLink() }
     }
 
+    private func screen(near caretRect: NSRect) -> NSScreen? {
+        let point = caretRect == .zero ? NSEvent.mouseLocation : caretRect.origin
+        return NSScreen.screens.first { $0.frame.contains(point) } ?? NSScreen.main
+    }
+
     /// Below the composition's line, with the first candidate's text under
     /// its first letter, as the system's own input methods align it; above
     /// the line when there is no room below, and kept on screen.
     private func origin(for size: NSSize, near caretRect: NSRect) -> NSPoint {
         var origin = NSPoint(x: caretRect.minX - bar.style.textInset, y: caretRect.minY - size.height - 6)
-        let screen = NSScreen.screens.first { $0.frame.contains(caretRect.origin) } ?? NSScreen.main
-        if let visible = screen?.visibleFrame {
+        if let visible = screen(near: caretRect)?.visibleFrame {
             if caretRect == .zero {                  // the client reported no place: near the mouse
                 let mouse = NSEvent.mouseLocation
                 origin = NSPoint(x: mouse.x, y: mouse.y - size.height - 16)
             }
-            origin.x = min(max(origin.x, visible.minX + 4), visible.maxX - size.width - 4)
+            origin.x = max(visible.minX + 4, min(origin.x, visible.maxX - size.width - 4))
             if origin.y < visible.minY + 4 { origin.y = caretRect.maxY + 6 }   // no room below: above
         }
         return origin
@@ -376,13 +393,13 @@ final class CandidatePanel {
 
     private func clearTranslations() {
         translations?.clear()
-        translations = nil
     }
 
     @available(macOS 26.0, *)
     private func translationService() -> CandidateTranslations {
         if let translations { return translations }
-        let service = CandidateTranslations(provider: SystemCandidateLookup()) { [weak self] in
+        let url = URL(fileURLWithPath: Core.dataDirectory).appendingPathComponent("glossary.sqlite3")
+        let service = CandidateTranslations(provider: SystemCandidateLookup(glossaryURL: url)) { [weak self] in
             self?.refreshTranslationDisplay()
         }
         translations = service
@@ -409,6 +426,7 @@ final class CandidatePanel {
         let policy = Learning.candidateLookupPolicy(forApp: app)
         let down = NSEvent.modifierFlags.contains(.option)
         let needsUpdate = down != optionDown || policy != lookupPolicy
+        if policy != lookupPolicy || (policy == .incognito && optionDown && !down) { bar.forget() }
         if policy != lookupPolicy {
             lookupPolicy = policy
             translations.setPage(page.candidates, highlighted: page.highlighted, policy: policy)
@@ -504,8 +522,13 @@ final class CandidateBar: NSView {
     /// The style of the last layout: the user's, read again at every update.
     private(set) var style = CandidateStyle.current
     var rowHeight: CGFloat { style.height }
-    /// A dictionary excerpt can be a paragraph. Keep it on the candidate's line.
+    /// Keep a long translation on the candidate's line.
     private var replacementLimit: CGFloat { style.fontSize * 20 }
+    /// Set from the display containing the caret. Only translated pages use
+    /// this limit; a long result must not push other candidates off-screen.
+    var maximumWidth: CGFloat?
+    private var textLimit: CGFloat = .greatestFiniteMagnitude
+    private var commentLimit: CGFloat = .greatestFiniteMagnitude
 
     var onAction: ((CandidatePanel.Action) -> Void)?
     /// Width follows the replacement fade. The panel snaps to each size; the fade curve is the motion.
@@ -620,6 +643,7 @@ final class CandidateBar: NSView {
     /// One row, with page arrows when the menu has another page.
     private func layoutRow(_ page: CandidatePanel.Page) -> NSSize {
         let s = style
+        fitText(page, grid: false)
         var x = s.inset
         let cellHeight = s.cellHeight
         track = .zero
@@ -653,6 +677,7 @@ final class CandidateBar: NSView {
     /// when the menu continues past them.
     private func layoutGrid(_ page: CandidatePanel.Page) -> NSSize {
         let s = style
+        fitText(page, grid: true)
         let cols = max(page.columns, 1)
         let count = page.candidates.count
         let rows = max((count + cols - 1) / cols, 1)
@@ -734,6 +759,10 @@ final class CandidateBar: NSView {
     }
 
     private func commentWidth(_ comment: String?) -> CGFloat {
+        min(commentLimit, rawCommentWidth(comment))
+    }
+
+    private func rawCommentWidth(_ comment: String?) -> CGFloat {
         guard let comment, !comment.isEmpty else { return 0 }
         return 4 + NSAttributedString(string: comment, attributes: [.font: style.smallFont]).size().width
     }
@@ -794,6 +823,10 @@ final class CandidateBar: NSView {
     }
 
     private func shownWidth(_ page: CandidatePanel.Page, _ index: Int) -> CGFloat {
+        min(textLimit, rawShownWidth(page, index))
+    }
+
+    private func rawShownWidth(_ page: CandidatePanel.Page, _ index: Int) -> CGFloat {
         if let blend = blends[index], blend.candidate == page.candidates[index] {
             let t = blend.fraction(at: CACurrentMediaTime())
             let source = blend.outgoing ?? blend.candidate
@@ -803,6 +836,59 @@ final class CandidateBar: NSView {
         }
         let text = shownText(page, index)
         return textWidth(text, capped: replacementText(page, index) != nil)
+    }
+
+    /// Find the largest shared text width that keeps all cells on the screen.
+    /// Short labels retain their natural width, leaving more room for longer
+    /// ones. Recalculate as a replacement fades or the display changes.
+    private func fitText(_ page: CandidatePanel.Page, grid: Bool) {
+        textLimit = .greatestFiniteMagnitude
+        commentLimit = .greatestFiniteMagnitude
+        guard (page.translations != nil || !blends.isEmpty), let maximumWidth,
+              !page.candidates.isEmpty else { return }
+        let s = style
+        let labels = page.candidates.indices.map { rawShownWidth(page, $0) }
+        let fixed = page.candidates.indices.map { s.padding * 2 + indexSize(grid ? 0 : $0).width + s.indexGap }
+        let comments = page.candidates.indices.map { rawCommentWidth(page.comments[safe: $0]) }
+        func width(_ labelLimit: CGFloat, _ commentLimit: CGFloat) -> CGFloat {
+            if !grid {
+                var x = s.inset
+                for i in labels.indices {
+                    x += ceil(fixed[i] + min(comments[i], commentLimit) + min(labels[i], labelLimit)) + s.gap
+                }
+                if page.hasPrevious || page.hasNext { x += 10 + 2 * s.arrowWidth }
+                return ceil(x + s.inset - s.gap)
+            }
+            let cols = max(1, min(page.columns, labels.count))
+            var columnWidths = [CGFloat](repeating: 0, count: cols)
+            for i in labels.indices {
+                let column = i % cols
+                columnWidths[column] = max(columnWidths[column],
+                                           ceil(fixed[i] + min(comments[i], commentLimit) + min(labels[i], labelLimit)))
+            }
+            let scroll: CGFloat = page.menuCount > labels.count ? 16 : 0
+            return ceil(2 * s.inset + columnWidths.reduce(0, +) + CGFloat(cols - 1) * 8 + scroll)
+        }
+        let natural = labels.max() ?? 0
+        let naturalComment = comments.max() ?? 0
+        guard width(natural, naturalComment) > maximumWidth else { return }
+        let minimumLabel = min(natural, s.fontSize * 3)
+        if width(minimumLabel, naturalComment) > maximumWidth {
+            var low: CGFloat = 0
+            var high = naturalComment
+            for _ in 0..<20 {
+                let middle = (low + high) / 2
+                if width(minimumLabel, middle) <= maximumWidth { low = middle } else { high = middle }
+            }
+            commentLimit = low
+        }
+        var low: CGFloat = 0
+        var high = natural
+        for _ in 0..<20 {
+            let middle = (low + high) / 2
+            if width(middle, commentLimit) <= maximumWidth { low = middle } else { high = middle }
+        }
+        textLimit = low
     }
 
     /// Plays a fade when a translation arrives or Option is released. A new candidate list snaps.
@@ -973,7 +1059,18 @@ final class CandidateBar: NSView {
                     .font: style.smallFont,
                     .foregroundColor: highlighted ? onAccent : NSColor.tertiaryLabelColor,
                 ])
-                small.draw(at: NSPoint(x: x + 4, y: baseline - style.smallFont.ascender))
+                let available = max(0, commentWidth(comment) - 4)
+                if available > 0 {
+                    let origin = NSPoint(x: x + 4, y: baseline - style.smallFont.ascender)
+                    if small.size().width > available {
+                        let paragraph = NSMutableParagraphStyle()
+                        paragraph.lineBreakMode = .byTruncatingTail
+                        let clipped = NSMutableAttributedString(attributedString: small)
+                        clipped.addAttribute(.paragraphStyle, value: paragraph, range: NSRange(location: 0, length: clipped.length))
+                        clipped.draw(with: NSRect(origin: origin, size: NSSize(width: available, height: small.size().height)),
+                                     options: [.usesLineFragmentOrigin])
+                    } else { small.draw(at: origin) }
+                }
             }
         }
         if !thumb.isEmpty {

@@ -32,10 +32,13 @@ enum Health {
         }
         try? Data("\(ProcessInfo.processInfo.processIdentifier)\n".utf8).write(to: marker, options: .atomic)
 
-        // Memory pressure: the engine returns the pages it no longer uses.
+        // Memory pressure: drop temporary results and return unused engine pages.
         let pressure = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: .main)
         pressure.setEventHandler {
-            MainActor.assumeIsolated { Engine.shared.trim() }
+            MainActor.assumeIsolated {
+                CandidatePanel.trimTranslations()
+                Engine.shared.trim()
+            }
         }
         pressure.resume()
         sources = [pressure]

@@ -95,7 +95,10 @@ final class Handler: NSObject, OctoDotHandlerV2 {
         else {
             return false
         }
-        if event.modifierFlags.intersection([.shift, .control, .option, .command]) == .option,
+        let app = clientApp
+        if #available(macOS 26.0, *),
+           MainActor.assumeIsolated({ Learning.candidateLookupPolicy(forApp: app) != .disabled }),
+           event.modifierFlags.intersection([.shift, .control, .option, .command]) == .option,
            let plain = Self.optionCandidateKey(event),
            MainActor.assumeIsolated({ Engine.shared.snapshot(session).isComposing }) {
             if OptionChords.recentlyHandled(event.keyCode) { return true }
@@ -384,6 +387,12 @@ final class Handler: NSObject, OctoDotHandlerV2 {
     }
 
     fileprivate func performOptionChord(_ key: TranslatedKey) {
+        let app = clientApp
+        guard #available(macOS 26.0, *),
+              MainActor.assumeIsolated({ Learning.candidateLookupPolicy(forApp: app) != .disabled }) else {
+            OptionChords.release(ObjectIdentifier(self))
+            return
+        }
         guard let session, let client = client() else {
             OptionChords.release(ObjectIdentifier(self))
             return
@@ -398,7 +407,9 @@ final class Handler: NSObject, OctoDotHandlerV2 {
 
     private func syncOptionChords(_ session: Engine.Session) {
         let composing = MainActor.assumeIsolated { Engine.shared.snapshot(session).isComposing }
-        if composing { OptionChords.acquire(self) }
+        let app = clientApp
+        let allowed = MainActor.assumeIsolated { Learning.candidateLookupPolicy(forApp: app) != .disabled }
+        if #available(macOS 26.0, *), composing && allowed { OptionChords.acquire(self) }
         else { OptionChords.release(ObjectIdentifier(self)) }
     }
 }

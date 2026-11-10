@@ -66,10 +66,10 @@ then move OctoDot.app to the Trash.
   effect a moment after you save (`yx` → 我的邮箱).
 - **More candidates at once.** Press ↓ to open the candidates as a grid.
 - **Candidate translations.** On macOS 26 or later, hold Option to replace
-  the visible candidates with their Chinese–English translations. Install the
-  Chinese and English translation languages in System Settings → General →
-  Language & Region → Translation Languages for on-device translation;
-  Dictionary entries are also used when available.
+  the visible candidates with their Chinese–English translations. The bundled
+  glossary is used first; entries it does not cover use on-device system
+  translation. Install Chinese and English in System Settings → General →
+  Language & Region → Translation Languages to use the system fallback.
 
 ## Privacy
 
@@ -128,7 +128,8 @@ first when you type it exactly. The format is the one 万象 and Rime use for
 
 ## Building from source
 
-You need macOS 14 or later on Apple silicon, Xcode (Swift 6), CMake and Git.
+You need Apple silicon, Xcode with the macOS 26.4 SDK or later (Swift 6),
+Python 3, CMake and Git. The built app supports macOS 14 and later.
 
 ```sh
 make            # fetch the pinned lexicon and models (~535 MB, once) and build
@@ -151,7 +152,7 @@ and sits behind a small C interface inside a sandboxed InputMethodKit app.
 | `engine/` | The engine: lexicon, spelling and shape-code tables, the sentence decoder, the typing session, and their tests |
 | `macos/` | The two apps: OctoDot.app and the input method |
 | `tools/` | The tools that turn the lexicon sources into the files the engine loads, and the release scripts |
-| `data/`, `toolchain/` | Lock files that pin every outside source and the compiler by commit and SHA-256 |
+| `data/`, `toolchain/` | The translation glossary and lock files that pin outside sources and the compiler |
 | `site/` | The website |
 | `docs/` | Design notes: [sentences and the grammar model](docs/M2-grammar.md), [the reranker](docs/rerank-design.md), [English words](docs/english-design.md), [fuzzy pinyin](docs/fuzzy-pinyin.md), [live switching](docs/hotswap-architecture.md), [distribution and onboarding](docs/distribution-and-onboarding.md) |
 | `spikes/` | Early prototypes and [what they settled](spikes/README.md) |

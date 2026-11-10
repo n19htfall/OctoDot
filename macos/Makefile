@@ -110,16 +110,22 @@ BASEFLAGS    := $(MAINFLAGS) -parse-as-library
 SWIFTFLAGS   := $(BASEFLAGS) -import-objc-header Sources/Shared/Bridging.h -I $(GEN)
 CORE_INPUTS  := $(SHARED_SWIFT) $(IME_SWIFT) Sources/IME/Core.h Sources/Shared/Bridging.h \
                 Sources/Launcher/CoreABI.h build/libocto_engine.a
+GLOSSARY_TSV    := ../data/glossary_clean.tsv
+GLOSSARY_WEIGHTS := ../build/data/wanxiang/lexicon.tsv
+GLOSSARY_BUILDER := scripts/build-glossary.py
+GLOSSARY_INPUTS := $(GLOSSARY_TSV) $(GLOSSARY_WEIGHTS) $(GLOSSARY_BUILDER)
+GLOSSARY_INDEX  := build/glossary.sqlite3
+GLOSSARY_STAMP  := build/glossary.inputs
 # Every file copied into Resources/data, plus the grammar pin's inputs. The
 # core filename identifies both code and data, so a data-only update reloads.
 CORE_DATA    := $(sort $(wildcard $(IMAGES)/lexicon*.img $(IMAGES)/spellings.*.img $(IMAGES)/aux.*.img \
                 $(IMAGES)/grammar.img $(IMAGES)/english.img $(IMAGES)/syllables.tsv \
-                $(IMAGES)/rerank.img $(IMAGES)/rerank.weights))
+                $(IMAGES)/rerank.img $(IMAGES)/rerank.weights) $(GLOSSARY_INDEX))
 CORE_ID      := build/core.identity
 
 .PHONY: all test install enable uninstall clean dmg test-dmg release audit check-identity release-key appcast \
         grammar-release FORCE
-all: $(APP) build/octo-smoke build/octo-setup-test build/octo-reload-test build/octo-translation-test
+all: $(APP) build/octo-smoke build/octo-setup-test build/octo-reload-test build/octo-translation-test build/octo-layout-test
 
 check-identity:
 	@test -n "$(SIGN_IDENTITY)" || { echo "no $(SIGN_PROFILE) signing identity of team $(TEAM_ID) in the Keychain" \
@@ -148,12 +154,28 @@ $(GEN)/Identity.swift: Makefile ../VERSION
 
 # ---- the input method ---------------------------------------------------------
 
+# Check content even when timestamps were preserved or two builds happen
+# within one timestamp interval. Rebuild here rather than relying on make to
+# notice a changed stamp's modification time.
+$(GLOSSARY_INDEX): $(GLOSSARY_INPUTS) FORCE
+	@mkdir -p $(dir $@) $(dir $(GLOSSARY_STAMP))
+	@shasum -a 256 $(GLOSSARY_INPUTS) > $(GLOSSARY_STAMP).tmp
+	@if [ ! -f $@ ] || ! cmp -s $(GLOSSARY_STAMP).tmp $(GLOSSARY_STAMP); then \
+	    python3 $(GLOSSARY_BUILDER) $(GLOSSARY_TSV) $(GLOSSARY_WEIGHTS) $@.tmp && \
+	    mv $@.tmp $@ && mv $(GLOSSARY_STAMP).tmp $(GLOSSARY_STAMP); \
+	else rm $(GLOSSARY_STAMP).tmp; fi
+
 # Check even when timestamps are unchanged: an optional image may have been
 # added or removed. Only rewrite the stamp when the identity actually changes.
+# The system make compares times to the second; if a bundle was just built,
+# wait for the next second so a changed identity forces that bundle to rebuild.
 $(CORE_ID): $(CORE_INPUTS) $(CORE_DATA) $(IMAGES)/$(GRAMMAR_NAME) ../data/grammar.lock scripts/core-identity.sh FORCE
 	@mkdir -p build
 	@./scripts/core-identity.sh $(IMAGES)/$(GRAMMAR_NAME) $(CORE_INPUTS) ../data/grammar.lock $(CORE_DATA) > $@.tmp
-	@cmp -s $@.tmp $@ && rm $@.tmp || mv $@.tmp $@
+	@if cmp -s $@.tmp $@; then rm $@.tmp; else \
+	    if [ -e "$(IME_APP)" ] && [ "$$(stat -f %m "$(IME_APP)")" = "$$(date +%s)" ]; then sleep 1; fi; \
+	    touch $@.tmp && mv $@.tmp $@; \
+	fi
 
 # The generated C and its header come out of one goose run.
 $(GEN)/ime.h: $(ENGINE) | $(GOOSE)
@@ -192,7 +214,7 @@ $(IME_APP): $(CORE_INPUTS) $(CORE_DATA) $(CORE_ID) $(IMAGES)/$(GRAMMAR_NAME) scr
 	id=$$(cat $(CORE_ID)) && \
 	$(SWIFTC) $(BASEFLAGS) -import-objc-header Sources/IME/Core.h -I $(GEN) \
 	    -emit-library -module-name OctoDotCore_$$id $(SHARED_SWIFT) $(IME_SWIFT) build/libocto_engine.a \
-	    -framework InputMethodKit -framework Carbon -framework SwiftUI -framework Accelerate \
+	    -framework InputMethodKit -framework Carbon -framework SwiftUI -framework Accelerate -lsqlite3 \
 	    -Xlinker -weak_framework -Xlinker Translation \
 	    -Xlinker -exported_symbol -Xlinker _octodot_core_v1 \
 	    -o $@.partial/Contents/Frameworks/OctoDotCore-$$id.dylib && \
@@ -209,6 +231,7 @@ $(IME_APP): $(CORE_INPUTS) $(CORE_DATA) $(CORE_ID) $(IMAGES)/$(GRAMMAR_NAME) scr
 	cp $(IMAGES)/lexicon*.img $(IMAGES)/spellings.*.img $(IMAGES)/aux.*.img $(IMAGES)/grammar.img \
 	    $(IMAGES)/english.img \
 	    $(IMAGES)/syllables.tsv $@.partial/Contents/Resources/data/
+	cp $(GLOSSARY_INDEX) $@.partial/Contents/Resources/data/glossary.sqlite3
 	printf '%s %s %s\n' $(GRAMMAR_SHA) $$(stat -f %z $(IMAGES)/$(GRAMMAR_NAME)) $(GRAMMAR_NAME) \
 	    > $@.partial/Contents/Resources/data/grammar.pin
 	for f in rerank.img rerank.weights; do \
@@ -244,8 +267,13 @@ build/octo-setup-test: $(SETUP_SWIFT) $(wildcard Sources/SetupTests/*.swift)
 build/octo-reload-test: Sources/Launcher/ReloadCoordinator.swift $(wildcard Sources/ReloadTests/*.swift)
 	$(SWIFTC) $(BASEFLAGS) $^ -o $@
 
-build/octo-translation-test: Sources/IME/CandidateTranslations.swift $(wildcard Sources/TranslationTests/*.swift)
-	$(SWIFTC) $(BASEFLAGS) $^ -Xlinker -weak_framework -Xlinker Translation -o $@
+build/octo-translation-test: Sources/IME/CandidateTranslations.swift $(wildcard Sources/TranslationTests/*.swift) $(GLOSSARY_INDEX)
+	$(SWIFTC) $(BASEFLAGS) Sources/IME/CandidateTranslations.swift $(wildcard Sources/TranslationTests/*.swift) \
+	    -lsqlite3 -Xlinker -weak_framework -Xlinker Translation -o $@
+
+build/octo-layout-test: Sources/Shared/Snapshot.swift Sources/IME/CandidatePanel.swift Sources/IME/CandidateStyle.swift \
+                        Sources/IME/CandidateTranslations.swift $(wildcard Sources/CandidateLayoutTests/*.swift)
+	$(SWIFTC) $(BASEFLAGS) $^ -framework AppKit -lsqlite3 -Xlinker -weak_framework -Xlinker Translation -o $@
 
 build/make-app-icon: make-app-icon.swift
 	@mkdir -p build
@@ -307,6 +335,7 @@ test: all audit
 	./build/octo-setup-test
 	./build/octo-reload-test
 	./build/octo-translation-test
+	./build/octo-layout-test
 	./scripts/test-core-identity.sh
 	@echo "sandboxed self-test:"
 	$(IME_APP)/Contents/MacOS/OctoDotIME --selftest

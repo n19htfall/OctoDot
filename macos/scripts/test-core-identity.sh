@@ -43,3 +43,33 @@ test "$old" != "$changed"
 stamp_with "$work/dictionary.img"
 test "$changed" != "$(cat "$stamp")"
 printf 'ok    Makefile refreshes the identity when data changes or disappears\n'
+
+# The source TSV may change without a fresh timestamp. Rebuild the actual
+# index rule, then check that its content participates in the core identity.
+printf '苹果\tapple\n檎\tapple\n' > "$work/glossary.tsv"
+printf '苹果\tping guo\t100\tsource\n檎\tqin\t1\tsource\n' > "$work/lexicon.tsv"
+build_index() {
+    make --no-print-directory "$work/glossary.sqlite3" \
+        GLOSSARY_INDEX="$work/glossary.sqlite3" GLOSSARY_STAMP="$work/glossary.inputs" \
+        GLOSSARY_TSV="$work/glossary.tsv" GLOSSARY_WEIGHTS="$work/lexicon.tsv" >/dev/null
+}
+build_index
+test "$(sqlite3 "$work/glossary.sqlite3" "select translation from en where term='apple'")" = '苹果'
+old=$(./scripts/core-identity.sh "$work/grammar" "$work/engine" "$work/glossary.sqlite3")
+printf '苹果\tfruit\n檎\tapple\n' > "$work/glossary.tsv"
+touch -r "$work/glossary.inputs" "$work/glossary.tsv"
+build_index
+new=$(./scripts/core-identity.sh "$work/grammar" "$work/engine" "$work/glossary.sqlite3")
+test "$old" != "$new"
+test "$(sqlite3 "$work/glossary.sqlite3" "select translation from en where term='apple'")" = '檎'
+printf 'ok    glossary-only changes rebuild the index and change the core identity\n'
+
+# The system make has second-resolution comparisons. A changed identity must
+# be newer than an app built in that same second, or its bundle is skipped.
+printf 'built bundle' > "$work/ime.app"
+printf 'changed input' > "$work/engine"
+make --no-print-directory "$stamp" CORE_ID="$stamp" CORE_INPUTS="$work/engine" \
+    CORE_DATA="$work/glossary.sqlite3" IMAGES="$work" GRAMMAR_NAME=grammar \
+    IME_APP="$work/ime.app" >/dev/null
+test "$(stat -f %m "$stamp")" -gt "$(stat -f %m "$work/ime.app")"
+printf 'ok    a changed identity is newer than a bundle built in the same second\n'

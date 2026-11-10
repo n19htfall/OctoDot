@@ -187,7 +187,8 @@ enum Maintenance {
             autoreleasepool {
                 let page = CandidatePanel.Page(candidates: ["中国", "中", "种"], highlighted: 0,
                                                hasPrevious: false, hasNext: true)
-                CandidatePanel.shared.show(page, near: NSRect(x: -30000, y: -30000, width: 2, height: 20))
+                CandidatePanel.shared.show(page, near: NSRect(x: -30000, y: -30000, width: 2, height: 20),
+                                           clientApp: "org.example.OctoDot.release-test")
                 let objects = CandidatePanel.liveObjects + SettingsWindow.makeOffscreen()
                 watched += objects.map(Weak.init)
                 RunLoop.current.run(until: Date().addingTimeInterval(0.3))
