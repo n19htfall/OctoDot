@@ -20,6 +20,17 @@ OctoDot includes material from these projects.
   file pinned in data/grammar.lock, with the settings 万象's schema gives
   it.
 
+青简英语释义表 (glossary-en)
+  https://github.com/qingjian-team/qingjian-dicts/tree/main/official/glossary/en
+  By 青简 (https://qingjian.app). Licensed under the Creative Commons
+  Attribution-ShareAlike 4.0 International License (CC BY-SA 4.0):
+  https://creativecommons.org/licenses/by-sa/4.0/
+  According to the upstream metadata, the glossary was generated using
+  DeepSeek. OctoDot includes a cleaned copy in data/glossary_clean.tsv and
+  builds an index from it, normalizing text and splitting English alternatives
+  to create reverse lookups ranked using the input method's lexicon. The
+  glossary and the adapted index are distributed under CC BY-SA 4.0.
+
 FineWeb-2 (HuggingFaceFW/fineweb-2, cmn_Hani)
   https://huggingface.co/datasets/HuggingFaceFW/fineweb-2
   By Hugging Face. Made available under the Open Data Commons Attribution
