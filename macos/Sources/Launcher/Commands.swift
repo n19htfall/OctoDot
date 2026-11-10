@@ -21,6 +21,7 @@ enum Commands {
     /// make install, after copying an update into the installed bundle:
     /// asks the running IME to load it, and waits a moment for its answer.
     private static func requestReload() -> Int32 {
+        answer = nil
         let center = DistributedNotificationCenter.default()
         let token = center.addObserver(forName: Launcher.reloadedName, object: nil, queue: .main) { note in
             let running = note.object as? String
@@ -35,6 +36,12 @@ enum Commands {
         let wanted = Launcher.namedCore() ?? "?"
         switch answer {
         case nil:
+            let running = NSRunningApplication.runningApplications(withBundleIdentifier: Launcher.bundleID)
+                .contains { $0.processIdentifier != getpid() }
+            if running {
+                print("The running OctoDot did not acknowledge the reload; it may still be using an older core.")
+                return 1
+            }
             print("No OctoDot is running: it loads \(wanted) when it next starts.")
             return 0
         case wanted:

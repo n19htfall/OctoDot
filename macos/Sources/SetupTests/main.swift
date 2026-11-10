@@ -40,6 +40,27 @@ check(SetupState.of(facts(installed: current, enabled: false)) == .disabled,
       "installed and current, not enabled → the enabling step")
 check(SetupState.of(facts(installed: current)) == .ready,
       "installed, enabled and current → skip onboarding, open Settings")
+var pendingActivation = facts(installed: current)
+pendingActivation.activationPending = true
+pendingActivation.runningCore = "OctoDotCore-older.dylib"
+check(SetupState.of(pendingActivation) == .outdated(restart: false),
+      "matching bundles with an unconfirmed running core → retry activation")
+check((try? JSONDecoder().decode(SetupFacts.self, from: JSONEncoder().encode(pendingActivation)))?.runningCore ==
+      "OctoDotCore-older.dylib", "setup facts keep the running core distinct from the installed one")
+let oldFacts = facts(installed: current)
+let oldJSON = try! JSONEncoder().encode(oldFacts)
+check((try? JSONDecoder().decode(SetupFacts.self, from: oldJSON)) == oldFacts,
+      "setup facts without running-core fields still decode")
+pendingActivation.activationPending = false
+check(SetupState.of(pendingActivation) == .ready, "a confirmed running core is ready")
+check(CoreActivation.classify(expected: "new", answer: "old", running: true) == .unconfirmed("old") &&
+      CoreActivation.classify(expected: "new", answer: nil, running: true) == .unconfirmed(nil) &&
+      CoreActivation.classify(expected: "new", answer: "none", running: true) == .unconfirmed(nil),
+      "an old, missing or failed activation reply is never treated as success")
+check(CoreActivation.classify(expected: "new", answer: "new", running: true) == .active &&
+      CoreActivation.classify(expected: "new", answer: nil, running: false) == .notRunning &&
+      CoreActivation.classify(expected: "new", answer: "new", running: false) == .notRunning,
+      "activation distinguishes a confirmed running core from a stopped process")
 var newer = current
 newer.build = 13
 newer.core = "OctoDotCore-dddd.dylib"

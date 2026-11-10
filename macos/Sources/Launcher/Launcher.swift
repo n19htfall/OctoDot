@@ -35,6 +35,31 @@ enum Launcher {
     nonisolated(unsafe) static var generation = 0
     /// Every client's controller, to retire their handlers before a reload.
     nonisolated(unsafe) static let controllers = NSHashTable<OctoInputController>.weakObjects()
+    private static var retry: Timer?
+    private static var reconciliation: Timer?
+    private static var failureDelay: TimeInterval = 5
+    // Swift libraries stay mapped; reuse each core object on retries rather
+    // than adding another dlopen reference every time a startup fails.
+    private static var loadedCores: [String: any OctoDotCoreV2] = [:]
+
+    private static let switcher = ReloadCoordinator<LoadedCore>(
+        open: { name in
+            if let core = loadedCores[name] { return LoadedCore(core) }
+            guard let core = open(name) as? any OctoDotCoreV2 else { return nil }
+            loadedCores[name] = core
+            return LoadedCore(core)
+        },
+        snapshot: { snapshotData() },
+        removeSnapshot: { path in
+            try? FileManager.default.removeItem(at: URL(fileURLWithPath: path).deletingLastPathComponent())
+        },
+        canRetire: { controllers.allObjects.allSatisfy { $0.canRetire() } },
+        retire: { for controller in controllers.allObjects { controller.retire() } },
+        publish: { generation in
+            core = generation?.core.core
+            coreName = generation?.name
+            Launcher.generation += 1
+        })
 
     static var bundleID: String { Bundle.main.bundleIdentifier ?? "OctoDot" }
     static var reloadName: Notification.Name { Notification.Name(bundleID + ".reload") }
@@ -48,6 +73,7 @@ enum Launcher {
         }
 
         reload(reason: "launch")
+        watchInstalledCore()
         handleTermination()
         let observer = ReloadObserver()
         DistributedNotificationCenter.default().addObserver(
@@ -97,32 +123,70 @@ enum Launcher {
         return loaded
     }
 
-    /// Puts the core the bundle names in use, unless it already is. The new
-    /// core loads first, and if it does not, the old one keeps serving. Then
-    /// every client's handler retires (a composition in progress ends as on
-    /// a focus change), the old core stops (learning saved, its engine's
-    /// memory released), and the new one starts. Each controller makes a
-    /// handler from it on its next call.
+    /// Retain the data of each generation separately: the installer swaps
+    /// the bundle underneath this process, and rollback must read the old
+    /// data, not the new bundle's files.
+    private static func snapshotData() -> String? {
+        let parent = FileManager.default.temporaryDirectory.appendingPathComponent("OctoDot-core-\(UUID().uuidString)", isDirectory: true)
+        let source = Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/data", isDirectory: true)
+        do {
+            return try GenerationData.snapshot(from: source, in: parent).path
+        } catch {
+            log.error("cannot preserve core data")
+            return nil
+        }
+    }
+
+    /// A switch waits for compositions and worker jobs, then rolls back to
+    /// the previous generation if starting the new one fails.
     static func reload(reason: String) {
         guard let next = namedCore() else {
             log.error("Info.plist names no core")
+            scheduleRetry(after: failureDelay)
             return
         }
-        guard next != coreName else { return }
-        guard let loaded = open(next) else { return }
-        stopCore()
-        core = loaded
-        coreName = next
-        generation += 1
-        let status = loaded.start()
-        log.notice("core \(next, privacy: .public) started at \(reason, privacy: .public): status \(status, privacy: .public)")
+        switch switcher.reload(next) {
+        case .active:
+            retry?.invalidate()
+            retry = nil
+            failureDelay = 5
+            log.notice("core \(next, privacy: .public) active at \(reason, privacy: .public)")
+        case .deferred:
+            scheduleRetry(after: 0.5)
+        case .failed:
+            log.error("core \(next, privacy: .public) did not activate; the previous core is retained when possible")
+            scheduleRetry(after: failureDelay)
+            failureDelay = min(failureDelay * 2, 60)
+        }
     }
 
     private static func stopCore() {
-        for controller in controllers.allObjects { controller.retire() }
-        core?.stop()
-        core = nil
-        coreName = nil
+        retry?.invalidate()
+        retry = nil
+        reconciliation?.invalidate()
+        reconciliation = nil
+        switcher.stop()
+    }
+
+    /// A notification or its acknowledgement can be lost. Independently
+    /// compare the installed generation with the one that actually started.
+    private static func watchInstalledCore() {
+        reconciliation = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { _ in
+            MainActor.assumeIsolated {
+                guard retry == nil, let installed = namedCore(), installed != coreName else { return }
+                reload(reason: "reconcile")
+            }
+        }
+    }
+
+    private static func scheduleRetry(after delay: TimeInterval) {
+        guard retry == nil else { return }
+        retry = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { _ in
+            MainActor.assumeIsolated {
+                retry = nil
+                reload(reason: "retry")
+            }
+        }
     }
 
     /// Asked over a distributed notification; answers with the core in use.
@@ -152,6 +216,16 @@ enum Launcher {
         term.resume()
         sources.append(term)
     }
+}
+
+@MainActor
+private final class LoadedCore: ReloadableGeneration {
+    let core: any OctoDotCoreV2
+    init(_ core: any OctoDotCoreV2) { self.core = core }
+    func start(dataDirectory: String) -> Int32 { core.start(dataDirectory: dataDirectory) }
+    func readyForReload() -> Bool { core.readyForReload() }
+    func stopForReload() -> Bool { core.stopForReload() }
+    func discard() { core.stop() }
 }
 
 /// Receives the reload request. A selector observer, because only that form

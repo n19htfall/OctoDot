@@ -134,7 +134,7 @@ a pure function (tested on its own, section 8):
 |---|---|---|
 | `wrongLocation` | the app runs from a read-only volume or outside `/Applications` | "Move to Applications" (copy, relaunch from there, eject) |
 | `notInstalled` | no `~/Library/Input Methods/OctoDotIME.app` (perhaps the old `OctoDot.app`, which installing removes) | the wizard from step B |
-| `outdated` | the installed build is older than the embedded one, or its core hash differs, or the old `OctoDot.app` is still beside it | an update of the IME (section 4, which removes the old one), then on |
+| `outdated` | the installed build is older, its core differs, its running core has not confirmed activation, or the old `OctoDot.app` is still beside it | an update or activation retry (section 4), then on |
 | `disabled` | installed and current, not enabled in TIS | the wizard at step B's enabling |
 | `ready` | installed, current, enabled | Settings (the IME's window) |
 
@@ -169,7 +169,8 @@ On every launch, and after an update of itself, the companion compares its
 embedded IME with the installed one: `CFBundleVersion`, and the hashes of
 the core and the launcher (the `launcher.sha256` OctoDot already writes).
 
-- **Same**: nothing.
+- **Same**: if the IME is running, ask it to confirm the installed core;
+  a missing or different answer makes setup retry activation.
 - **Newer core, same launcher** (nearly every update): the new bundle is
   staged beside the installed one and the two are swapped in one
   `renamex_np(RENAME_SWAP)`, so the path never holds half a bundle; then the
@@ -180,8 +181,18 @@ the core and the launcher (the `launcher.sha256` OctoDot already writes).
   user dictionary and hands the journal over), and macOS starts the new
   one when it is next needed. The companion says that Chromium-based apps
   may need reopening.
-- A composition in progress is never cut: the reload request waits, inside
-  the IME, until no composition is open (the launcher already defers it).
+- A composition in progress is never cut: the launcher keeps the old core
+  and retries until no composition or phrase compilation is in progress.
+  It reports the core actually running, not the one merely requested. The
+  core filename hashes its data images and grammar pin as well as its code.
+- Each active generation has a temporary copy of its data. Since only one
+  engine runtime may run at a time, the launcher stops the previous core
+  before starting the new one. If startup fails, it starts the previous core
+  again against its retained data, reports the failure, and retries with
+  increasing delays. A failed data copy leaves the running core alone. The
+  prior copy is removed only after the new core starts successfully; old
+  Swift libraries remain mapped in the process. A periodic comparison also
+  retries a generation if the reload notification itself was missed.
 
 The user dictionary and phrases are in the container, untouched by the swap;
 compiled phrase images older than the new core are recompiled at its first

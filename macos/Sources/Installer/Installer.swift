@@ -38,11 +38,24 @@ final class Installer: NSObject, InstallerProtocol, @unchecked Sendable {
 
     private func currentFacts() -> SetupFacts {
         let readOnly = ((try? companion.resourceValues(forKeys: [.volumeIsReadOnlyKey]))?.volumeIsReadOnly) ?? false
+        let embedded = BundleStamp.of(embeddedIME)
         let installed = BundleStamp.of(installedIME)
+        // A matching bundle on disk does not prove that the running process
+        // accepted it. Checking also retries a previously missed reload.
+        var pending = false
+        var runningCore: String?
+        if let installed, installed == embedded, Signatures.valid(installedIME, identifier: Identity.ime) {
+            switch activation(of: installed.core) {
+            case .active: runningCore = installed.core
+            case .unconfirmed(let running): pending = true; runningCore = running
+            case .notRunning: break
+            }
+        }
         return SetupFacts(appPath: companion.path, appOnReadOnlyVolume: readOnly,
-                          embedded: BundleStamp.of(embeddedIME), installed: installed,
+                          embedded: embedded, installed: installed,
                           legacyInstalled: bundleID(legacyIME) == Identity.legacyIME,
-                          enabled: installed != nil && InputSources.isEnabled(Identity.ime))
+                          enabled: installed != nil && InputSources.isEnabled(Identity.ime), activationPending: pending,
+                          runningCore: runningCore)
     }
 
     private func bundleID(_ bundle: URL) -> String? {
@@ -74,7 +87,8 @@ final class Installer: NSObject, InstallerProtocol, @unchecked Sendable {
         }
         let before = BundleStamp.of(installedIME)
         if before == embedded && Signatures.valid(installedIME, identifier: Identity.ime) {
-            return (InputSources.register(installedIME), "OctoDot 已是最新。")
+            guard InputSources.register(installedIME) else { return (false, "macOS 没有注册输入法。") }
+            return activationMessage(activation(of: embedded.core), version: embedded)
         }
         let looksBefore = looks(installedIME)
         do {
@@ -90,16 +104,31 @@ final class Installer: NSObject, InstallerProtocol, @unchecked Sendable {
             return (false, "已安装，但 macOS 没有注册它（TISRegisterInputSource）。")
         }
         if looks(installedIME) != looksBefore { restartMenuAgent() }
-        guard let before else { return (true, "已安装 OctoDot \(embedded.version)（\(embedded.build)）。") }
-        if before.launcher != embedded.launcher {
+        if let before, before.launcher != embedded.launcher {
             restartIME(Identity.ime)
             return (true, "已更新到 \(embedded.version)（\(embedded.build)），并换了新的启动程序：输入法已重启。" +
                     "基于 Chromium 的应用（Chrome、VS Code）可能需要重新打开一次。")
         }
-        let loaded = reloadIME(wanting: embedded.core)
-        return (true, "已更新到 \(embedded.version)（\(embedded.build)）；" +
-                (loaded ? "正在运行的输入法已开始使用它，无需重启任何应用。"
-                        : "将在输入法下次启动时生效。"))
+        return activationMessage(activation(of: embedded.core), version: embedded)
+    }
+
+    private func activation(of core: String) -> CoreActivation {
+        guard !NSRunningApplication.runningApplications(withBundleIdentifier: Identity.ime).isEmpty else {
+            return .notRunning
+        }
+        let running = reloadIME()
+        let exists = !NSRunningApplication.runningApplications(withBundleIdentifier: Identity.ime).isEmpty
+        return CoreActivation.classify(expected: core, answer: running, running: exists)
+    }
+
+    private func activationMessage(_ activation: CoreActivation, version: BundleStamp) -> (Bool, String) {
+        let installed = "已安装 OctoDot \(version.version)（\(version.build)）；"
+        switch activation {
+        case .active: return (true, installed + "正在运行的输入法已开始使用它，无需重启任何应用。")
+        case .notRunning: return (true, installed + "输入法下次启动时会使用它。")
+        case .unconfirmed:
+            return (false, installed + "正在运行的输入法尚未确认启用；会在输入结束后重试，请稍后再次打开 OctoDot 检查。")
+        }
     }
 
     /// Puts a copy of `source` at `destination` in one step: a staged copy
@@ -143,7 +172,7 @@ final class Installer: NSObject, InstallerProtocol, @unchecked Sendable {
 
     /// Asks the running IME to load the core its bundle names now, and waits
     /// a moment for its answer (as `OctoDotIME --reload` does).
-    private func reloadIME(wanting core: String) -> Bool {
+    private func reloadIME() -> String? {
         let center = DistributedNotificationCenter.default()
         let answered = DispatchSemaphore(value: 0)
         let answer = OSAllocatedUnfairLock<String?>(initialState: nil)
@@ -157,7 +186,7 @@ final class Installer: NSObject, InstallerProtocol, @unchecked Sendable {
         center.postNotificationName(Notification.Name(Identity.ime + ".reload"), object: nil, userInfo: nil,
                                     deliverImmediately: true)
         _ = answered.wait(timeout: .now() + 5)
-        return answer.withLock { $0 } == core
+        return answer.withLock { $0 }
     }
 
     /// Quits the running IME (SIGTERM: it saves the user dictionary first),

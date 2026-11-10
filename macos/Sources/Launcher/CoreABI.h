@@ -22,8 +22,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)commitCompositionForClient:(nullable id)sender NS_SWIFT_NAME(commitComposition(for:));
 - (void)activateForClient:(nullable id)sender NS_SWIFT_NAME(activate(_:));
 - (void)deactivateForClient:(nullable id)sender NS_SWIFT_NAME(deactivate(_:));
-/// The core is about to be replaced: end the composition, if any, as if
-/// the client had lost focus, and let go of the engine.
+/// The core is about to be replaced or the process is terminating. A v2
+/// launcher waits for composition to end before replacement.
 - (void)retire;
 @end
 
@@ -39,6 +39,21 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)stop;
 /// A maintenance command (--register, --selftest, ...): the exit status.
 - (int)runCommand:(NSString *)command NS_SWIFT_NAME(run(command:));
+@end
+
+/// Added separately from v1 so older cores remain loadable. A generation is
+/// started against its own retained copy of the data, including on rollback.
+@protocol OctoDotCoreV2 <OctoDotCore>
+- (int)startWithDataDirectory:(NSString *)directory NS_SWIFT_NAME(start(dataDirectory:));
+/// False while a contained worker still prevents the runtime from stopping.
+- (BOOL)readyForReload;
+/// Stops only when it is safe to tear down the engine.
+- (BOOL)stopForReload;
+@end
+
+@protocol OctoDotHandlerV2 <OctoDotHandler>
+/// The launcher defers a switch rather than ending a user's composition.
+- (BOOL)hasActiveComposition;
 @end
 
 NS_ASSUME_NONNULL_END

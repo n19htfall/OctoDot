@@ -257,17 +257,20 @@ enum Learning {
     }
 
     /// Saves now if anything changed (also when the input method is switched away).
-    static func saveNow() {
+    @discardableResult
+    static func saveNow() -> Bool {
         pending?.invalidate()
         pending = nil
-        guard let store else { return }
+        guard let store else { return true }
         let changes = Engine.shared.userDictionaryChanges
-        guard changes != savedChanges else { return }
+        guard changes != savedChanges else { return true }
         if store.save(Engine.shared.saveUserDictionary()) {
             // Saving can discard expired entries and advance the revision.
             savedChanges = Engine.shared.userDictionaryChanges
+            return true
         } else {
             log.error("user dictionary: could not save")
+            return false
         }
     }
 

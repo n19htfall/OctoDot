@@ -9,7 +9,7 @@ import InputMethodKit
 /// `MainActor.assumeIsolated`. That traps at once if the thread is ever
 /// wrong, instead of breaking Goose's same-thread rule silently. The closures
 /// capture only Sendable values; IMK's client objects stay outside.
-final class Handler: NSObject, OctoDotHandler {
+final class Handler: NSObject, OctoDotHandlerV2 {
     private weak var controller: IMKInputController?
     private var session: Engine.Session?
     private var clientApp = ""
@@ -53,13 +53,17 @@ final class Handler: NSObject, OctoDotHandler {
 
     private func client() -> (any IMKTextInput)? { controller?.client() }
 
-    /// The core is being replaced: a composition in progress ends as on a
-    /// focus change, and the session goes while the engine is still there.
+    /// A hot reload waits for a composition to end naturally.
+    func hasActiveComposition() -> Bool {
+        guard let session else { return false }
+        return MainActor.assumeIsolated { Engine.shared.snapshot(session).isComposing }
+    }
+
+    /// The launcher has checked that there is no active composition.
     func retire() {
         guard let session else { return }
-        if MainActor.assumeIsolated({ Engine.shared.snapshot(session).isComposing }) {
-            deactivate(client())
-        }
+        // Termination can also retire a handler, without a reload's wait.
+        if hasActiveComposition() { commitComposition(for: client()) }
         MainActor.assumeIsolated { Engine.shared.free(session) }
         self.session = nil
     }

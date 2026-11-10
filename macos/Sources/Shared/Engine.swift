@@ -89,9 +89,7 @@ final class Engine {
     /// starts its own and this one's memory goes back. goose_exit with a
     /// thread of the program still running is a runtime error, so a custom
     /// phrase compile in flight gets a few seconds to finish; if it does not,
-    /// the runtime is left as it is, memory and all, and this returns false.
-    /// Calls that deferred work can still make afterwards (freeing a session)
-    /// do nothing.
+    /// the runtime remains started and this returns false.
     @discardableResult
     func stop() -> Bool {
         guard isStarted else { return true }
@@ -101,8 +99,8 @@ final class Engine {
             usleep(20_000)
             waited += 1
         }
-        isStarted = false
         guard waited < 150 else { return false }
+        isStarted = false
         octo_close()
         goose_exit()
         return true

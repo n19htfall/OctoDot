@@ -2,7 +2,7 @@ import Foundation
 
 /// One input method bundle as the companion compares them: its version and
 /// build, and the hashes that say whether its core or its launcher changed
-/// (Info.plist's OctoDotCore names the core by the hash of its inputs, and
+/// (Info.plist's OctoDotCore names the core by its code and data inputs, and
 /// Resources/launcher.sha256 holds the launcher's).
 struct BundleStamp: Codable, Equatable, Sendable {
     var version: String
@@ -39,6 +39,26 @@ struct SetupFacts: Codable, Equatable, Sendable {
     var legacyInstalled: Bool
     /// The installed IME's input source is enabled.
     var enabled: Bool
+    /// An IME is running, but has not confirmed that it uses the installed core.
+    /// Optional so older installer replies can still be decoded.
+    var activationPending: Bool? = nil
+    /// The core acknowledged by the running IME, when it has answered.
+    var runningCore: String? = nil
+}
+
+/// A reply names what is actually running. Silence is a failure only while
+/// an IME process still exists; a stopped IME will load the installed core
+/// on its next launch.
+enum CoreActivation: Equatable {
+    case active
+    case notRunning
+    case unconfirmed(String?)
+
+    static func classify(expected: String, answer: String?, running: Bool) -> CoreActivation {
+        guard running else { return .notRunning }
+        if answer == expected { return .active }
+        return .unconfirmed(answer == "none" ? nil : answer)
+    }
 }
 
 /// What the companion does about it.
@@ -73,6 +93,7 @@ enum SetupState: Equatable, Sendable {
                 return .outdated(restart: launcherDiffers)
             }
         }
+        if facts.activationPending == true && facts.embedded == installed { return .outdated(restart: false) }
         return facts.enabled ? .ready : .disabled
     }
 }

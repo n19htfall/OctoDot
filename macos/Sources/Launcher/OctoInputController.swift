@@ -26,6 +26,12 @@ final class OctoInputController: IMKInputController {
     }
 
     /// Before the core is replaced.
+    func canRetire() -> Bool {
+        guard let handler else { return true }
+        guard let handler = handler as? any OctoDotHandlerV2 else { return false }
+        return !handler.hasActiveComposition()
+    }
+
     func retire() {
         handler?.retire()
         handler = nil

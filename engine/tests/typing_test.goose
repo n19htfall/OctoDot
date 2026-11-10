@@ -384,6 +384,7 @@ fn custom_phrases(s: u64) {
     let b = session::compile_phrases(source, dir);
     check(b == a + 1 && settle() && status_starts("ready\t2\t") && rank_after(s, "dada", "龘龘") < 0 &&
           rank_after(s, "bingbing", "靐靐") == 0, "two jobs: the newer one's result is the one in use");
+    check(session::supervisors.len == 0, "both phrase workers are reaped before the engine may stop");
 
     // A worker that aborts ends alone: the session goes on, the old phrases stay.
     session::phrases_test_abort = true;

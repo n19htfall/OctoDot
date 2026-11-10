@@ -719,7 +719,9 @@ fn pump() -> u32 {
         staged = false;
         bits = bits | PUMP_CHANGED;
     }
-    if staged || phrases_state == PHRASES_COMPILING { bits = bits | PUMP_PENDING; }
+    // A superseded job can still be running after the newest one finished.
+    // Its supervisor must be reaped before the runtime can stop safely.
+    if staged || phrases_state == PHRASES_COMPILING || supervisors.len > 0 { bits = bits | PUMP_PENDING; }
     return bits;
 }
 

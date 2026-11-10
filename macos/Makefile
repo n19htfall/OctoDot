@@ -110,10 +110,16 @@ BASEFLAGS    := $(MAINFLAGS) -parse-as-library
 SWIFTFLAGS   := $(BASEFLAGS) -import-objc-header Sources/Shared/Bridging.h -I $(GEN)
 CORE_INPUTS  := $(SHARED_SWIFT) $(IME_SWIFT) Sources/IME/Core.h Sources/Shared/Bridging.h \
                 Sources/Launcher/CoreABI.h build/libocto_engine.a
+# Every file copied into Resources/data, plus the grammar pin's inputs. The
+# core filename identifies both code and data, so a data-only update reloads.
+CORE_DATA    := $(sort $(wildcard $(IMAGES)/lexicon*.img $(IMAGES)/spellings.*.img $(IMAGES)/aux.*.img \
+                $(IMAGES)/grammar.img $(IMAGES)/english.img $(IMAGES)/syllables.tsv \
+                $(IMAGES)/rerank.img $(IMAGES)/rerank.weights))
+CORE_ID      := build/core.identity
 
 .PHONY: all test install enable uninstall clean dmg test-dmg release audit check-identity release-key appcast \
         grammar-release FORCE
-all: $(APP) build/octo-smoke build/octo-setup-test
+all: $(APP) build/octo-smoke build/octo-setup-test build/octo-reload-test
 
 check-identity:
 	@test -n "$(SIGN_IDENTITY)" || { echo "no $(SIGN_PROFILE) signing identity of team $(TEAM_ID) in the Keychain" \
@@ -141,6 +147,13 @@ $(GEN)/Identity.swift: Makefile ../VERSION
 	   echo '}'; } > $@
 
 # ---- the input method ---------------------------------------------------------
+
+# Check even when timestamps are unchanged: an optional image may have been
+# added or removed. Only rewrite the stamp when the identity actually changes.
+$(CORE_ID): $(CORE_INPUTS) $(CORE_DATA) $(IMAGES)/$(GRAMMAR_NAME) ../data/grammar.lock scripts/core-identity.sh FORCE
+	@mkdir -p build
+	@./scripts/core-identity.sh $(IMAGES)/$(GRAMMAR_NAME) $(CORE_INPUTS) ../data/grammar.lock $(CORE_DATA) > $@.tmp
+	@cmp -s $@.tmp $@ && rm $@.tmp || mv $@.tmp $@
 
 # The generated C and its header come out of one goose run.
 $(GEN)/ime.h: $(ENGINE) | $(GOOSE)
@@ -171,12 +184,12 @@ build/make-icon: make-icon.swift
 build/BadgeOutlined.tiff: build/make-icon
 	build/make-icon $@ build/BadgeFilled.tiff
 
-$(IME_APP): $(CORE_INPUTS) build/launcher/OctoDotIME Info.plist.in InfoPlist.strings.in IME.entitlements.in \
+$(IME_APP): $(CORE_INPUTS) $(CORE_DATA) $(CORE_ID) $(IMAGES)/$(GRAMMAR_NAME) scripts/core-identity.sh build/launcher/OctoDotIME Info.plist.in InfoPlist.strings.in IME.entitlements.in \
             build/BadgeOutlined.tiff $(IMAGES)/lexicon.img ../data/grammar.lock ../NOTICE ../LICENSE ../LICENSE-weights \
             ../VERSION $(SIGNING) | check-identity
 	rm -rf $@.partial $@
 	mkdir -p $@.partial/Contents/MacOS $@.partial/Contents/Frameworks $@.partial/Contents/Resources/data
-	id=$$(cat $(CORE_INPUTS) | shasum | cut -c1-12) && \
+	id=$$(cat $(CORE_ID)) && \
 	$(SWIFTC) $(BASEFLAGS) -import-objc-header Sources/IME/Core.h -I $(GEN) \
 	    -emit-library -module-name OctoDotCore_$$id $(SHARED_SWIFT) $(IME_SWIFT) build/libocto_engine.a \
 	    -framework InputMethodKit -framework Carbon -framework SwiftUI -framework Accelerate \
@@ -226,6 +239,9 @@ build/installer/OctoDotInstaller: $(SETUP_SWIFT) $(INSTALLER_SWIFT)
 
 build/octo-setup-test: $(SETUP_SWIFT) $(wildcard Sources/SetupTests/*.swift)
 	$(SWIFTC) $(MAINFLAGS) $(SETUP_SWIFT) $(wildcard Sources/SetupTests/*.swift) -o $@
+
+build/octo-reload-test: Sources/Launcher/ReloadCoordinator.swift $(wildcard Sources/ReloadTests/*.swift)
+	$(SWIFTC) $(BASEFLAGS) $^ -o $@
 
 build/make-app-icon: make-app-icon.swift
 	@mkdir -p build
@@ -285,6 +301,8 @@ audit: $(APP)
 test: all audit
 	./build/octo-smoke $(IMAGES)
 	./build/octo-setup-test
+	./build/octo-reload-test
+	./scripts/test-core-identity.sh
 	@echo "sandboxed self-test:"
 	$(IME_APP)/Contents/MacOS/OctoDotIME --selftest
 	@echo "a stopping core frees its windows (out of sight):"
