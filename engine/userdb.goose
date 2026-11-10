@@ -84,7 +84,7 @@ struct Stat { uses: f32, day: u32, base_uses: f32, base_day: u32 }
 
 // A choice: pool[input..input + input_len] chose pool[text..text + text_len].
 struct Choice { input: u32, input_len: u8, text: u32, text_len: u16, uses: f32, day: u32, live: bool,
-               base_uses: f32, base_day: u32 }
+               base_uses: f32, base_day: u32, span: u16 }
 
 // A change, kept in memory only, so it can be taken back: a word (by its
 // entry run) or a choice (by index), what it was before, and the commit.
@@ -95,17 +95,24 @@ struct Change { kind: u8, id: u32, commit: u32, time: i64, uses: f32, day: u32, 
 
 var lex = lexicon::Lexicon {};          // learned words; toned is a copy of the live lexicon's
 var stats = dictionary<u32, Stat> {};   // by entry run
+var orphan_pairs: i64 = 0;
 var choices: Choice[>..] = [];
 var pool: u8[>..] = [];                 // choices' input and text
 var choice_at = dictionary<u64, i64> {};    // hash of input \t text → index into choices
 var live_choices: i64 = 0;
+var free_choices: i64[>..] = [];
+var dead_choices: i64 = 0;
+var choice_waste: i64 = 0;
 // English words the user has picked: pool_en holds code and text.
 struct EnglishUse { code: u32, code_len: u8, text: u32, text_len: u16, uses: f32, day: u32, live: bool,
-                   base_uses: f32, base_day: u32 }
+                   base_uses: f32, base_day: u32, span: u16 }
 var english: EnglishUse[>..] = [];
 var pool_en: u8[>..] = [];
 var english_at = dictionary<u64, i64> {};   // hash of code \t text → index
 var live_english: i64 = 0;
+var free_english: i64[>..] = [];
+var dead_english: i64 = 0;
+var english_waste: i64 = 0;
 var journal: Change[>..] = [];
 var dormant: u8[>..] = [];              // word lines naming syllables this lexicon lacks, kept as they were
 var changes: u64 = 0;                   // bumped on every change, so the host knows when to save
@@ -141,11 +148,18 @@ fn reset() {
     pool.clear();
     choice_at.clear();
     live_choices = 0;
+    free_choices.clear();
+    dead_choices = 0;
+    choice_waste = 0;
     english.clear();
     pool_en.clear();
     english_at.clear();
     live_english = 0;
+    free_english.clear();
+    dead_english = 0;
+    english_waste = 0;
     journal.clear();
+    orphan_pairs = 0;
     dormant.clear();
     tomb_pairs.clear();
     tombs.clear();
@@ -264,8 +278,55 @@ fn index_of_run(run: u32) -> i64 {
 }
 
 fn remove_index(i: i64) {
+    orphan_pairs += lex.entries[i].len as i64;
     stats.remove(lex.entries[i].run);
     remove_at(lex.entries, i);
+}
+
+fn compact_words() {
+    guard orphan_pairs > 0 else { return; }
+    var old_runs: u32[>..] = [];
+    var kept_stats: Stat[>..] = [];
+    var new_pairs: lexicon::Pair[>..] = [];
+    var new_runs: u16[>..] = [];
+    var new_flags: u8[>..] = [];
+    for i in lex.entries.len {
+        let old = lex.entries[i].run;
+        old_runs.push(old);
+        kept_stats.push(stat_of(i));
+        let n = lex.entries[i].len as i64;
+        let start = new_pairs.len as u32;
+        for k in n {
+            let pi = lex.runs[(old as i64) + k] as i64;
+            let flag: u8 = if pi < lex.flags.len { lex.flags[pi] } else { 0 };
+            new_runs.push(new_pairs.len as u16);
+            new_flags.push(flag);
+            new_pairs.push(lex.pairs[pi]);
+        }
+        lex.entries[i].run = start;
+    }
+    lex.pairs = copy(new_pairs);
+    lex.runs = copy(new_runs);
+    lex.flags = copy(new_flags);
+    stats.clear();
+    for i in lex.entries.len { stats.insert(lex.entries[i].run, kept_stats[i]); }
+    var moved = dictionary<u32, u32> {};
+    for i in old_runs.len { moved.insert(old_runs[i], lex.entries[i].run); }
+    var kept: Change[>..] = [];
+    for c in journal {
+        if c.kind == WORD {
+            let nid = moved.get(c.id);
+            if nid {
+                var cc = c;
+                cc.id = nid;
+                kept.push(cc);
+            }
+        } else {
+            kept.push(c);
+        }
+    }
+    journal = copy(kept);
+    orphan_pairs = 0;
 }
 
 fn stat_of(i: i64) -> Stat {
@@ -287,6 +348,7 @@ fn restat(i: i64, uses: f32, day: u32) {
 // A word the user converted, in commit `commit`: `amount` more uses, today.
 // Words longer than MAX_PHRASE syllables are not kept.
 fn learn(pairs: const lexicon::Pair[:], amount: f64, commit: u32) {
+    if orphan_pairs > 0 { compact_words(); }
     guard pairs.len > 0 && pairs.len <= MAX_PHRASE && lex.pairs.len + pairs.len < lexicon::MAX_PAIRS else { return; }
     unbury(pairs);
     if lex.toned.len == 0 { lex.toned.append(lexicon::live.toned); }
@@ -324,6 +386,7 @@ fn drop_weakest_word() {
         if u < least { least = u; worst = i; }
     }
     remove_index(worst);
+    reclaim();
 }
 
 // Removes the learned word made of `pairs`, and every choice of its text.
@@ -347,6 +410,7 @@ fn unlearn(pairs: const lexicon::Pair[:]) -> bool {
     }
     if pairs.len >= 2 && bury(pairs) { removed = true; }
     if removed { changes++; }
+    reclaim();
     return removed;
 }
 
@@ -380,9 +444,37 @@ fn find_choice(input: const u8[:], text: const u8[:]) -> i64 {
 
 fn kill_choice(c: i64) {
     let ch = choices[c];
+    guard ch.live else { return; }
     choice_at.remove(choice_key(pool[ch.input..ch.input + ch.input_len], pool[ch.text..ch.text + ch.text_len]));
     choices[c].live = false;
     live_choices--;
+    dead_choices++;
+}
+
+fn write_choice(c: i64, input: const u8[:], text: const u8[:]) {
+    var have = choices[c].span as i64;
+    if have == 0 { have = (choices[c].input_len as i64) + (choices[c].text_len as i64); }
+    let need = input.len + text.len;
+    if need <= have && have > 0 {
+        let at = choices[c].input as i64;
+        for i in input.len { pool[at + i] = input[i]; }
+        let base = at + input.len;
+        for i in text.len { pool[base + i] = text[i]; }
+        choices[c].text = base as u32;
+        choices[c].input_len = input.len as u8;
+        choices[c].text_len = text.len as u16;
+        choices[c].span = have as u16;
+    } else {
+        if have > 0 { choice_waste += have; }
+        let at = pool.len;
+        pool.append(input);
+        pool.append(text);
+        choices[c].input = at as u32;
+        choices[c].input_len = input.len as u8;
+        choices[c].text = (at + input.len) as u32;
+        choices[c].text_len = text.len as u16;
+        choices[c].span = need as u16;
+    }
 }
 
 // How often `text` was chosen for exactly `input`, after decay, rounded: an
@@ -403,12 +495,29 @@ fn set_choice(input: const u8[:], text: const u8[:], uses: f64, day: u32) -> i64
         choices[c].day = day;
         return c;
     }
+    var slot: i64 = -1;
+    while free_choices.len > 0 {
+        let i = free_choices.pop();
+        if i >= 0 && i < choices.len && !choices[i].live { slot = i; break; }
+    }
+    if slot >= 0 {
+        write_choice(slot, input, text);
+        choices[slot].uses = uses as f32;
+        choices[slot].day = day;
+        choices[slot].live = true;
+        choices[slot].base_uses = 0.0;
+        choices[slot].base_day = 0;
+        choice_at.insert(choice_key(input, text), slot);
+        live_choices++;
+        if dead_choices > 0 { dead_choices--; }
+        return slot;
+    }
     let at = pool.len;
     pool.append(input);
     pool.append(text);
     choices.push(Choice { input: at as u32, input_len: input.len as u8, text: (at + input.len) as u32,
                           text_len: text.len as u16, uses: uses as f32, day: day, live: true,
-                          base_uses: 0.0, base_day: 0 });
+                          base_uses: 0.0, base_day: 0, span: (input.len + text.len) as u16 });
     choice_at.insert(choice_key(input, text), choices.len - 1);
     live_choices++;
     return choices.len - 1;
@@ -455,6 +564,103 @@ fn drop_weakest_choice() {
         if u < least { least = u; worst = c; }
     }
     if worst >= 0 { kill_choice(worst); }
+    reclaim();
+}
+
+fn compact_choice_pool(held: dictionary<u32, bool>&) {
+    var next: u8[>..] = [];
+    for i in choices.len {
+        let ch = choices[i];
+        if !ch.live && !held.contains(i as u32) {
+            choices[i].input_len = 0;
+            choices[i].text_len = 0;
+            choices[i].span = 0;
+            continue;
+        }
+        let at = next.len;
+        let in_at = ch.input as i64;
+        let in_len = ch.input_len as i64;
+        let text_at = ch.text as i64;
+        let text_len = ch.text_len as i64;
+        next.append(pool[in_at..in_at + in_len]);
+        next.append(pool[text_at..text_at + text_len]);
+        choices[i].input = at as u32;
+        choices[i].text = (at + in_len) as u32;
+        choices[i].span = (in_len + text_len) as u16;
+    }
+    pool = copy(next);
+    choice_waste = 0;
+}
+
+fn compact_english_pool(held: dictionary<u32, bool>&) {
+    var next: u8[>..] = [];
+    for i in english.len {
+        let e = english[i];
+        if !e.live && !held.contains(i as u32) {
+            english[i].code_len = 0;
+            english[i].text_len = 0;
+            english[i].span = 0;
+            continue;
+        }
+        let at = next.len;
+        let code_at = e.code as i64;
+        let code_len = e.code_len as i64;
+        let text_at = e.text as i64;
+        let text_len = e.text_len as i64;
+        next.append(pool_en[code_at..code_at + code_len]);
+        next.append(pool_en[text_at..text_at + text_len]);
+        english[i].code = at as u32;
+        english[i].text = (at + code_len) as u32;
+        english[i].span = (code_len + text_len) as u16;
+    }
+    pool_en = copy(next);
+    english_waste = 0;
+}
+
+fn reclaim_slots() {
+    var held_c = dictionary<u32, bool> {};
+    var held_e = dictionary<u32, bool> {};
+    for c in journal {
+        if c.kind == CHOICE { held_c.insert(c.id, true); }
+        else if c.kind == ENGLISH { held_e.insert(c.id, true); }
+    }
+    var free_c: i64[>..] = [];
+    var free_e: i64[>..] = [];
+    var need_c: i64 = 0;
+    var need_e: i64 = 0;
+    var dead_c: i64 = 0;
+    var dead_e: i64 = 0;
+    for i in choices.len {
+        let ch = choices[i];
+        if !ch.live {
+            dead_c++;
+            if !held_c.contains(i as u32) { free_c.push(i); }
+        }
+        if ch.live || held_c.contains(i as u32) { need_c += (ch.input_len as i64) + (ch.text_len as i64); }
+    }
+    for i in english.len {
+        let e = english[i];
+        if !e.live {
+            dead_e++;
+            if !held_e.contains(i as u32) { free_e.push(i); }
+        }
+        if e.live || held_e.contains(i as u32) { need_e += (e.code_len as i64) + (e.text_len as i64); }
+    }
+    dead_choices = dead_c;
+    dead_english = dead_e;
+    free_choices = copy(free_c);
+    free_english = copy(free_e);
+    if pool.len != need_c && (choice_waste > 4096 || (pool.len > need_c * 2 && pool.len - need_c > 2048)) {
+        compact_choice_pool(held_c);
+    }
+    if pool_en.len != need_e && (english_waste > 4096 || (pool_en.len > need_e * 2 && pool_en.len - need_e > 2048)) {
+        compact_english_pool(held_e);
+    }
+}
+
+fn reclaim() {
+    if orphan_pairs > 0 { compact_words(); }
+    if dead_choices > 0 || dead_english > 0 || choice_waste > 4096 || english_waste > 4096 { reclaim_slots(); }
 }
 
 // ---- taking learning back ----------------------------------------------------------
@@ -469,6 +675,7 @@ fn note(c: Change) {
         journal.append(kept);
     }
     journal.push(c);
+    reclaim();
 }
 
 // Undoes one change; false if what it changed is gone.
@@ -514,6 +721,7 @@ fn retract(commit: u32) -> i64 {
     journal.clear();
     journal.append(kept);
     if n > 0 { changes++; }
+    reclaim();
     return n;
 }
 
@@ -590,6 +798,7 @@ fn forget(scope: i64) -> i64 {
         journal.clear();
     }
     if n > 0 { changes++; }
+    reclaim();
     return n;
 }
 
@@ -757,9 +966,37 @@ fn find_english(code: const u8[:], text: const u8[:]) -> i64 {
 
 fn kill_english(c: i64) {
     let e = english[c];
+    guard e.live else { return; }
     english_at.remove(english_key(pool_en[e.code..e.code + e.code_len], pool_en[e.text..e.text + e.text_len]));
     english[c].live = false;
     live_english--;
+    dead_english++;
+}
+
+fn write_english(c: i64, code: const u8[:], text: const u8[:]) {
+    var have = english[c].span as i64;
+    if have == 0 { have = (english[c].code_len as i64) + (english[c].text_len as i64); }
+    let need = code.len + text.len;
+    if need <= have && have > 0 {
+        let at = english[c].code as i64;
+        for i in code.len { pool_en[at + i] = code[i]; }
+        let base = at + code.len;
+        for i in text.len { pool_en[base + i] = text[i]; }
+        english[c].text = base as u32;
+        english[c].code_len = code.len as u8;
+        english[c].text_len = text.len as u16;
+        english[c].span = have as u16;
+    } else {
+        if have > 0 { english_waste += have; }
+        let at = pool_en.len;
+        pool_en.append(code);
+        pool_en.append(text);
+        english[c].code = at as u32;
+        english[c].code_len = code.len as u8;
+        english[c].text = (at + code.len) as u32;
+        english[c].text_len = text.len as u16;
+        english[c].span = need as u16;
+    }
 }
 
 fn drop_weakest_english() {
@@ -772,6 +1009,7 @@ fn drop_weakest_english() {
         if u < least { least = u; worst = c; }
     }
     if worst >= 0 { kill_english(worst); }
+    reclaim();
 }
 
 fn set_english(code: const u8[:], text: const u8[:], uses: f64, day: u32) -> i64 {
@@ -781,12 +1019,29 @@ fn set_english(code: const u8[:], text: const u8[:], uses: f64, day: u32) -> i64
         english[c].day = day;
         return c;
     }
+    var slot: i64 = -1;
+    while free_english.len > 0 {
+        let i = free_english.pop();
+        if i >= 0 && i < english.len && !english[i].live { slot = i; break; }
+    }
+    if slot >= 0 {
+        write_english(slot, code, text);
+        english[slot].uses = uses as f32;
+        english[slot].day = day;
+        english[slot].live = true;
+        english[slot].base_uses = 0.0;
+        english[slot].base_day = 0;
+        english_at.insert(english_key(code, text), slot);
+        live_english++;
+        if dead_english > 0 { dead_english--; }
+        return slot;
+    }
     let at = pool_en.len;
     pool_en.append(code);
     pool_en.append(text);
     english.push(EnglishUse { code: at as u32, code_len: code.len as u8, text: (at + code.len) as u32,
                               text_len: text.len as u16, uses: uses as f32, day: day, live: true,
-                              base_uses: 0.0, base_day: 0 });
+                              base_uses: 0.0, base_day: 0, span: (code.len + text.len) as u16 });
     english_at.insert(english_key(code, text), english.len - 1);
     live_english++;
     return english.len - 1;
@@ -854,6 +1109,7 @@ fn unlearn_english(code: const u8[:], text: const u8[:]) -> bool {
     guard c >= 0 else { return false; }
     kill_english(c);
     changes++;
+    reclaim();
     return true;
 }
 
@@ -942,12 +1198,46 @@ fn find_tomb(pairs: const lexicon::Pair[:]) -> i64 {
     return -1;
 }
 
+fn tomb_matches(pairs: const lexicon::Pair[:], i: i64) -> bool {
+    let t = tombs[i];
+    if (t.len as i64) != pairs.len { return false; }
+    for k in pairs.len {
+        let p = tomb_pairs[(t.start as i64) + k];
+        if p.cp != pairs[k].cp || p.toned != pairs[k].toned { return false; }
+    }
+    return true;
+}
+
+fn compact_tomb_pairs() {
+    var n: i64 = 0;
+    for t in tombs { n += t.len as i64; }
+    guard n != tomb_pairs.len else { return; }
+    var next: lexicon::Pair[>..] = [];
+    for i in tombs.len {
+        let t = tombs[i];
+        let start = next.len as u32;
+        for k in t.len { next.push(tomb_pairs[(t.start as i64) + k]); }
+        tombs[i].start = start;
+    }
+    tomb_pairs = copy(next);
+}
+
 fn bury(pairs: const lexicon::Pair[:]) -> bool {
     guard pairs.len >= 2 && pairs.len <= MAX_PHRASE else { return false; }
     if find_tomb(pairs) >= 0 { return false; }
+    for i in tombs.len {
+        if tombs[i].live || !tomb_matches(pairs, i) { continue; }
+        tombs[i].live = true;
+        tombs[i].day = today();
+        let t = remove_at(tombs, i);
+        tombs.push(t);
+        reindex_tombs();
+        changes++;
+        return true;
+    }
     if tombs.len >= MAX_TOMBS {
-        tombs[0].live = false;
         remove_at(tombs, 0);
+        compact_tomb_pairs();
         reindex_tombs();
     }
     let start = tomb_pairs.len;

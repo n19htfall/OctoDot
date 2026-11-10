@@ -763,6 +763,116 @@ fn learning(s: u64) {
     userdb::clock_override = 0;
 }
 
+fn stored_syllables() -> i64 {
+    var n: i64 = 0;
+    for e in userdb::lex.entries { n += e.len as i64; }
+    return n;
+}
+
+fn copy_entry(text: const u8[:], out: lexicon::Pair[>..]&) -> bool {
+    for i in userdb::lex.entries.len {
+        var got: u8[>..] = [];
+        let e = userdb::lex.entries[i];
+        for k in e.len {
+            let p = userdb::lex.pairs[userdb::lex.runs[(e.run as i64) + k]];
+            push_utf8(got, p.cp);
+        }
+        if compare(got, text) != 0 { continue; }
+        out.clear();
+        for k in e.len { out.push(userdb::lex.pairs[userdb::lex.runs[(e.run as i64) + k]]); }
+        return true;
+    }
+    return false;
+}
+
+// Corrections, unlearning and burial used to keep every retired syllable,
+// choice and tomb. A long-lived process must reuse that storage, and a word
+// that survives a compaction must still forget as the journal recorded it.
+fn storage(s: u64) {
+    userdb::reset();
+    userdb::clock_override = 1794000000;
+    for i in 16 {
+        let text: u8[>..] = if i % 2 == 0 { "西安" } else { "先" };
+        check(pick(s, "xian", text, 0), str("correction ", i, " commits ", text));
+        let n = if i % 2 == 0 { 2 } else { 1 };
+        for _ in n { press(s, session::KEY_BACKSPACE); }
+    }
+    let syl = stored_syllables();
+    check(syl == userdb::lex.pairs.len && userdb::lex.entries.len == 1 && userdb::choices.len <= 2 &&
+          userdb::pool.len <= 64,
+          str("16 corrections stay one word (syllables ", userdb::lex.pairs.len, "/", syl,
+              ", choices ", userdb::choices.len, ", pool ", userdb::pool.len, ")"));
+
+    userdb::reset();
+    check(pick(s, "zhongguo", "中国", 0), "burial cycle starts from 中国");
+    var zg: lexicon::Pair[>..] = [];
+    check(copy_entry("中国", zg) && zg.len == 2, "中国's syllables can be copied out");
+    for _ in 12 {
+        userdb::learn(zg, userdb::EXPLICIT, 1);
+        userdb::choose("zhongguo", "中国", 1);
+        userdb::unlearn(zg);
+    }
+    let reserved = userdb::choices.len;
+    let pool_was = userdb::pool.len;
+    check(userdb::tomb_count() == 1 && userdb::tombs.len == 1 && userdb::tomb_pairs.len == 2 &&
+          userdb::lex.pairs.len == stored_syllables(),
+          str("burying 中国 again revives its tomb (tombs ", userdb::tombs.len, ", pairs ",
+              userdb::tomb_pairs.len, ", syllables ", userdb::lex.pairs.len, ")"));
+    userdb::clock_override += 2000;
+    for _ in 12 {
+        userdb::learn(zg, userdb::EXPLICIT, 1);
+        userdb::choose("zhongguo", "中国", 1);
+        userdb::unlearn(zg);
+    }
+    check(userdb::choices.len <= reserved + 1 && userdb::pool.len <= pool_was + 64 &&
+          userdb::tomb_pairs.len == 2 && userdb::lex.pairs.len == 0,
+          str("after the journal expires, choices are reused (choices ", userdb::choices.len, "/", reserved,
+              ", pool ", userdb::pool.len, "/", pool_was, ")"));
+
+    userdb::reset();
+    let now_was = userdb::clock_override;
+    userdb::clock_override = now_was - 30 * 86400;
+    check(pick(s, "zhongguo", "中国", 0), "remap: 中国 is learned first");
+    check(pick(s, "xian", "西安", 0) && pick(s, "xian", "西安", 0), "remap: 西安 is learned twice, a month ago");
+    let month_ago = userdb::today();
+    userdb::clock_override = now_was;
+    check(pick(s, "xian", "西安", 0), "remap: 西安 is used again today");
+    press(s, session::KEY_ESCAPE);
+    type_text(s, "zhongguo");
+    check(compare(candidate(0), "中国") == 0, "remap: 中国 is the highlighted word");
+    session::key(s, key_event(session::KEY_BACKSPACE, 0, session::MOD_SHIFT));
+    press(s, session::KEY_ESCAPE);
+    check(userdb::lex.pairs.len == 2 && userdb::lex.pairs.len == stored_syllables(),
+          str("removing 中国 compacts the syllables in front of 西安 (", userdb::lex.pairs.len, ")"));
+    userdb::clock_override += 60;
+    check(userdb::forget(userdb::RECENT) >= 1, "forgetting the last 15 minutes after that compaction");
+    var saved: u8[>..] = [];
+    saved.append(session::user_save());
+    check(find(saved, str("西安\txī ān\t4.000\t", month_ago, "\n")) >= 0 && find(saved, "中国\tzhōng guó\t") < 0,
+          "西安 keeps the uses from before today; the removed word stays removed");
+
+    userdb::reset();
+    userdb::clock_override = 1794000000;
+    for _ in 24 {
+        userdb::learn_english("github", "GitHub", 2);
+        userdb::unlearn_english("github", "GitHub");
+    }
+    let en = userdb::english.len;
+    let en_pool = userdb::pool_en.len;
+    check(en == 24 && userdb::live_english == 0, str("english removals stay reserved while the journal can undo them (", en, ")"));
+    userdb::clock_override += 2000;
+    for _ in 24 {
+        userdb::learn_english("github", "GitHub", 2);
+        userdb::unlearn_english("github", "GitHub");
+    }
+    check(userdb::english.len <= en + 1 && userdb::pool_en.len <= en_pool + 32 && userdb::live_english == 0,
+          str("english slots are reused once that journal expires (slots ", userdb::english.len, "/", en,
+              ", pool ", userdb::pool_en.len, "/", en_pool, ")"));
+
+    userdb::reset();
+    userdb::clock_override = 0;
+}
+
 fn latency(s: u64) {
     let sentences = ["jintiantianqibucuowomenquchuqiwanba", "woshiyigezhongguoren", "zgrmghg",
                      "xianzaikaishishurufaceshi", "zhegeshurufashiyonggooseyuyanxiede"];
@@ -1363,6 +1473,7 @@ fn main() {
     userdb::reset();
     charsets(session::new_session());
     learning(session::new_session());
+    storage(session::new_session());
     shuangpin(session::new_session());
     hot_swaps(session::new_session());
     custom_phrases(session::new_session());
