@@ -1,124 +1,161 @@
-# OctoDot
+# 八千点 OctoDot
 
-A privacy-first Chinese input method for macOS. The input engine is written
-in [Goose](https://github.com/aardappel/goose) and runs behind a narrow C ABI
-inside a sandboxed InputMethodKit app with no network access.
+A privacy-first Chinese input method for macOS. It types whole sentences in
+全拼 (full pinyin) or 小鹤双拼, and everything it does happens on your Mac:
+the input method runs in a sandbox with no network access at all.
 
-**Status: M0 done, M1 in progress, M2's grammar model in.** It types today
-on the whole 万象 lexicon, in full pinyin or 小鹤双拼, with sentences ranked
-by 万象's grammar model (as accurate as librime with it on the same Zhihu
-sentences: [`docs/M2-grammar.md`](docs/M2-grammar.md)) and reranked by a
-small neural model of OctoDot's own, on the Mac (73.4% of corpus sentences
-right in 小鹤双拼, from 65.8%: [`docs/rerank-design.md`](docs/rerank-design.md)), abbreviations
-(`zgr`), tones (`zhong7`), shape codes (`` shi`o ``), 万象's daily
-character set, fuzzy pinyin if you want it (z = zh, n = l and eight more,
-each its own switch, all off by default: [`docs/fuzzy-pinyin.md`](docs/fuzzy-pinyin.md)),
-and learning from your choices, stored encrypted.
-Prototypes that tested the architecture's riskiest assumptions live in
-[`spikes/`](spikes), with their findings in
-[`spikes/README.md`](spikes/README.md). The plan for the first daily-drivable
-version, on the 万象 lexicon, is [`docs/M1-plan.md`](docs/M1-plan.md).
+[**Download OctoDot 0.1.0**](https://github.com/n19htfall/OctoDot/releases/download/v0.1.0/OctoDot-0.1.0.dmg)
+(413 MB, macOS 14 or later, Apple silicon) ·
+[mirror on Quark](https://pan.quark.cn/s/b9a29be252cb) ·
+[all releases](https://github.com/n19htfall/OctoDot/releases) ·
+[website](https://n19htfall.github.io/OctoDot/)
 
-## Typing
+## Why OctoDot
 
-OctoDot is two bundles ([`docs/distribution-and-onboarding.md`](docs/distribution-and-onboarding.md)):
-`OctoDot.app`, which you keep in `/Applications` and which sets up, updates
-and removes the input method, and `OctoDotIME.app`, the input method itself,
-which it installs in `~/Library/Input Methods` (sandboxed, with no network).
-`make install` puts the companion in `/Applications` and, through it, the
-input method in place; on a Mac with an earlier OctoDot
-(`com.example.inputmethod.OctoDot`) it removes that one, starting afresh (its
-learned words stay in its container, not carried over). Opening OctoDot.app
-walks a new user through the same, and lets them try typing right there.
-An update loads into the running IME in place, so every app keeps typing.
-Only a change to its small launcher (`macos/Sources/Launcher`) restarts the
-IME. Then apps built on Chromium (Chrome, Edge, VS Code, Typora and other
-Electron apps) type nothing until you quit and reopen them; install restarts
-Spotlight's host for you, and native apps reconnect by themselves.
-Then add OctoDot in System Settings → Keyboard → Input Sources. The input
-menu switches, at once and with nothing to rebuild, between 全拼 and 小鹤双拼
-(in 小鹤 the preedit shows the keys you type, by syllable: `vsgo` → `vs go`),
-turns the 词库 lexicon sets (地名, 名人, 艺人) and the 语法模型 grammar model
-on and off, and picks the 形码 shape-code scheme (万象, 墨奇, 自然码 and six
-more).
+- **Your typing stays on your Mac.** The input method cannot reach the
+  network, so there is nowhere for your keystrokes to go. See
+  [Privacy](#privacy).
+- **It gets sentences right.** A grammar model scores whole sentences, and a
+  small neural network, running on your Mac, reranks them. On 120 Zhihu
+  sentences it had never seen, OctoDot typed 75.8% correctly as a whole on
+  the first try, against 66.7% for the pinyin input built into macOS and
+  60.0% for Rime with the same grammar model.
+- **A large, current lexicon.** The words come from
+  [万象拼音](https://github.com/amzxyz/rime-wanxiang), with optional sets for
+  place names, well-known people and artists.
 
-| Keys | What they do while composing |
+## Install
+
+1. Download the disk image above, open it, and drag OctoDot into
+   Applications.
+2. Open OctoDot. It walks you through installing and enabling the input
+   method. If macOS asks you to confirm, the guide takes you to System
+   Settings → Keyboard → Text Input → Input Sources.
+3. Choose 全拼 or 小鹤双拼, and try typing right there in the guide.
+4. Switch to OctoDot from the input menu in the menu bar.
+
+If OctoDot does not show up in the input menu, remove it in System Settings →
+Keyboard → Text Input → Input Sources and add it again.
+
+**Updating.** OctoDot.app checks for updates and installs them. An update
+loads into the running input method, so the apps you are typing in carry on
+without a restart.
+
+**Uninstalling.** Open OctoDot.app and remove the input method from there,
+then move OctoDot.app to the Trash.
+
+## Features
+
+- **全拼 and 小鹤双拼**, on the same lexicon. Switch at any time from the
+  input menu. In 小鹤双拼 the input area shows the keys you typed, split by
+  syllable (`vsgo` → `vs go`).
+- **Chinese and English together.** Type `woyonggithub` and get
+  「我用GitHub」. Common English words appear among the candidates; there is
+  no separate English mode to switch into.
+- **Shape codes (形码).** After a syllable, type `` ` `` and one or two
+  letters to narrow the candidates by how the character is written
+  (`` shi`o `` → 是). Nine schemes, including 万象, 墨奇 and 自然码.
+- **Tones.** After a syllable, `7` `8` `9` `0` pick the first to fourth tone
+  (`zhong7`).
+- **Abbreviations.** Type initials only (`zgr`).
+- **Fuzzy pinyin (模糊音).** Ten pairs such as z = zh and n = l, each with
+  its own switch. All are off by default.
+- **It learns your choices.** A candidate you pick comes first the next
+  time. You can make it forget the last 15 minutes, today, or everything.
+- **Custom phrases.** Keep your own phrases in a text file; they take
+  effect a moment after you save (`yx` → 我的邮箱).
+- **More candidates at once.** Press ↓ to open the candidates as a grid.
+
+## Privacy
+
+OctoDot is two apps, and they are kept apart on purpose:
+
+| | OctoDot.app | The input method (OctoDotIME) |
+|---|---|---|
+| What it does | Installs, updates and removes the input method | Turns your keystrokes into text |
+| Sees what you type | No | Yes |
+| Can use the network | Yes, only to check for and download updates | No. macOS's sandbox refuses it |
+
+- The input method asks for one thing only: to be an input method. It does
+  not ask for Accessibility, Input Monitoring, the clipboard or Full Disk
+  Access.
+- What it learns from you is encrypted with AES-GCM, and the key is kept in
+  your Keychain. macOS asks you to allow this once.
+- It does not learn in password fields, in password managers, or in
+  incognito mode, which you can turn on from the input menu.
+- Updates are signed with Ed25519 and checked against a SHA-256 before they
+  are installed.
+
+## Keys
+
+| Keys | What they do while you are typing |
 |---|---|
 | letters, `'` | pinyin; `'` separates syllables (`xi'an`) |
-| `7` `8` `9` `0` after a syllable | its tone: first to fourth (`0` also neutral) |
-| `` ` `` then one or two letters | the syllable's shape code, 万象's scheme (`` shi`o `` → 是) |
-| `1`–`6`, space, a click | pick from the page; space picks the highlighted candidate |
+| `1`–`6`, Space, a click | pick a candidate; Space picks the highlighted one |
 | `-` `=`, Page Up/Down, arrows | turn pages, move the highlight |
-| Backspace | the last letter, or the last selection |
-| Shift- or Control-Backspace | forget the highlighted candidate from what OctoDot has learned |
+| `7` `8` `9` `0` after a syllable | its tone, first to fourth (`0` is also the neutral tone) |
+| `` ` `` then one or two letters | the syllable's shape code (`` shi`o `` → 是) |
+| Backspace | delete the last letter, or undo the last pick |
+| Shift- or Control-Backspace | forget the highlighted candidate |
 | Return, Escape | commit the letters as typed, or cancel |
-| Control-g | show rare characters too, or only the daily set (通用规范汉字表) |
+| Control-g | show rare characters too, or only the everyday set (通用规范汉字表) |
 | Shift alone | switch between Chinese and English |
 
-**Custom phrases.** Choose *Edit Custom Phrases…* in the input menu. One
-entry per line, as in 万象/Rime's `custom_phrase.txt`: text, then a tab or
-spaces, then a code. A pinyin code makes a word that works in sentences and
-in every scheme (`雾凇奇观 wu song qi guan`, or in 小鹤 keys: `雾凇奇观
-wussqigr`). Any other code is a shortcut, offered first when typed exactly
-(`我的邮箱 yx`). Save the file, and a moment later it is in use, compiled in
-the background.
+The input menu in the menu bar switches between 全拼 and 小鹤双拼, turns the
+extra lexicon sets (地名, 名人, 艺人) and the grammar model on and off, picks
+the shape-code scheme, and opens Settings.
 
-OctoDot learns from what you choose: a candidate you pick comes first the
-next time you type the same thing. It never learns in password fields, in
-password managers or in incognito. The input menu turns incognito on and
-off and forgets the last 15 minutes, today, or everything. What it learned
-is stored encrypted, with its key in your Keychain.
+### Custom phrases
 
-## Layout
+Choose *Edit Custom Phrases…* in the input menu. Write one entry per line:
+the text, then a tab or spaces, then a code.
+
+```
+雾凇奇观    wu song qi guan
+我的邮箱    yx
+```
+
+A pinyin code (first line) makes a word that works inside sentences and in
+both 全拼 and 小鹤双拼. Any other code (second line) is a shortcut, offered
+first when you type it exactly. The format is the one 万象 and Rime use for
+`custom_phrase.txt`.
+
+## Building from source
+
+You need macOS 14 or later on Apple silicon, Xcode (Swift 6), CMake and Git.
+
+```sh
+make            # fetch the pinned lexicon and models (~535 MB, once) and build
+make install    # put OctoDot.app in /Applications and install the input method
+make uninstall  # remove both; your learned words stay in the input method's container
+make test       # the privacy check, the unit tests, typing, and the accuracy gate
+make dmg-dev    # a development-signed disk image
+```
+
+`make accuracy`, `make bench`, `make eval` and `make fuzz` measure accuracy,
+size and speed, ranking quality, and the robustness of the file loaders.
+
+The input engine is written in [Goose](https://github.com/aardappel/goose)
+and sits behind a small C interface inside a sandboxed InputMethodKit app.
 
 | Path | What it is |
 |---|---|
-| `toolchain/goose.lock` | The one Goose compiler OctoDot builds with (tag and commit) |
-| `toolchain/bootstrap-goose.sh` | Builds that compiler from source into `.toolchain/` |
-| `data/wanxiang.lock` | The 万象拼音 release the default lexicon comes from, pinned by commit and SHA-256 |
-| `data/wanxiang-typo-rules.txt` | 全拼 typo spellings `octo-prep` drops, pinned to the rules in 万象 v18.1.9 |
-| `tools/fetch-wanxiang.sh` | Fetches and verifies those files into `.data/`; `--relock TAG` moves the pin |
-| `data/unihan.lock`, `tools/fetch-unihan.sh` | The same for Unicode's Unihan database, the source of character sets |
-| `data/rerank.lock` | The reranker OctoDot trained ([`docs/rerank-design.md`](docs/rerank-design.md)): its released weights, pinned by SHA-256. The training code is not part of this repository |
-| `data/daily-extra.txt` | Characters the daily set shows beyond 通用规范汉字表, each with its reason |
-| `tools/octo-prep/` | Swift tool: 万象 dictionaries, spelling rules and shape codes, and Unihan's character sets → normalized sources and an import report |
-| `engine/` | The Goose engine package: the image container, the lexicon, spelling and shape-code tables, the decoder and the composing session; its tests, benchmark and fuzz targets |
-| `macos/` | The input method: a sandboxed InputMethodKit app around the engine's C ABI |
-| `tools/octo-compile/` | Goose tool: normalized sources → verified images (`build/images/`) |
-| `mk/toolchain.mk` | The pinned Goose compiler and Xcode settings the Makefiles share |
-| `spikes/` | M0: four prototypes and what they settled |
-| `site/` | The website (Vite + React), published at [n19htfall.github.io/OctoDot](https://n19htfall.github.io/OctoDot/) by `.github/workflows/pages.yml` |
-| `docs/M1-plan.md` | M1: a daily-drivable IME on the 万象 lexicon |
-| `docs/hotswap-architecture.md` | Switching schemes, lexicon sets and shape codes live, with no deploy step |
-| `LICENSE` | OctoDot's license: the GNU General Public License v3.0 |
-| `LICENSE-weights` | The reranker weights' license: CC BY-NC-SA 4.0 |
-| `NOTICE` | Third-party material and licenses |
+| `engine/` | The engine: lexicon, spelling and shape-code tables, the sentence decoder, the typing session, and their tests |
+| `macos/` | The two apps: OctoDot.app and the input method |
+| `tools/` | The tools that turn the lexicon sources into the files the engine loads, and the release scripts |
+| `data/`, `toolchain/` | Lock files that pin every outside source and the compiler by commit and SHA-256 |
+| `site/` | The website |
+| `docs/` | Design notes: [sentences and the grammar model](docs/M2-grammar.md), [the reranker](docs/rerank-design.md), [English words](docs/english-design.md), [fuzzy pinyin](docs/fuzzy-pinyin.md), [live switching](docs/hotswap-architecture.md), [distribution and onboarding](docs/distribution-and-onboarding.md) |
+| `spikes/` | Early prototypes and [what they settled](spikes/README.md) |
 
-## Requirements
+## License and credits
 
-macOS 14 or later on Apple silicon, Xcode (Swift 6), CMake and Git.
-
-```sh
-make                   # fetch the pinned 万象 files, Unihan, 万象's grammar model and the reranker (~535 MB, once), prepare, build the images
-make install           # the companion into /Applications, and through it the input method for this user
-make uninstall         # remove both (your learned words stay, in the input method's container)
-make dmg-dev           # build/…/OctoDot-<version>-dev.dmg, development-signed, mounted and checked
-make dmg-release       # Developer ID, notarized and stapled (needs that certificate and a notarytool profile)
-make test              # the privacy check, octo-prep's tests, the images, typing, the accuracy gate, and the app
-make test-debug        # typing, the images and 小鹤双拼 accuracy, with Goose's --debug checks (not part of make test)
-make eval              # ranking quality, judged by the lexicon itself
-make accuracy          # the accuracy set, built from pinned outside sources, listing every miss (SCHEME=flypy for 小鹤双拼)
-make bench             # the images against M1's gates: size, load time, memory, lookups
-make fuzz              # fuzz the image loaders (with libFuzzer too, if LLVM is installed)
-make relock TAG=...    # pin another 万象 release and review what changed
-make -C spikes test    # M0; builds the pinned Goose compiler on first use (~45 s)
-```
-
-## License
-
-OctoDot's source code is licensed under the GNU General Public License
-v3.0 ([`LICENSE`](LICENSE)). The reranker's released weights (the files
-[`data/rerank.lock`](data/rerank.lock) pins) are licensed separately, under
-CC BY-NC-SA 4.0 ([`LICENSE-weights`](LICENSE-weights)): free to use and
-adapt for non-commercial purposes, with credit, under the same license.
-Third-party material keeps its own licenses ([`NOTICE`](NOTICE)).
+- OctoDot's source code is licensed under the GNU General Public License
+  v3.0 ([`LICENSE`](LICENSE)).
+- The reranker's weights are open and licensed separately, under
+  CC BY-NC-SA 4.0 ([`LICENSE-weights`](LICENSE-weights)): free to use and
+  adapt for non-commercial purposes, with credit, under the same license.
+  The code that trained them is not part of this repository.
+- The lexicon and the grammar model come from amzxyz's
+  [万象拼音](https://github.com/amzxyz/rime-wanxiang) (CC BY 4.0). Other
+  third-party material is listed in [`NOTICE`](NOTICE).
