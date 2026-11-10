@@ -33,14 +33,15 @@ FineWeb-2 (HuggingFaceFW/fineweb-2, cmn_Hani)
 librime-octagram
   https://github.com/lotem/librime-octagram
   © RIME Developers. Licensed under the BSD 3-Clause License.
-  engine/gram.h ports its file format and its Query (gram_db.cc,
-  gram_encoding.cc, octagram.cc), and engine/decoder.goose follows
+  engine/gram.h ports its file format (the header in gram_db.cc).
+  engine/grammar.goose ports its key encoding and its Query
+  (gram_encoding.cc, octagram.cc). engine/decoder.goose follows
   librime's sentence search (Poet's beam search, also BSD 3-Clause).
 
 darts-clone
   https://github.com/s-yata/darts-clone
   © Susumu Yata. Licensed under the BSD 2-Clause License.
-  engine/gram.h reads darts-clone's double-array units.
+  engine/grammar.goose reads darts-clone's double-array units.
 
 Unicode Character Database: Unihan
   https://www.unicode.org/reports/tr38/

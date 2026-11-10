@@ -1,7 +1,7 @@
 // Typing through the engine with the real lexicon, headless: what a user
 // sees for common input, the editing keys, and how long a key takes.
 //
-//   typing-test IMAGES
+//   typing-test IMAGES [--no-latency-gates]
 import std;
 import os;
 import octo from "..";
@@ -9,9 +9,17 @@ import octo from "..";
 var failures: i64 = 0;
 var soft_misses: i64 = 0;
 
+// A debug build is too slow for the latency gates. The flag still prints
+// those timings; every other check fails the run as usual.
+var latency_gates = true;
+
 fn check(ok: bool, what: const u8[:]) {
     print(if ok { "ok    " } else { "FAIL  " }, what);
     if !ok { failures++; }
+}
+
+fn check_time(ok: bool, what: const u8[:]) {
+    if latency_gates || ok { check(ok, what); } else { print("slow  ", what); }
 }
 
 // For ranking quality the lexicon alone cannot promise: reported, not failed.
@@ -297,8 +305,9 @@ fn hot_swaps(s: u64) {
     t = clock_ns();
     let b = session::set_scheme("fullpinyin");
     let to_full = clock_ns() - t;
-    check(a == 0 && b == 0 && to_flypy < 1000000 && to_full < 1000000,
-          str("switching schemes: ", to_flypy / 1000, " µs to 小鹤, ", to_full / 1000, " µs back (gate: under 1 ms)"));
+    check(a == 0 && b == 0, "switching schemes succeeds");
+    check_time(to_flypy < 1000000 && to_full < 1000000,
+               str("switching schemes: ", to_flypy / 1000, " µs to 小鹤, ", to_full / 1000, " µs back (gate: under 1 ms)"));
 }
 
 // Pumps until no phrase job is pending or waiting (20 s at most).
@@ -773,7 +782,7 @@ fn latency(s: u64) {
     let n = samples.len - 1;
     print("latency  key → candidates, ", samples.len, " keys (inputs up to 35 letters): p50 ",
           samples[n / 2] / 1000, " µs, p99 ", samples[n * 99 / 100] / 1000, " µs, max ", samples[n] / 1000, " µs");
-    check(samples[n * 99 / 100] < 5000000, "p99 under 5 ms");
+    check_time(samples[n * 99 / 100] < 5000000, "p99 under 5 ms");
 
     // With the reranker the candidates are shown after refine: the time to
     // the reranked candidates, reported (the key itself, and so the preedit
@@ -822,8 +831,8 @@ fn latency(s: u64) {
     let b = long.len - 1;
     print("latency  up to 20 letters: p99 ", short[a * 99 / 100] / 1000, " µs; 21 to 45 letters, abbreviation-heavy: p99 ",
           long[b * 99 / 100] / 1000, " µs, max ", long[b] / 1000, " µs");
-    check(short[a * 99 / 100] <= 2000000, "gate: p99 ≤ 2 ms for inputs up to 20 letters");
-    check(long[b * 99 / 100] <= 5000000, "gate: ≤ 5 ms for long, abbreviation-heavy input (p99; the max is above)");
+    check_time(short[a * 99 / 100] <= 2000000, "gate: p99 ≤ 2 ms for inputs up to 20 letters");
+    check_time(long[b * 99 / 100] <= 5000000, "gate: ≤ 5 ms for long, abbreviation-heavy input (p99; the max is above)");
 
     // Past a full composition, where each key may first commit a word to make
     // room: real long clauses (zhihu120's longest, in full pinyin) and
@@ -849,7 +858,7 @@ fn latency(s: u64) {
     let z = longest.len - 1;
     print("latency  46 to 110 letters, a full composition making room: p99 ", longest[z * 99 / 100] / 1000,
           " µs, max ", longest[z] / 1000, " µs");
-    check(longest[z * 99 / 100] <= 5000000, "gate: ≤ 5 ms past a full composition (p99)");
+    check_time(longest[z * 99 / 100] <= 5000000, "gate: ≤ 5 ms past a full composition (p99)");
 }
 
 // Past a composition's lattice::MAX_INPUT keys, a key commits the best
@@ -1274,7 +1283,7 @@ fn english_words(s: u64) {
         english::exact("zzzz");
     }
     let lookup = (clock_ns() - t) / 20000;
-    check(lookup < 50000, str("an English lookup is ", lookup / 1000, " µs (gate: under 50)"));
+    check_time(lookup < 50000, str("an English lookup is ", lookup / 1000, " µs (gate: under 50)"));
     session::set_english(true);
     var on_ns: i64 = 0;
     var off_ns: i64 = 0;
@@ -1305,11 +1314,18 @@ fn english_words(s: u64) {
 
 fn main() {
     let argv = args();
-    if argv.len != 2 {
-        write_stderr("usage: typing-test IMAGES\n");
+    var images: const u8[:] = "";
+    for i in argv.len {
+        if i == 0 { continue; }
+        if argv[i] == "--no-latency-gates" { latency_gates = false; }
+        else if images.len == 0 { images = argv[i]; }
+        else { images = ""; break; }
+    }
+    if images.len == 0 {
+        write_stderr("usage: typing-test IMAGES [--no-latency-gates]\n");
         exit(2);
     }
-    check(session::open(argv[1]) == 0, "the engine opens the images");
+    check(session::open(images) == 0, "the engine opens the images");
     let s = session::new_session();
 
     first_is(s, "nihao", "你好", true);

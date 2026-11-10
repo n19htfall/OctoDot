@@ -15,8 +15,9 @@
 //   octo_fuzz_phrases    the bytes are a custom phrase list: compiling it never
 //                        aborts, and the images it makes load and verify
 //   octo_fuzz_gram       the bytes are a grammar model (.gram): mapping it
-//                        refuses it, or every query stays inside it (gram.h,
-//                        C, under ASan) and answers within the settings' bounds
+//                        refuses it, or every query stays inside it (the
+//                        mapping in gram.h, under ASan; the walk in Goose)
+//                        and answers within the settings' bounds
 //   octo_fuzz_rerank     the bytes are a reranker image (rerank.img): the same
 //                        as the other images
 //   octo_fuzz_rerank_weights  the bytes are reranker weights (rerank.weights)
@@ -259,8 +260,10 @@ export fn octo_fuzz_phrases(data: const u8[:]) -> i32 {
     return 1;
 }
 
-// A grammar model file, mapped and queried with contexts and words both
-// fixed and cut from the bytes themselves (any bytes, so malformed UTF-8 too).
+// A grammar model file. The mapping is C, so AddressSanitizer covers it;
+// the walk is Goose. Contexts and words are fixed strings and slices of
+// the bytes themselves, malformed UTF-8 included. A file is refused, or
+// every query stays inside it.
 export fn octo_fuzz_gram(data: const u8[:]) -> i32 {
     if !write_file("fuzz-gram.gram", data) { return 0; }
     grammar::octo_gram_settings(6, 2, -14.0, -6.0, -100.0, -18.0);

@@ -9,6 +9,7 @@
 #   make accuracy           the accuracy set (data/accuracy.lock's sources), with every miss (SCHEME=flypy for 小鹤双拼;
 #                           DIAGNOSE=1 says why each sentence is missed)
 #   make fuzz               fuzz the image loaders (FUZZ_SECONDS=20 per target)
+#   make test-debug         typing, the images and 小鹤双拼 accuracy, built with Goose's --debug checks
 #   make relock TAG=v18.2.0 pin another 万象 release and show what changed
 #   make clean
 include mk/toolchain.mk
@@ -21,12 +22,13 @@ PREPARED     := build/data/wanxiang
 IMAGES       := build/images
 RERANK_DIR   := .data/rerank
 BIN          := build/bin
+BIN_DEBUG    := build/bin-debug
 ACCURACY     := build/accuracy
 OCTO_PREP    := tools/octo-prep/.build/release/octo-prep
 PREP_SOURCES := $(shell find tools/octo-prep/Sources -name '*.swift') tools/octo-prep/Package.swift
 ENGINE       := $(wildcard engine/*.goose) engine/gram.h engine/octo.build
 
-.PHONY: all fetch prep images app dmg-dev dmg-release appcast release-key uninstall install test test-prep test-images test-typing test-accuracy test-app check-privacy fetch-accuracy bench eval accuracy fuzz relock clean
+.PHONY: all fetch prep images app dmg-dev dmg-release appcast release-key uninstall install test test-prep test-images test-typing test-accuracy test-app test-debug check-privacy fetch-accuracy bench eval accuracy fuzz relock clean
 all: images
 
 # Idempotent: verifies the pinned files and downloads only what is missing.
@@ -63,6 +65,20 @@ $(BIN)/eval: engine/tests/eval.goose $(ENGINE) | $(GOOSE)
 
 $(BIN)/accuracy: engine/tests/accuracy.goose $(ENGINE) | $(GOOSE)
 	$(GOOSE) build $< -o $@ $(GOOSEFLAGS)
+
+# --debug checks overflow and range, and builds the C at -O0. Its own
+# directory, so a debug run never replaces the release binaries.
+$(BIN_DEBUG)/typing-test: engine/tests/typing_test.goose $(ENGINE) | $(GOOSE)
+	@mkdir -p $(BIN_DEBUG)
+	$(GOOSE) build $< -o $@ $(GOOSEFLAGS) --debug
+
+$(BIN_DEBUG)/images-test: engine/tests/images_test.goose $(ENGINE) | $(GOOSE)
+	@mkdir -p $(BIN_DEBUG)
+	$(GOOSE) build $< -o $@ $(GOOSEFLAGS) --debug
+
+$(BIN_DEBUG)/accuracy: engine/tests/accuracy.goose $(ENGINE) | $(GOOSE)
+	@mkdir -p $(BIN_DEBUG)
+	$(GOOSE) build $< -o $@ $(GOOSEFLAGS) --debug
 
 $(BIN)/images-bench: engine/bench/images_bench.goose engine/bench/metrics.c engine/bench/images_bench.build $(ENGINE) | $(GOOSE)
 	$(GOOSE) build $< -o $@ $(GOOSEFLAGS)
@@ -120,6 +136,14 @@ test-images: images $(BIN)/images-test
 
 test-typing: images $(BIN)/typing-test
 	$(BIN)/typing-test $(IMAGES)
+
+# The same three checks as a debug build. Full pinyin accuracy is several
+# minutes with the checks on, so this runs 小鹤双拼 only. Latency gates fail
+# at -O0; the flag prints them and does not fail the run.
+test-debug: images $(BIN_DEBUG)/typing-test $(BIN_DEBUG)/images-test $(BIN_DEBUG)/accuracy $(ACCURACY)/words.tsv
+	$(BIN_DEBUG)/typing-test $(IMAGES) --no-latency-gates
+	$(BIN_DEBUG)/images-test $(PREPARED) $(IMAGES)
+	$(BIN_DEBUG)/accuracy $(IMAGES) $(ACCURACY) flypy
 
 # The accuracy set, from outside sources pinned in data/accuracy.lock and
 # fetched into .data/accuracy/ for testing only (never committed or shipped).

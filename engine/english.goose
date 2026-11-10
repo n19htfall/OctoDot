@@ -125,6 +125,8 @@ fn valid(d: Dict&) -> bool {
         if !is_code(e.code) || !(e.score >= 0.0) || e.weight == 0 { return false; }
         if e.count == 0 || e.count > MAX_FORMS { return false; }
         if (e.form as i64) != next { return false; }
+        // The rows are read below. A count past the array is refused here.
+        if next + e.count > d.forms.len { return false; }
         next += e.count;
         if i > 0 && compare(d.entries[i - 1].code, e.code) >= 0 { return false; }
         for k in e.count {

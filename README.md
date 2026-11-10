@@ -105,6 +105,7 @@ make uninstall         # remove both (your learned words stay, in the input meth
 make dmg-dev           # build/…/OctoDot-<version>-dev.dmg, development-signed, mounted and checked
 make dmg-release       # Developer ID, notarized and stapled (needs that certificate and a notarytool profile)
 make test              # the privacy check, octo-prep's tests, the images, typing, the accuracy gate, and the app
+make test-debug        # typing, the images and 小鹤双拼 accuracy, with Goose's --debug checks (not part of make test)
 make eval              # ranking quality, judged by the lexicon itself
 make accuracy          # the accuracy set, built from pinned outside sources, listing every miss (SCHEME=flypy for 小鹤双拼)
 make bench             # the images against M1's gates: size, load time, memory, lookups

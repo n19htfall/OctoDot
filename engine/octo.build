@@ -1,7 +1,7 @@
 // The engine's C, each read in place from a mapped file: the grammar
-// model's trie, and the reranker's forward pass, included into the generated
-// C; and the one call into Accelerate (its matrix product, for the
-// reranker), compiled apart and linked with libcblas, which re-exports
+// model's mapping, and the reranker's forward pass, included into the
+// generated C; and the one call into Accelerate (its matrix product, for
+// the reranker), compiled apart and linked with libcblas, which re-exports
 // Accelerate's BLAS.
 c_headers = ["gram.h", "rerank.h"];
 c_sources = ["blas.c"];
