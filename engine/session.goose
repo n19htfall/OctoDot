@@ -351,6 +351,10 @@ fn clear_composition() {
     picked_pairs.clear();
     picked_ends.clear();
     decoder::clear(menu);
+    words.list.clear();
+    words.checks.clear();
+    decoder::clear_shortlist(shortlist);
+    rerank_due = 0;
     shown.clear();
     readable = 0;
     page = 0;
@@ -1301,6 +1305,9 @@ fn set_full_charset(v: bool) {
 // A key: what it did (HANDLED, DIRTY, HAS_COMMIT), and PENDING if the
 // reranker may change the menu it left (the host calls refine first).
 fn key(handle: u64, ev: KeyEvent) -> u32 {
+    // The host copied the bytes lent by an earlier save before its next
+    // engine call. Do not keep a second copy for the rest of the session.
+    user_saved.clear();
     let result = handle_key(handle, ev);
     return if reranking() && (result & HANDLED) != 0 { result | PENDING } else { result };
 }
@@ -1605,7 +1612,16 @@ fn user_restore(data: const u8[:]) -> i32 {
 }
 
 // Returns memory the engine no longer uses to the system (on memory pressure).
-fn trim() { trim_memory(); }
+fn trim() {
+    // The host has copied any lent bytes before this call. Active menu and
+    // search data must stay intact, including a pending rerank.
+    user_saved.clear();
+    journal_saved.clear();
+    snap.clear();
+    userdb::expire_journal();
+    userdb::reclaim();
+    trim_memory();
+}
 
 // Before the host ends the runtime (goose_exit): what lives outside it, the
 // grammar model's and the reranker's mapped files, is released here.

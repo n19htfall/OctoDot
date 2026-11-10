@@ -26,9 +26,9 @@ BIN_DEBUG    := build/bin-debug
 ACCURACY     := build/accuracy
 OCTO_PREP    := tools/octo-prep/.build/release/octo-prep
 PREP_SOURCES := $(shell find tools/octo-prep/Sources -name '*.swift') tools/octo-prep/Package.swift
-ENGINE       := $(wildcard engine/*.goose) engine/gram.h engine/octo.build
+ENGINE       := $(wildcard engine/*.goose) engine/gram.h engine/rerank.h engine/blas.c engine/octo.build
 
-.PHONY: all fetch prep images app dmg-dev dmg-release appcast release-key uninstall install test test-prep test-images test-typing test-accuracy test-app test-debug check-privacy fetch-accuracy bench eval accuracy fuzz relock clean
+.PHONY: all fetch prep images app dmg-dev dmg-release appcast release-key uninstall install test test-prep test-images test-typing test-accuracy test-app test-debug check-privacy fetch-accuracy bench bench-typing-memory eval accuracy fuzz relock clean
 all: images
 
 # Idempotent: verifies the pinned files and downloads only what is missing.
@@ -81,6 +81,9 @@ $(BIN_DEBUG)/accuracy: engine/tests/accuracy.goose $(ENGINE) | $(GOOSE)
 	$(GOOSE) build $< -o $@ $(GOOSEFLAGS) --debug
 
 $(BIN)/images-bench: engine/bench/images_bench.goose engine/bench/metrics.c engine/bench/images_bench.build $(ENGINE) | $(GOOSE)
+	$(GOOSE) build $< -o $@ $(GOOSEFLAGS)
+
+$(BIN)/typing-memory: engine/bench/typing_memory.goose engine/bench/metrics.c engine/bench/typing_memory.build $(ENGINE) | $(GOOSE)
 	$(GOOSE) build $< -o $@ $(GOOSEFLAGS)
 
 # One octo-compile run writes every image; lexicon.img stands for them all.
@@ -167,6 +170,9 @@ test-app: images
 
 bench: images $(BIN)/images-bench
 	$(BIN)/images-bench $(IMAGES)
+
+bench-typing-memory: images $(BIN)/typing-memory
+	$(BIN)/typing-memory $(IMAGES)
 
 eval: images $(BIN)/eval
 	$(BIN)/eval $(IMAGES) $(SCHEME)

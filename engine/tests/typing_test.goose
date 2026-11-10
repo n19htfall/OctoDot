@@ -869,6 +869,71 @@ fn storage(s: u64) {
           str("english slots are reused once that journal expires (slots ", userdb::english.len, "/", en,
               ", pool ", userdb::pool_en.len, "/", en_pool, ")"));
 
+    // Saving already omits year-old learning; it must also release it in a
+    // process that stays open. Keep a newer word and its undo history across
+    // the compaction, including when a menu is already on screen.
+    userdb::reset();
+    userdb::clock_override = 1794000000;
+    check(pick(s, "zhongguo", "中国", 0), "aging: learn 中国");
+    userdb::learn_english("github", "GitHub", 99);
+    userdb::clock_override += 364 * 86400;
+    var young: u8[>..] = [];
+    young.append(session::user_save());
+    check(userdb::lex.entries.len == 1 && userdb::live_choices == 1 && userdb::live_english == 1 &&
+          find(young, "中国\t") >= 0, "aging: learning younger than a year stays");
+    userdb::clock_override += 86400;
+    check(pick(s, "xian", "西安", 0), "aging: learn 西安 a year later");
+    userdb::learn_english("openai", "OpenAI", 100);
+    userdb::learn_english("dead", "Dead", 101);
+    userdb::unlearn_english("dead", "Dead");
+    press(s, session::KEY_ESCAPE);
+    type_text(s, "xian");
+    let before_save = userdb::changes;
+    var aged: u8[>..] = [];
+    aged.append(session::user_save());
+    check(userdb::lex.entries.len == 1 && userdb::lex.pairs.len == stored_syllables() &&
+          userdb::live_choices == 1 && userdb::choices.len == 1 && userdb::live_english == 1 &&
+          userdb::english.len == 2 && userdb::find_english("openai", "OpenAI") >= 0 &&
+          userdb::changes > before_save &&
+          find(aged, "中国\t") < 0 && find(aged, "西安\t") >= 0,
+          "aging: saving releases cold words, choices and English without losing recent learning");
+    userdb::learn_english("newword", "NewWord", 102);
+    check(userdb::english.len == 3, "aging: a dead slot named by the recent journal is not reused");
+    check((press(s, session::KEY_SPACE) & session::HAS_COMMIT) != 0 && session::commit == "西安",
+          "aging: selecting an already visible menu rebuilds it after compaction");
+    check(userdb::forget(userdb::RECENT) >= 1 && userdb::lex.entries.len == 0 && userdb::live_english == 0,
+          "aging: recent undo still refers to surviving entries after compaction");
+
+    userdb::reset();
+    type_text(s, "zhongguoren");
+    check(session::words.list.len > 0, "temporary search data exists while composing");
+    let data = session::user_save();
+    check(data.len > 0, "a saved dictionary is lent to the host");
+    typed(s, 'a');
+    check(session::user_saved.len == 0, "the next key releases the host's copied save bytes");
+    let saved_again = session::user_save();
+    session::trim();
+    check(session::user_saved.len == 0 && session::words.list.len > 0 && session::composing(),
+          "memory pressure releases lent save bytes but preserves the active composition");
+    press(s, session::KEY_ESCAPE);
+    check(session::words.list.len == 0, "ending a composition releases its search data");
+
+    type_text(s, "yijiasankouhoubuchepiao");
+    let pending = session::reranking();
+    session::trim();
+    let refined = session::refine(s);
+    check(pending && (refined & session::DIRTY) != 0 && candidate(0) == "一家三口候补车票",
+          "memory pressure preserves a pending rerank and its search data");
+    press(s, session::KEY_ESCAPE);
+
+    userdb::reset();
+    userdb::learn_english("dead", "Dead", 103);
+    userdb::unlearn_english("dead", "Dead");
+    userdb::clock_override += userdb::RECENT_SECONDS + 1;
+    session::trim();
+    check(userdb::journal.len == 0 && userdb::free_english.len == 1,
+          "memory pressure expires an idle journal and makes its dead slots reusable");
+
     userdb::reset();
     userdb::clock_override = 0;
 }

@@ -264,7 +264,8 @@ enum Learning {
         let changes = Engine.shared.userDictionaryChanges
         guard changes != savedChanges else { return }
         if store.save(Engine.shared.saveUserDictionary()) {
-            savedChanges = changes
+            // Saving can discard expired entries and advance the revision.
+            savedChanges = Engine.shared.userDictionaryChanges
         } else {
             log.error("user dictionary: could not save")
         }

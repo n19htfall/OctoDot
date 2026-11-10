@@ -144,9 +144,11 @@ fn reset() {
     lexicon::clear(lex);
     lex.toned.append(lexicon::live.toned);
     stats.clear();
+    stats.slots.clear();
     choices.clear();
     pool.clear();
     choice_at.clear();
+    choice_at.slots.clear();
     live_choices = 0;
     free_choices.clear();
     dead_choices = 0;
@@ -154,6 +156,7 @@ fn reset() {
     english.clear();
     pool_en.clear();
     english_at.clear();
+    english_at.slots.clear();
     live_english = 0;
     free_english.clear();
     dead_english = 0;
@@ -309,6 +312,7 @@ fn compact_words() {
     lex.runs = copy(new_runs);
     lex.flags = copy(new_flags);
     stats.clear();
+    stats.slots.clear();
     for i in lex.entries.len { stats.insert(lex.entries[i].run, kept_stats[i]); }
     var moved = dictionary<u32, u32> {};
     for i in old_runs.len { moved.insert(old_runs[i], lex.entries[i].run); }
@@ -663,9 +667,75 @@ fn reclaim() {
     if dead_choices > 0 || dead_english > 0 || choice_waste > 4096 || english_waste > 4096 { reclaim_slots(); }
 }
 
+// Pack the slots after a bulk expiry. A journal entry can still name a dead
+// slot, so keep and remap those too; otherwise its undo could hit a new use.
+fn pack_choices() {
+    var held_c = dictionary<u32, bool> {};
+    var held_e = dictionary<u32, bool> {};
+    for c in journal {
+        if c.kind == CHOICE { held_c.insert(c.id, true); }
+        else if c.kind == ENGLISH { held_e.insert(c.id, true); }
+    }
+    var move_c: i64[>..] = [];
+    var move_e: i64[>..] = [];
+    var kept: i64 = 0;
+    for i in choices.len {
+        let ch = choices[i];
+        if ch.live || held_c.contains(i as u32) {
+            move_c.push(kept);
+            choices[kept] = ch;
+            kept++;
+        } else { move_c.push(-1); }
+    }
+    choices.resize(kept);
+    kept = 0;
+    for i in english.len {
+        let e = english[i];
+        if e.live || held_e.contains(i as u32) {
+            move_e.push(kept);
+            english[kept] = e;
+            kept++;
+        } else { move_e.push(-1); }
+    }
+    english.resize(kept);
+    held_c.clear();
+    held_e.clear();
+    for &c in journal {
+        if c.kind == CHOICE {
+            c.id = move_c[c.id] as u32;
+            held_c.insert(c.id, true);
+        } else if c.kind == ENGLISH {
+            c.id = move_e[c.id] as u32;
+            held_e.insert(c.id, true);
+        }
+    }
+    choice_at.clear();
+    choice_at.slots.clear();
+    free_choices.clear();
+    dead_choices = 0;
+    for i in choices.len {
+        let ch = choices[i];
+        if ch.live { choice_at.insert(choice_key(pool[ch.input..ch.input + ch.input_len],
+                                                  pool[ch.text..ch.text + ch.text_len]), i); }
+        else { dead_choices++; }
+    }
+    english_at.clear();
+    english_at.slots.clear();
+    free_english.clear();
+    dead_english = 0;
+    for i in english.len {
+        let e = english[i];
+        if e.live { english_at.insert(english_key(pool_en[e.code..e.code + e.code_len],
+                                                  pool_en[e.text..e.text + e.text_len]), i); }
+        else { dead_english++; }
+    }
+    compact_choice_pool(held_c);
+    compact_english_pool(held_e);
+}
+
 // ---- taking learning back ----------------------------------------------------------
 
-fn note(c: Change) {
+fn expire_journal() {
     var old: i64 = 0;                   // the journal keeps 15 minutes
     while old < journal.len && journal[old].time < now() - RECENT_SECONDS { old++; }
     if old > 0 {
@@ -674,6 +744,10 @@ fn note(c: Change) {
         journal.clear();
         journal.append(kept);
     }
+}
+
+fn note(c: Change) {
+    expire_journal();
     journal.push(c);
     reclaim();
 }
@@ -1346,13 +1420,44 @@ fn pom_alive() -> i64 {
 //   words:    text \t toned syllables, space-separated \t uses \t local day
 //   choices:  input as typed \t text \t uses \t local day
 //   english:  code \t text \t uses \t local day
-// with the dormant word lines as they came. What has gone cold is left out:
-// that is how forgetting happens. A word or choice used today is followed by
+// with the dormant word lines as they came. What has gone cold is removed
+// from memory as well as from the saved dictionary. A word or choice used
+// today is followed by
 //   #base \t uses \t local day
 // what it was before today's first use, for forgetting today. It starts
 // with '#' so that a build from before bases skips it, as it skips headers.
+fn prune_cold(day: u32) {
+    expire_journal();
+    var kept: i64 = 0;
+    var removed = false;
+    for i in lex.entries.len {
+        let e = lex.entries[i];
+        if cold(stat_of(i).day, day) {
+            orphan_pairs += e.len;
+            stats.remove(e.run);
+            removed = true;
+        } else {
+            lex.entries[kept] = e;
+            kept++;
+        }
+    }
+    lex.entries.resize(kept);
+    for i in choices.len {
+        if choices[i].live && cold(choices[i].day, day) { kill_choice(i); removed = true; }
+    }
+    for i in english.len {
+        if english[i].live && cold(english[i].day, day) { kill_english(i); removed = true; }
+    }
+    reclaim();
+    if removed { pack_choices(); }
+    // An existing menu contains entry indices. Make the session rebuild it
+    // before a selection can use the compacted dictionary.
+    if removed { changes++; }
+}
+
 fn save(out: u8[>..]&) {
     let day = today();
+    prune_cold(day);
     format(out, HEADER, "\n", WORDS_SECTION, "\n");
     for i in lex.entries.len {
         let e = lex.entries[i];

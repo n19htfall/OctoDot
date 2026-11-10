@@ -134,6 +134,8 @@ make dmg-dev    # a development-signed disk image
 
 `make accuracy`, `make bench`, `make eval` and `make fuzz` measure accuracy,
 size and speed, ranking quality, and the robustness of the file loaders.
+`make bench-typing-memory` exercises per-key typing, corrections, learning,
+snapshots and reranking, and checks whether memory settles after warmup.
 
 The input engine is written in [Goose](https://github.com/aardappel/goose)
 and sits behind a small C interface inside a sandboxed InputMethodKit app.

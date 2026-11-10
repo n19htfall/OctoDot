@@ -8,9 +8,15 @@ import Foundation
 @MainActor
 enum Smoke {
     static func main() {
+        exit(run())
+    }
+
+    // Return normally so the test's local values and deferred temporary-file
+    // cleanup are released before main exits (and leak tools inspect it).
+    static func run() -> Int32 {
         guard CommandLine.arguments.count == 2 else {
             print("usage: octo-smoke DATA_DIRECTORY")
-            exit(2)
+            return 2
         }
         let engine = Engine.shared
         let status = engine.start(dataDirectory: CommandLine.arguments[1])
@@ -211,6 +217,8 @@ enum Smoke {
         func percentile(_ p: Double) -> UInt64 { samples[min(samples.count - 1, Int(Double(samples.count) * p))] / 1000 }
         print("latency  key → engine → snapshot decoded in Swift, \(samples.count) keys of a 33-letter " +
               "sentence: p50 \(percentile(0.5)) µs, p99 \(percentile(0.99)) µs, max \(samples.last! / 1000) µs")
-        exit(failures == 0 ? 0 : 1)
+        engine.free(session)
+        check(engine.stop(), "the engine stops after typing")
+        return failures == 0 ? 0 : 1
     }
 }
