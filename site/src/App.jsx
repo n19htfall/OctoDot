@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import DotField from "./DotField.jsx";
 import { candidatesFor, preeditOf, schemes } from "./lexicon.js";
 
 const GITHUB = "https://github.com/n19htfall/OctoDot";
@@ -11,6 +12,11 @@ const DOWNLOAD = `${RELEASES}/download/v${RELEASE.version}/OctoDot-${RELEASE.ver
 /** The same disk image on Quark's cloud drive, for those GitHub is slow for. */
 const MIRROR = "https://pan.quark.cn/s/b9a29be252cb";
 const ICON = `${import.meta.env.BASE_URL}icon.png`;
+
+/** The icon's gold dot, closing a headline the way 。 closes a sentence. */
+function Dot() {
+  return <i className="dot" aria-hidden="true" />;
+}
 
 const NAV = [
   { id: "privacy", label: "隐私" },
@@ -28,7 +34,7 @@ const PEERS = { apple: "macOS 自带拼音", rime: "Rime + 万象语法模型" }
 const ACCURACY = [
   {
     set: "知乎测试集",
-    size: "120 句，从未用于训练或调参",
+    size: "120 句",
     ours: (91 / 120) * 100,
     peers: [
       { id: "apple", value: (80 / 120) * 100 },
@@ -42,6 +48,17 @@ const ACCURACY = [
     peers: [{ id: "rime", value: 63.85 }],
     note: "macOS 自带输入法没测因为懒 😋",
   },
+];
+
+/** The 120 sentences one dot each: how many each input method got right. */
+const UNIT_TOTAL = 120;
+const UNITS = [
+  { id: "ours", name: "八千点", right: Math.round((ACCURACY[0].ours / 100) * UNIT_TOTAL) },
+  ...ACCURACY[0].peers.map((peer) => ({
+    id: peer.id,
+    name: peer.id === "apple" ? "macOS 自带拼音" : "Rime",
+    right: Math.round((peer.value / 100) * UNIT_TOTAL),
+  })),
 ];
 
 const PERMISSIONS = [
@@ -213,13 +230,20 @@ const SCRIPT = [
 /** A Mac window typing by itself with OctoDot's candidate bar: to look at,
  *  not to use. Each sample is typed key by key, its first candidate goes up,
  *  and the next one follows. */
-function Demo() {
+function Demo({ onLead, onCommit }) {
   const [schemeId, setSchemeId] = useState("quanpin");
   const [raw, setRaw] = useState("");
   const [committed, setCommitted] = useState("");
   const scheme = schemes[schemeId];
   const preedit = preeditOf(raw, scheme);
   const candidates = candidatesFor(raw, scheme);
+  /* What the dot field spells: the first character of what is about to go
+     up, or of what just did. */
+  const lead = Array.from(committed || candidates[0] || "")[0];
+
+  useEffect(() => {
+    if (lead) onLead(lead);
+  }, [lead, onLead]);
 
   useEffect(() => {
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
@@ -241,6 +265,7 @@ function Demo() {
       timer = window.setTimeout(() => {
         setCommitted(text);
         setRaw("");
+        onCommit();
         timer = window.setTimeout(() => {
           setCommitted("");
           item = (item + 1) % SCRIPT.length;
@@ -251,7 +276,7 @@ function Demo() {
     };
     timer = window.setTimeout(step, 900);
     return () => window.clearTimeout(timer);
-  }, []);
+  }, [onCommit]);
 
   return (
     <div className="demo" role="img" aria-label="演示：在备忘录里用八千点打字，全拼与小鹤双拼，候选栏给出词语">
@@ -290,8 +315,14 @@ function Privacy() {
   return (
     <section className="section" id="privacy" aria-labelledby="privacy-title">
       <div className="section-head reveal">
-        <p className="eyebrow">原则</p>
-        <h2 id="privacy-title">隐私优先</h2>
+        <p className="eyebrow">
+          <span className="idx">01</span>
+          原则
+        </p>
+        <h2 id="privacy-title">
+          隐私优先
+          <Dot />
+        </h2>
         <p className="section-lede">
           八千点从架构上靠系统的隔离机制不给这些输入离开的机会。
         </p>
@@ -332,8 +363,14 @@ function Isolation() {
     <section className="section dark" id="isolation" aria-labelledby="isolation-title">
       <div className="dark-inner">
         <div className="section-head reveal">
-          <p className="eyebrow">隔离</p>
-          <h2 id="isolation-title">断网沙盒</h2>
+          <p className="eyebrow">
+          <span className="idx">02</span>
+          隔离
+        </p>
+          <h2 id="isolation-title">
+          断网沙盒
+          <Dot />
+        </h2>
           <p className="section-lede">
             八千点输入法拆成两个程序。负责更新的 OctoDot.app 可以联网，却看不到按键；实际输入的 OctoDotIME 被关在断网沙盒里，无法向外传输数据。
           </p>
@@ -428,11 +465,18 @@ function Isolation() {
 function Accuracy() {
   const bigRef = useRef(null);
   const big = useCountUp(75.8, bigRef);
+  const [whole, tenth] = big.toFixed(1).split(".");
   return (
     <section className="section" id="accuracy" aria-labelledby="accuracy-title">
       <div className="section-head reveal">
-        <p className="eyebrow">准确率</p>
-        <h2 id="accuracy-title">对吗？对的</h2>
+        <p className="eyebrow">
+          <span className="idx">03</span>
+          准确率
+        </p>
+        <h2 id="accuracy-title">
+          对吗？对的
+          <Dot />
+        </h2>
         <p className="section-lede">
           训练了一个小神经网络用来重排序, and it just works.
         </p>
@@ -441,17 +485,35 @@ function Accuracy() {
       <div className="acc-grid">
         <div className="acc-hero reveal" ref={bigRef}>
           <p className="acc-number">
-            {big.toFixed(1)}
+            {whole}
+            <i className="point">.</i>
+            {tenth}
             <span>%</span>
           </p>
           <p className="acc-caption">整句一次打对</p>
           <p className="acc-sub">测试集结果</p>
           <div className="acc-chip">
             <strong>错句比 macOS 自带拼音少 27.5%</strong>
-            <span>
-              同一组 120 句：八千点错 29 句，<span className="nowrap">macOS 自带拼音错 40 句</span>，
-              <span className="nowrap">Rime 错 48 句</span>
-            </span>
+            {/* <span>同一组 {UNIT_TOTAL} 句，一个点是一句</span> */}
+            <div
+              className="units"
+              role="img"
+              aria-label={`同一组 ${UNIT_TOTAL} 句：${UNITS.map((unit) => `${unit.name}错 ${UNIT_TOTAL - unit.right} 句`).join("，")}`}
+            >
+              {UNITS.map((unit) => (
+                <div className={`unit ${unit.id}`} key={unit.id} aria-hidden="true">
+                  <div className="unit-dots">
+                    {Array.from({ length: UNIT_TOTAL }, (_, index) => (
+                      <i key={index} className={index < unit.right ? "hit" : ""} style={{ "--i": index }} />
+                    ))}
+                  </div>
+                  <p className="unit-name">{unit.name}</p>
+                  <p className="unit-count">
+                    错 <strong>{UNIT_TOTAL - unit.right}</strong> 句
+                  </p>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
 
@@ -512,8 +574,14 @@ function Features() {
   return (
     <section className="section" id="features" aria-labelledby="features-title">
       <div className="section-head reveal">
-        <p className="eyebrow">其他功能</p>
-        <h2 id="features-title">早晚用得上</h2>
+        <p className="eyebrow">
+          <span className="idx">04</span>
+          其他功能
+        </p>
+        <h2 id="features-title">
+          早晚用得上
+          <Dot />
+        </h2>
       </div>
       <div className="feature-grid">
         {FEATURES.map((item, index) => (
@@ -526,6 +594,89 @@ function Features() {
         ))}
       </div>
     </section>
+  );
+}
+
+/** The hero and the figures under it, over the dot field. The field spells
+ *  the character the demo is typing, so the two share this state. */
+function Top() {
+  const hostRef = useRef(null);
+  const slotRef = useRef(null);
+  const [lead, setLead] = useState("千");
+  const [pulse, setPulse] = useState(0);
+  const commit = useCallback(() => setPulse((count) => count + 1), []);
+
+  return (
+    <>
+      <div className="hero-wrap" ref={hostRef}>
+        <DotField char={lead} pulse={pulse} hostRef={hostRef} slotRef={slotRef} />
+        <section className="hero" id="top" aria-labelledby="hero-title">
+          <div className="hero-copy">
+            <p className="hero-eyebrow">
+              八千点 · 中文输入法
+              <span className="ver">v{RELEASE.version}</span>
+            </p>
+            <h1 id="hero-title">
+              隐私、效率，
+              <br />
+              现已支持
+              <span className="nowrap">
+                {" "}
+                macOS
+                <Dot />
+              </span>
+            </h1>
+            <p className="hero-lede">
+              <span className="nowrap">八千点是隐私优先的中文输入法，</span>
+              <span className="nowrap">目前支持全拼与小鹤双拼。</span>
+              <br />
+              <span className="nowrap">运行在系统沙盒，</span>
+              <span className="nowrap">没有任何网络权限。</span>
+            </p>
+            <div className="hero-actions">
+              <DownloadButton icon="github" />
+              <a className="link" href="#isolation">
+                输入法架构 <span aria-hidden="true">→</span>
+              </a>
+            </div>
+            <p className="hero-meta">
+              macOS 14 及以上 · Apple 芯片
+              <a className="mirror" href={MIRROR}>
+                <DownloadOutlineIcon />
+                备用下载链接
+              </a>
+            </p>
+          </div>
+          <div className="stage">
+            <div className="glyph-slot" ref={slotRef} aria-hidden="true" />
+            <Demo onLead={setLead} onCommit={commit} />
+          </div>
+        </section>
+      </div>
+
+      <section className="stats" aria-label="要点">
+        <div className="stat reveal">
+          <strong>75.8%</strong>
+          <span>
+            长句准确率<span className="nowrap"></span>
+          </span>
+        </div>
+        <div className="stat reveal" style={{ "--delay": "70ms" }}>
+          <strong>+9.2%</strong>
+          <span>
+            对比macOS自带输入法<span className="nowrap"></span>
+          </span>
+        </div>
+        <div className="stat reveal" style={{ "--delay": "140ms" }}>
+          <strong>0</strong>
+          <span>输入法的网络权限</span>
+        </div>
+        <div className="stat reveal" style={{ "--delay": "210ms" }}>
+          <strong>本地</strong>
+          <span>词库、记忆与 AI 只留在本机</span>
+        </div>
+      </section>
+    </>
   );
 }
 
@@ -559,60 +710,7 @@ export default function App() {
       </header>
 
       <main id="main">
-        <section className="hero" id="top" aria-labelledby="hero-title">
-          <div className="hero-copy">
-            <p className="hero-eyebrow">八千点 · 中文输入法</p>
-            <h1 id="hero-title">
-              隐私、效率，
-              <br />
-              现已支持<span className="nowrap"> macOS</span>
-            </h1>
-            <p className="hero-lede">
-              <span className="nowrap">八千点是隐私优先的中文输入法，</span>
-              <span className="nowrap">目前支持全拼与小鹤双拼。</span>
-              <br />
-              <span className="nowrap">运行在系统沙盒，</span>
-              <span className="nowrap">没有任何网络权限。</span>
-            </p>
-            <div className="hero-actions">
-              <DownloadButton icon="github" />
-              <a className="link" href="#isolation">
-                输入法架构 <span aria-hidden="true">→</span>
-              </a>
-            </div>
-            <p className="hero-meta">
-              macOS 14 及以上 · Apple 芯片
-              <a className="mirror" href={MIRROR}>
-                <DownloadOutlineIcon />
-                备用下载链接
-              </a>
-            </p>
-          </div>
-          <Demo />
-        </section>
-
-        <section className="stats" aria-label="要点">
-          <div className="stat reveal">
-            <strong>75.8%</strong>
-            <span>
-              长句准确率<span className="nowrap"></span>
-            </span>
-          </div>
-          <div className="stat reveal" style={{ "--delay": "70ms" }}>
-            <strong>+9.2%</strong>
-            <span>
-              对比macOS自带输入法<span className="nowrap"></span>
-            </span>
-          </div>
-          <div className="stat reveal" style={{ "--delay": "140ms" }}>
-            <strong>0</strong>
-            <span>输入法的网络权限</span>
-          </div>
-          <div className="stat reveal" style={{ "--delay": "210ms" }}>
-            <strong>本地</strong>
-            <span>词库、记忆与 AI 只留在本机</span>
-          </div>
-        </section>
+        <Top />
 
         <Privacy />
         <Isolation />
@@ -622,7 +720,7 @@ export default function App() {
         <section className="cta reveal" aria-labelledby="cta-title">
           <img src={ICON} alt="" width="72" height="72" />
           <h2 id="cta-title">八千点 OctoDot</h2>
-          <p>拖进「应用程序」即可安装。</p>
+          <p>即刻下载体验。</p>
           <div className="hero-actions center">
             <DownloadButton icon="github" />
             <a className="btn ghost" href={GITHUB}>
