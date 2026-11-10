@@ -15,11 +15,14 @@ final class Updater {
         case upToDate
         case available(UpdateManifest)
         case downloading
+        case verifying
         case installing
         case failed(String)
     }
 
     var phase = Phase.idle
+    var downloadedBytes: Int64 = 0
+    var downloadSize: Int64 = 0
     /// Checks once a day while the companion runs, if the user wants it.
     var automatic: Bool {
         didSet { UserDefaults.standard.set(automatic, forKey: "automaticUpdateChecks") }
@@ -54,7 +57,7 @@ final class Updater {
     /// `interactive` is a click on "检查更新…": the update window opens and
     /// shows the outcome. The daily check leaves it closed.
     func check(interactive: Bool = false) async {
-        if phase == .checking || phase == .downloading || phase == .installing {
+        if phase == .checking || phase == .downloading || phase == .verifying || phase == .installing {
             if interactive { UpdateNotice.shared.present(self) }
             return
         }
@@ -92,15 +95,26 @@ final class Updater {
         guard case .available(let manifest) = phase, let manifestData, let key = Self.publicKey,
               let verifier = try? UpdateVerifier(publicKeyBase64: key, releasesPrefix: Identity.releasesPrefix),
               let url = URL(string: manifest.url) else { return }
+        downloadedBytes = 0
+        downloadSize = Int64(manifest.size)
         phase = .downloading
         do {
-            let (file, _) = try await URLSession(configuration: .ephemeral).download(from: url)
-            try verifier.verifyPayload(at: file, for: manifest)
+            let progress = DownloadProgress { [weak self] bytes in
+                Task { @MainActor in
+                    guard let self, self.phase == .downloading else { return }
+                    self.downloadedBytes = max(self.downloadedBytes, bytes)
+                }
+            }
+            let (file, _) = try await URLSession(configuration: .ephemeral).download(from: url, delegate: progress)
+            defer { try? FileManager.default.removeItem(at: file) }
+            phase = .verifying
+            try await Task.detached {
+                try verifier.verifyPayload(at: file, for: manifest)
+            }.value
             let handle = try FileHandle(forReadingFrom: file)
             phase = .installing
             let (ok, message) = await InstallerClient.shared.installUpdate(manifest: manifestData, file: handle)
             try? handle.close()
-            try? FileManager.default.removeItem(at: file)
             guard ok else {
                 phase = .failed(message)
                 return
@@ -119,4 +133,21 @@ final class Updater {
             DispatchQueue.main.async { NSApp.terminate(nil) }
         }
     }
+}
+
+private final class DownloadProgress: NSObject, URLSessionDownloadDelegate {
+    private let report: @Sendable (Int64) -> Void
+
+    init(report: @escaping @Sendable (Int64) -> Void) {
+        self.report = report
+    }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
+                    didWriteData bytesWritten: Int64, totalBytesWritten: Int64,
+                    totalBytesExpectedToWrite: Int64) {
+        report(totalBytesWritten)
+    }
+
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
+                    didFinishDownloadingTo location: URL) {}
 }

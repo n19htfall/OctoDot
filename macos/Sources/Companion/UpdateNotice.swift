@@ -176,6 +176,7 @@ private struct UpdateNoticeView: View {
         case .upToDate: "你正在使用的是 OctoDot 的最新版本！"
         case .available: "OctoDot 有新版本可供更新"
         case .downloading: "正在下载更新…"
+        case .verifying: "正在校验更新…"
         case .installing: "正在安装更新…"
         case .failed(let why): why
         }
@@ -185,7 +186,7 @@ private struct UpdateNoticeView: View {
     private var detail: String? {
         switch updater.phase {
         case .available(let manifest): manifest.version
-        case .downloading, .installing: nil
+        case .downloading, .verifying, .installing: nil
         case .failed: runningVersion
         default: runningVersion
         }
@@ -203,7 +204,18 @@ private struct UpdateNoticeView: View {
 
     @ViewBuilder private var controls: some View {
         switch updater.phase {
-        case .checking, .downloading, .installing, .idle:
+        case .downloading:
+            VStack(spacing: 8) {
+                ProgressView(value: min(Double(updater.downloadedBytes) / Double(max(updater.downloadSize, 1)), 1))
+                Text("\(Int(min(Double(updater.downloadedBytes) / Double(max(updater.downloadSize, 1)), 1) * 100))% · \(ByteCountFormatter.string(fromByteCount: updater.downloadedBytes, countStyle: .file)) / \(ByteCountFormatter.string(fromByteCount: updater.downloadSize, countStyle: .file))")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                Button("关闭", action: onClose)
+                    .buttonStyle(.borderless)
+                    .keyboardShortcut(.cancelAction)
+                    .padding(.top, 10)
+            }
+        case .checking, .verifying, .installing, .idle:
             ProgressView()
                 .controlSize(.small)
                 .padding(.bottom, 10)

@@ -92,6 +92,7 @@ private struct UpdateRow: View {
                     if !manifest.notes.isEmpty { Text(manifest.notes).font(.callout).foregroundStyle(.secondary) }
                 }
             case .downloading: ProgressView().controlSize(.small); Text("正在下载…")
+            case .verifying: ProgressView().controlSize(.small); Text("正在校验…")
             case .installing: ProgressView().controlSize(.small); Text("正在安装…")
             case .failed(let why): Label(why, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
             }
@@ -100,7 +101,7 @@ private struct UpdateRow: View {
                 Button("安装并重新打开") { Task { await updater.install() } }.buttonStyle(.borderedProminent)
             } else {
                 Button("检查更新…") { Task { await updater.check(interactive: true) } }
-                    .disabled(updater.phase == .checking || updater.phase == .downloading || updater.phase == .installing)
+                    .disabled(updater.phase == .checking || updater.phase == .downloading || updater.phase == .verifying || updater.phase == .installing)
             }
         }
     }
