@@ -704,6 +704,36 @@ fn learning(s: u64) {
     press(s, session::KEY_RETURN);
     check(userdb::lex.entries.len == 0, "letters committed as typed teach nothing");
 
+    userdb::reset();
+    press(s, session::KEY_ESCAPE);
+    type_text(s, "xian");
+    let offered = rank("西安");
+    check(offered >= 0, "xian offers 西安");
+    session::set_pick_text(s, "Xi'an");
+    session::select(offered);
+    var translated: u8[>..] = [];
+    translated.append(session::user_save());
+    check(session::commit == "Xi'an" && find(translated, "西安") < 0,
+          str("a translation in place of the candidate is committed (got ", session::commit, ") and not learned"));
+    press(s, session::KEY_ESCAPE);
+    type_text(s, "xian");
+    session::select(rank("西安"));
+    check(session::commit == "西安", "the translation is used for that selection only");
+    check(rank_after(s, "xian", "西安") == 0, "the candidate is learned when its own text is what was committed");
+
+    userdb::reset();
+    press(s, session::KEY_ESCAPE);
+    type_text(s, "zhongguoren");
+    let part = rank("中国");
+    check(part >= 0, "zhongguoren offers 中国");
+    session::set_pick_text(s, "China");
+    session::select(part);
+    press(s, session::KEY_SPACE);
+    translated.clear();
+    translated.append(session::user_save());
+    check(session::commit == "China人" && find(translated, "中国") < 0,
+          str("a translation of part of the input is committed in its place (got ", session::commit, ")"));
+
     // Decay: unused words fade and are dropped when saved.
     pick(s, "xian", "西安", 0);
     userdb::clock_override += 200 * 86400;

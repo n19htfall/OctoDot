@@ -160,6 +160,13 @@ enum Learning {
         return []
     }
 
+    /// Secure fields and password managers never send candidates to lookup
+    /// services. Incognito performs only an explicit, temporary lookup.
+    static func candidateLookupPolicy(forApp app: String) -> CandidateLookupPolicy {
+        if IsSecureEventInputEnabled() || noLearnApps.contains(app) { return .disabled }
+        return incognito ? .incognito : .normal
+    }
+
     // MARK: The dictionary on disk
 
     private static var store: UserStore?

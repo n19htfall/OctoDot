@@ -119,7 +119,7 @@ CORE_ID      := build/core.identity
 
 .PHONY: all test install enable uninstall clean dmg test-dmg release audit check-identity release-key appcast \
         grammar-release FORCE
-all: $(APP) build/octo-smoke build/octo-setup-test build/octo-reload-test
+all: $(APP) build/octo-smoke build/octo-setup-test build/octo-reload-test build/octo-translation-test
 
 check-identity:
 	@test -n "$(SIGN_IDENTITY)" || { echo "no $(SIGN_PROFILE) signing identity of team $(TEAM_ID) in the Keychain" \
@@ -193,6 +193,7 @@ $(IME_APP): $(CORE_INPUTS) $(CORE_DATA) $(CORE_ID) $(IMAGES)/$(GRAMMAR_NAME) scr
 	$(SWIFTC) $(BASEFLAGS) -import-objc-header Sources/IME/Core.h -I $(GEN) \
 	    -emit-library -module-name OctoDotCore_$$id $(SHARED_SWIFT) $(IME_SWIFT) build/libocto_engine.a \
 	    -framework InputMethodKit -framework Carbon -framework SwiftUI -framework Accelerate \
+	    -Xlinker -weak_framework -Xlinker Translation \
 	    -Xlinker -exported_symbol -Xlinker _octodot_core_v1 \
 	    -o $@.partial/Contents/Frameworks/OctoDotCore-$$id.dylib && \
 	sed -e 's/@BUNDLE_ID@/$(IME_ID)/g' -e "s/@CORE@/OctoDotCore-$$id.dylib/g" \
@@ -242,6 +243,9 @@ build/octo-setup-test: $(SETUP_SWIFT) $(wildcard Sources/SetupTests/*.swift)
 
 build/octo-reload-test: Sources/Launcher/ReloadCoordinator.swift $(wildcard Sources/ReloadTests/*.swift)
 	$(SWIFTC) $(BASEFLAGS) $^ -o $@
+
+build/octo-translation-test: Sources/IME/CandidateTranslations.swift $(wildcard Sources/TranslationTests/*.swift)
+	$(SWIFTC) $(BASEFLAGS) $^ -Xlinker -weak_framework -Xlinker Translation -o $@
 
 build/make-app-icon: make-app-icon.swift
 	@mkdir -p build
@@ -302,6 +306,7 @@ test: all audit
 	./build/octo-smoke $(IMAGES)
 	./build/octo-setup-test
 	./build/octo-reload-test
+	./build/octo-translation-test
 	./scripts/test-core-identity.sh
 	@echo "sandboxed self-test:"
 	$(IME_APP)/Contents/MacOS/OctoDotIME --selftest

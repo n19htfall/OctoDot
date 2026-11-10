@@ -61,6 +61,7 @@ final class Handler: NSObject, OctoDotHandlerV2 {
 
     /// The launcher has checked that there is no active composition.
     func retire() {
+        OptionChords.release(ObjectIdentifier(self))
         guard let session else { return }
         // Termination can also retire a handler, without a reload's wait.
         if hasActiveComposition() { commitComposition(for: client()) }
@@ -69,6 +70,12 @@ final class Handler: NSObject, OctoDotHandlerV2 {
     }
 
     deinit {
+        let id = ObjectIdentifier(self)
+        if Thread.isMainThread {
+            MainActor.assumeIsolated { OptionChords.release(id) }
+        } else {
+            DispatchQueue.main.async { MainActor.assumeIsolated { OptionChords.release(id) } }
+        }
         Self.live -= 1
         if let session {
             Task { @MainActor in Engine.shared.free(session) }
@@ -88,11 +95,30 @@ final class Handler: NSObject, OctoDotHandlerV2 {
         else {
             return false
         }
+        if event.modifierFlags.intersection([.shift, .control, .option, .command]) == .option,
+           let plain = Self.optionCandidateKey(event),
+           MainActor.assumeIsolated({ Engine.shared.snapshot(session).isComposing }) {
+            if OptionChords.recentlyHandled(event.keyCode) { return true }
+            return run(plain, session, client, replaceSelection: Self.isDigitSelection(plain))
+        }
         if let arrow = Self.emacsNavigation(event),
            MainActor.assumeIsolated({ Engine.shared.snapshot(session).isComposing }) {
             return run(TranslatedKey(key: arrow, codepoint: 0, modifiers: []), session, client)
         }
         return run(Self.translate(event), session, client)
+    }
+
+    private static func optionCandidateKey(_ event: NSEvent) -> TranslatedKey? {
+        switch Int(event.keyCode) {
+        case kVK_PageUp: return .special(.pageUp)
+        case kVK_PageDown: return .special(.pageDown)
+        default: break
+        }
+        guard let raw = event.charactersIgnoringModifiers, raw.count == 1, let c = raw.first else { return nil }
+        switch c {
+        case "1", "2", "3", "4", "5", "6", "-", "=": return .character(c)
+        default: return nil
+        }
     }
 
     private static func emacsNavigation(_ event: NSEvent) -> Engine.Key? {
@@ -110,8 +136,18 @@ final class Handler: NSObject, OctoDotHandlerV2 {
     }
 
     private func run(_ key: TranslatedKey, _ session: Engine.Session, _ client: any IMKTextInput,
-                     extra: Engine.KeyFlags = []) -> Bool {
+                     extra: Engine.KeyFlags = [], replaceSelection: Bool = false) -> Bool {
         settle(session)
+        if replaceSelection {
+            MainActor.assumeIsolated {
+                let snap = Engine.shared.snapshot(session)
+                if let candidate = Self.selectedCandidate(key, snap, pick: extra.contains(.pick)),
+                   let text = CandidatePanel.machineTranslation(of: candidate) {
+                    Engine.shared.armPickText(session, text)
+                }
+            }
+        }
+        defer { syncOptionChords(session) }
         let app = clientApp
         let (result, snapshot) = MainActor.assumeIsolated {
             let outcome = Engine.shared.process(session, key, flags: Learning.flags(forApp: app).union(extra))
@@ -192,6 +228,7 @@ final class Handler: NSObject, OctoDotHandlerV2 {
             return Engine.shared.process(session, .special(.enter)).1
         }
         if let snapshot { show(snapshot, in: client) }
+        syncOptionChords(session)
     }
 
     func activate(_ sender: Any?) {
@@ -202,12 +239,14 @@ final class Handler: NSObject, OctoDotHandlerV2 {
     /// never says which): the composition ends and the session goes. The
     /// next key makes a new one.
     func deactivate(_ sender: Any?) {
+        OptionChords.release(ObjectIdentifier(self))
         anchorGeneration &+= 1                  // no late move after the panel is gone
         waiting = nil                           // nor late candidates
         if let session {
             MainActor.assumeIsolated {
                 Engine.shared.free(session)
                 CandidatePanel.shared.hide()
+                CandidatePanel.clearTranslations()
                 Learning.saveNow()
             }
             self.session = nil
@@ -243,12 +282,13 @@ final class Handler: NSObject, OctoDotHandlerV2 {
         _ = client.attributes(forCharacterIndex: 0, lineHeightRectangle: &lineRect)
         let page = CandidatePanel.Page(snapshot)
         let box = ControllerBox(self)
+        let app = clientApp
         anchorRect = lineRect
         anchorGeneration &+= 1
         let generation = anchorGeneration
         MainActor.assumeIsolated {
             CandidatePanel.shared.onAction = { action in box.controller?.panelAction(action) }
-            CandidatePanel.shared.show(page, near: lineRect)
+            CandidatePanel.shared.show(page, near: lineRect, clientApp: app)
         }
         // Clients that lay text out asynchronously (Chrome, Electron apps,
         // web views) answer with the composition's previous place right
@@ -280,7 +320,9 @@ final class Handler: NSObject, OctoDotHandlerV2 {
             let page = MainActor.assumeIsolated { Engine.shared.snapshot(session).page }
             let index = page * Snapshot.columns + position
             guard index >= 0 else { return }
-            _ = run(TranslatedKey(key: .other, codepoint: UInt32(index), modifiers: []), session, client, extra: .pick)
+            let replace = NSEvent.modifierFlags.contains(.option)
+            _ = run(TranslatedKey(key: .other, codepoint: UInt32(index), modifiers: []), session, client,
+                    extra: .pick, replaceSelection: replace)
         case .previousPage:
             _ = run(.special(.pageUp), session, client)
         case .nextPage:
@@ -321,6 +363,211 @@ final class Handler: NSObject, OctoDotHandlerV2 {
         if flags.contains(.command) { modifiers.insert(.command) }
         return TranslatedKey(key: key, codepoint: codepoint, modifiers: modifiers)
     }
+
+    private static func isDigitSelection(_ key: TranslatedKey) -> Bool {
+        guard key.key == .other, let scalar = Unicode.Scalar(key.codepoint) else { return false }
+        let one = Unicode.Scalar("1").value
+        return scalar.value >= one && scalar.value < one + UInt32(Snapshot.columns)
+    }
+
+    private static func selectedCandidate(_ key: TranslatedKey, _ snap: Snapshot, pick: Bool) -> String? {
+        let index: Int
+        if pick {
+            index = Int(key.codepoint) - snap.page * Snapshot.columns
+        } else {
+            guard isDigitSelection(key), let scalar = Unicode.Scalar(key.codepoint) else { return nil }
+            let digit = Int(scalar.value - Unicode.Scalar("1").value)
+            index = (snap.highlighted / Snapshot.columns) * Snapshot.columns + digit
+        }
+        guard snap.candidates.indices.contains(index) else { return nil }
+        return snap.candidates[index].text
+    }
+
+    fileprivate func performOptionChord(_ key: TranslatedKey) {
+        guard let session, let client = client() else {
+            OptionChords.release(ObjectIdentifier(self))
+            return
+        }
+        let composing = MainActor.assumeIsolated { Engine.shared.snapshot(session).isComposing }
+        guard composing else {
+            OptionChords.release(ObjectIdentifier(self))
+            return
+        }
+        _ = run(key, session, client, replaceSelection: Self.isDigitSelection(key))
+    }
+
+    private func syncOptionChords(_ session: Engine.Session) {
+        let composing = MainActor.assumeIsolated { Engine.shared.snapshot(session).isComposing }
+        if composing { OptionChords.acquire(self) }
+        else { OptionChords.release(ObjectIdentifier(self)) }
+    }
+}
+
+private struct OptionChord {
+    var keyCode: UInt32
+    var id: UInt32
+    var key: TranslatedKey
+}
+
+private enum OptionChords {
+    private static let signature: OSType = 0x4F63746F
+    private static let chords: [OptionChord] = [
+        .init(keyCode: UInt32(kVK_ANSI_1), id: 1, key: .character("1")),
+        .init(keyCode: UInt32(kVK_ANSI_2), id: 2, key: .character("2")),
+        .init(keyCode: UInt32(kVK_ANSI_3), id: 3, key: .character("3")),
+        .init(keyCode: UInt32(kVK_ANSI_4), id: 4, key: .character("4")),
+        .init(keyCode: UInt32(kVK_ANSI_5), id: 5, key: .character("5")),
+        .init(keyCode: UInt32(kVK_ANSI_6), id: 6, key: .character("6")),
+        .init(keyCode: UInt32(kVK_ANSI_Minus), id: 7, key: .character("-")),
+        .init(keyCode: UInt32(kVK_ANSI_Equal), id: 8, key: .character("=")),
+        .init(keyCode: UInt32(kVK_PageUp), id: 9, key: .special(.pageUp)),
+        .init(keyCode: UInt32(kVK_PageDown), id: 10, key: .special(.pageDown)),
+        .init(keyCode: UInt32(kVK_ANSI_Keypad1), id: 11, key: .character("1")),
+        .init(keyCode: UInt32(kVK_ANSI_Keypad2), id: 12, key: .character("2")),
+        .init(keyCode: UInt32(kVK_ANSI_Keypad3), id: 13, key: .character("3")),
+        .init(keyCode: UInt32(kVK_ANSI_Keypad4), id: 14, key: .character("4")),
+        .init(keyCode: UInt32(kVK_ANSI_Keypad5), id: 15, key: .character("5")),
+        .init(keyCode: UInt32(kVK_ANSI_Keypad6), id: 16, key: .character("6")),
+        .init(keyCode: UInt32(kVK_ANSI_KeypadMinus), id: 17, key: .character("-")),
+        .init(keyCode: UInt32(kVK_ANSI_KeypadEquals), id: 18, key: .character("=")),
+    ]
+
+    nonisolated(unsafe) private static var refs: [EventHotKeyRef] = []
+    nonisolated(unsafe) private static var handler: EventHandlerRef?
+    nonisolated(unsafe) private static weak var owner: Handler?
+    nonisolated(unsafe) private static var ownerID: ObjectIdentifier?
+    nonisolated(unsafe) private static var reported = false
+    nonisolated(unsafe) private static var blocked = false
+    nonisolated(unsafe) private static var handledKey: UInt32 = .max
+    nonisolated(unsafe) private static var handledAt: TimeInterval = 0
+    nonisolated(unsafe) private static var repeatTimer: Timer?
+    nonisolated(unsafe) private static var repeating: TranslatedKey?
+    nonisolated(unsafe) private static var repeatingID: UInt32 = 0
+    nonisolated(unsafe) private static var inCallback = false
+
+    static func acquire(_ next: Handler) {
+        let id = ObjectIdentifier(next)
+        if ownerID == id, handler != nil || blocked { return }
+        tearDown()
+        owner = next
+        ownerID = id
+        guard install() else { return }
+        var registered = 0
+        for chord in chords {
+            var ref: EventHotKeyRef?
+            let status = RegisterEventHotKey(chord.keyCode, UInt32(optionKey),
+                                             EventHotKeyID(signature: signature, id: chord.id),
+                                             GetApplicationEventTarget(), UInt32(kEventHotKeyExclusive), &ref)
+            if status == noErr, let ref {
+                refs.append(ref)
+                registered += 1
+            } else if !reported {
+                reported = true
+                log.notice("option chord hotkey status \(status, privacy: .public)")
+            }
+        }
+        if registered == 0 {
+            blocked = true
+            if let handler { RemoveEventHandler(handler) }
+            handler = nil
+        }
+    }
+
+    static func release(_ id: ObjectIdentifier) {
+        guard ownerID == id else { return }
+        tearDown()
+    }
+
+    static func recentlyHandled(_ keyCode: UInt16) -> Bool {
+        handledKey == UInt32(keyCode) && CACurrentMediaTime() - handledAt < 0.05
+    }
+
+    fileprivate static func deliver(_ hotKey: EventHotKeyID, released: Bool) -> OSStatus {
+        inCallback = true
+        defer { inCallback = false }
+        guard hotKey.signature == signature, let chord = chords.first(where: { $0.id == hotKey.id }) else {
+            return OSStatus(eventNotHandledErr)
+        }
+        if released {
+            if repeatingID == chord.id { stopRepeat() }
+            return noErr
+        }
+        guard let owner else { return noErr }
+        handledKey = chord.keyCode
+        handledAt = CACurrentMediaTime()
+        beginRepeat(chord)
+        owner.performOptionChord(chord.key)
+        return noErr
+    }
+
+    private static func beginRepeat(_ chord: OptionChord) {
+        stopRepeat()
+        repeating = chord.key
+        repeatingID = chord.id
+        let timer = Timer(fire: Date().addingTimeInterval(NSEvent.keyRepeatDelay), interval: NSEvent.keyRepeatInterval,
+                          repeats: true) { _ in MainActor.assumeIsolated { pump() } }
+        RunLoop.main.add(timer, forMode: .common)
+        repeatTimer = timer
+    }
+
+    private static func pump() {
+        guard NSEvent.modifierFlags.contains(.option), let key = repeating, let owner else {
+            stopRepeat()
+            return
+        }
+        owner.performOptionChord(key)
+    }
+
+    private static func stopRepeat() {
+        repeatTimer?.invalidate()
+        repeatTimer = nil
+        repeating = nil
+        repeatingID = 0
+    }
+
+    private static func install() -> Bool {
+        var specs = [
+            EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)),
+            EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased)),
+        ]
+        let status = specs.withUnsafeMutableBufferPointer { buffer in
+            InstallEventHandler(GetApplicationEventTarget(), optionChordEvent, 2, buffer.baseAddress, nil, &handler)
+        }
+        if status != noErr, !reported {
+            reported = true
+            log.notice("option chord hotkey status \(status, privacy: .public)")
+        }
+        return status == noErr
+    }
+
+    private static func tearDown() {
+        stopRepeat()
+        for ref in refs { UnregisterEventHotKey(ref) }
+        refs.removeAll()
+        let installed = handler
+        handler = nil
+        owner = nil
+        ownerID = nil
+        blocked = false
+        handledKey = .max
+        guard let installed else { return }
+        if inCallback {
+            DispatchQueue.main.async { RemoveEventHandler(installed) }
+        } else {
+            RemoveEventHandler(installed)
+        }
+    }
+}
+
+private func optionChordEvent(_ next: EventHandlerCallRef?, _ event: EventRef?,
+                              _ user: UnsafeMutableRawPointer?) -> OSStatus {
+    guard let event else { return OSStatus(eventNotHandledErr) }
+    var hotKey = EventHotKeyID()
+    let status = GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID),
+                                   nil, MemoryLayout<EventHotKeyID>.size, nil, &hotKey)
+    guard status == noErr else { return status }
+    let released = GetEventKind(event) == UInt32(kEventHotKeyReleased)
+    return MainActor.assumeIsolated { OptionChords.deliver(hotKey, released: released) }
 }
 
 /// The candidate window's clicks come back on the main thread, to whichever

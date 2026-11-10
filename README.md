@@ -65,6 +65,11 @@ then move OctoDot.app to the Trash.
 - **Custom phrases.** Keep your own phrases in a text file; they take
   effect a moment after you save (`yx` → 我的邮箱).
 - **More candidates at once.** Press ↓ to open the candidates as a grid.
+- **Candidate translations.** On macOS 26 or later, hold Option to replace
+  the visible candidates with their Chinese–English translations. Install the
+  Chinese and English translation languages in System Settings → General →
+  Language & Region → Translation Languages for on-device translation;
+  Dictionary entries are also used when available.
 
 ## Privacy
 
@@ -99,6 +104,7 @@ OctoDot is two apps, and they are kept apart on purpose:
 | Shift- or Control-Backspace | forget the highlighted candidate |
 | Return, Escape | commit the letters as typed, or cancel |
 | Control-g | show rare characters too, or only the everyday set (通用规范汉字表) |
+| Hold Option | replace the visible candidates with translations (macOS 26 or later) |
 | Shift alone | switch between Chinese and English |
 
 The input menu in the menu bar switches between 全拼 and 小鹤双拼, turns the

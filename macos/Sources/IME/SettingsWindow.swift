@@ -335,6 +335,18 @@ private struct InputPane: View {
                 Toggle("英文单词", isOn: Binding(get: { model.english }, set: { model.useEnglish($0) }))
                 Toggle("英文后加空格", isOn: Binding(get: { model.englishSpace }, set: { model.useEnglishSpace($0) }))
             }
+            if #available(macOS 26.0, *) {
+                Section {
+                    LabeledContent("候选词翻译", value: "按住 ⌥ Option 查看")
+                    Button("打开系统设置…") {
+                        if let url = URL(string: "x-apple.systempreferences:com.apple.Localization-Settings.extension") {
+                            NSWorkspace.shared.open(url)
+                        }
+                    }
+                } footer: {
+                    Note("翻译在本机进行。如需下载中英文语言，请在系统设置的“通用 → 语言与地区 → 翻译语言”中安装。词典结果取决于词典 App 中启用的来源。")
+                }
+            }
         }
         .formStyle(.grouped)
         .disabled(!model.ready)

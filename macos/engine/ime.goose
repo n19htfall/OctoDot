@@ -4,7 +4,7 @@
 import std;
 import octo from "../../engine";
 
-let ABI_VERSION = 16;
+let ABI_VERSION = 17;
 
 export fn octo_abi_version() -> u32 { ABI_VERSION }
 
@@ -31,6 +31,10 @@ export fn octo_key(handle: u64, key: u32, modifiers: u32, codepoint: u32, flags:
     session::key(handle, session::KeyEvent { key: (key & 0xFFFF) as u16, flags: (flags & 0xFFFF) as u16,
                                              modifiers: modifiers, codepoint: codepoint, time_ms: 0 })
 }
+
+// UTF-8 to commit in place of the next selected candidate. Empty, or longer
+// than the composition can hold, keeps the candidate. The next key consumes it.
+export fn octo_set_pick_text(handle: u64, text: const u8[:]) { session::set_pick_text(handle, text); }
 
 // The UI state (format in engine/session.goose), lent until the next call.
 export fn octo_snapshot(handle: u64) -> const u8[:] { session::snapshot(handle) }

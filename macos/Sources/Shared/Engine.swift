@@ -12,7 +12,7 @@ final class Engine {
     static let shared = Engine()
 
     /// The ABI this host was written against. The engine reports its own.
-    static let abiVersion: UInt32 = 16
+    static let abiVersion: UInt32 = 17
 
     struct Session: Hashable, Sendable {
         fileprivate let handle: UInt64
@@ -116,6 +116,11 @@ final class Engine {
     func key(_ session: Session, _ key: TranslatedKey, flags: KeyFlags = []) -> KeyResult {
         KeyResult(rawValue: octo_key(session.handle, key.key.rawValue, key.modifiers.rawValue, key.codepoint,
                                      flags.rawValue))
+    }
+
+    func armPickText(_ session: Session, _ text: String) {
+        guard isStarted, !text.isEmpty else { return }
+        withSlice(text) { octo_set_pick_text(session.handle, $0) }
     }
 
     // MARK: Input schemes

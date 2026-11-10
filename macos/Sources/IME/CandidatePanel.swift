@@ -41,10 +41,21 @@ final class CandidatePanel {
         return [instance.panel, instance.bar]
     }
 
+    /// Do not create a panel just to clear its temporary lookup cache.
+    static func clearTranslations() { instance?.clearTranslations() }
+
+    static func machineTranslation(of candidate: String) -> String? {
+        guard let instance, instance.lookupPolicy != .disabled else { return nil }
+        return instance.translations?.committedText(for: candidate)
+    }
+
     /// What the panel shows: Sendable, so it can be made outside the main actor.
     struct Page: Sendable, Equatable {
         var candidates: [String]
         var comments: [String]
+        /// nil unless Option is held. An empty string keeps that candidate;
+        /// any other string is drawn in its place, at the same row height.
+        var translations: [String]?
         var highlighted: Int
         var hasPrevious: Bool
         var hasNext: Bool
@@ -58,6 +69,7 @@ final class CandidatePanel {
         init(_ snapshot: Snapshot) {
             candidates = snapshot.candidates.map(\.text)
             comments = snapshot.candidates.map(\.comment)
+            translations = nil
             highlighted = snapshot.highlighted
             hasPrevious = snapshot.hasPreviousPage
             hasNext = snapshot.hasNextPage
@@ -70,6 +82,7 @@ final class CandidatePanel {
         init(candidates: [String], highlighted: Int, hasPrevious: Bool, hasNext: Bool) {
             self.candidates = candidates
             self.comments = candidates.map { _ in "" }
+            self.translations = nil
             self.highlighted = highlighted
             self.hasPrevious = hasPrevious
             self.hasNext = hasNext
@@ -107,6 +120,13 @@ final class CandidatePanel {
     /// A much longer candidate would shove the window left at the screen edge;
     /// the page then shows fewer candidates instead of moving this point.
     private var pinnedFirstX: CGFloat?
+    private var visiblePage: Page?
+    private var visibleCaret = NSRect.zero
+    private var lookupApp: String?
+    private var lookupPolicy: CandidateLookupPolicy = .disabled
+    private var optionDown = false
+    private var optionTimer: Timer?
+    private var translations: CandidateTranslations?
 
     private init() {
         panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
@@ -121,12 +141,34 @@ final class CandidatePanel {
         panel.hasShadow = capsule.needsShadow
         panel.contentView = capsule.view
         bar.onAction = { [weak self] action in self?.onAction?(action) }
+        bar.onTextFade = { [weak self] size in self?.applyFadeSize(size) }
     }
 
     /// `caretRect` is the client's line rectangle in screen coordinates.
-    func show(_ page: Page, near caretRect: NSRect) {
+    func show(_ page: Page, near caretRect: NSRect, clientApp: String? = nil) {
         guard !page.candidates.isEmpty else { return hide() }
-        let shown = fitted(page, near: caretRect)
+        var shown = fitted(page, near: caretRect)
+        visiblePage = shown
+        visibleCaret = caretRect
+        lookupApp = clientApp
+        if #available(macOS 26.0, *), let clientApp {
+            let service = translationService()
+            lookupPolicy = Learning.candidateLookupPolicy(forApp: clientApp)
+            service.setPage(shown.candidates, highlighted: shown.highlighted, policy: lookupPolicy)
+            optionDown = NSEvent.modifierFlags.contains(.option)
+            service.setOptionDown(optionDown)
+            if optionDown && lookupPolicy != .disabled { shown.translations = service.replacements() }
+            startOptionTimer()
+        } else {
+            stopOptionTimer()
+            translations?.clear()
+            lookupPolicy = .disabled
+            optionDown = false
+        }
+        render(shown, near: caretRect)
+    }
+
+    private func render(_ shown: Page, near caretRect: NSRect) {
         let switching = onScreen && panel.isVisible
             && (expanded != shown.expanded || originIndex != shown.origin)
         expanded = shown.expanded
@@ -144,6 +186,7 @@ final class CandidatePanel {
     /// not whatever size the ease happens to be at.
     func move(near caretRect: NSRect) {
         guard panel.isVisible else { return }
+        visibleCaret = caretRect
         let size = targetFrame.size == .zero ? panel.frame.size : targetFrame.size
         let frame = NSRect(origin: origin(for: size, near: caretRect), size: size)
         pinnedFirstX = frame.origin.x + bar.style.textInset
@@ -198,6 +241,7 @@ final class CandidatePanel {
         let n = min(max(count, 1), page.candidates.count)
         next.candidates = Array(page.candidates.prefix(n))
         next.comments = Array(page.comments.prefix(n))
+        if let translations = page.translations { next.translations = Array(translations.prefix(n)) }
         if next.highlighted >= n { next.highlighted = n - 1 }
         return next
     }
@@ -238,7 +282,7 @@ final class CandidatePanel {
     }
 
     private func cornerRadius(for height: CGFloat) -> CGFloat {
-        Self.radius(for: height, row: bar.style.height)
+        Self.radius(for: height, row: bar.rowHeight)
     }
 
     private func displaced(_ a: NSRect, _ b: NSRect) -> Bool {
@@ -265,6 +309,12 @@ final class CandidatePanel {
     /// Drops the display link. `release` needs this: the link retains its
     /// target, and the core's window must be free to deallocate.
     private func halt() {
+        stopOptionTimer()
+        translations?.clear()
+        translations = nil
+        visiblePage = nil
+        lookupApp = nil
+        bar.endTextFade()
         link?.invalidate()
         link = nil
         onScreen = false
@@ -311,11 +361,79 @@ final class CandidatePanel {
     }
 
     func hide() {
+        stopOptionTimer()
+        if lookupPolicy == .incognito { translations?.clear() }
+        else { translations?.setOptionDown(false); translations?.setPage([], highlighted: 0, policy: lookupPolicy) }
+        optionDown = false
+        visiblePage = nil
+        lookupApp = nil
         onScreen = false
         pinnedFirstX = nil
         pauseLink()
         panel.orderOut(nil)
         bar.forget()
+    }
+
+    private func clearTranslations() {
+        translations?.clear()
+        translations = nil
+    }
+
+    @available(macOS 26.0, *)
+    private func translationService() -> CandidateTranslations {
+        if let translations { return translations }
+        let service = CandidateTranslations(provider: SystemCandidateLookup()) { [weak self] in
+            self?.refreshTranslationDisplay()
+        }
+        translations = service
+        return service
+    }
+
+    private func startOptionTimer() {
+        guard optionTimer == nil else { return }
+        let timer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.checkOption() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        optionTimer = timer
+    }
+
+    private func stopOptionTimer() {
+        optionTimer?.invalidate()
+        optionTimer = nil
+    }
+
+    private func checkOption() {
+        guard #available(macOS 26.0, *), onScreen, let page = visiblePage,
+              let app = lookupApp, let translations else { return }
+        let policy = Learning.candidateLookupPolicy(forApp: app)
+        let down = NSEvent.modifierFlags.contains(.option)
+        let needsUpdate = down != optionDown || policy != lookupPolicy
+        if policy != lookupPolicy {
+            lookupPolicy = policy
+            translations.setPage(page.candidates, highlighted: page.highlighted, policy: policy)
+        }
+        optionDown = down
+        translations.setOptionDown(down)
+        if needsUpdate { refreshTranslationDisplay() }
+    }
+
+    private func refreshTranslationDisplay() {
+        guard onScreen, var page = visiblePage else { return }
+        if optionDown && lookupPolicy != .disabled { page.translations = translations?.replacements() }
+        render(page, near: visibleCaret)
+    }
+
+    /// The replacement fade owns its width. A spring on top of that curve lags behind the text.
+    private func applyFadeSize(_ size: NSSize) {
+        guard onScreen, panel.isVisible else { return }
+        let frame = NSRect(origin: origin(for: size, near: visibleCaret), size: size)
+        pinnedFirstX = frame.origin.x + bar.style.textInset
+        targetFrame = frame
+        motion.snap(frame)
+        panel.setFrame(frame, display: true)
+        capsule.applyCornerRadius(cornerRadius(for: frame.height))
+        pauseLink()
     }
 
     /// The panel as it would look for `page`, for the preview command.
@@ -361,7 +479,7 @@ final class CandidateCapsule {
     /// Lays out `page` in the current style; returns the size it needs.
     func update(_ page: CandidatePanel.Page) -> NSSize {
         let size = bar.update(page)
-        applyCornerRadius(CandidatePanel.radius(for: size.height, row: bar.style.height))
+        applyCornerRadius(CandidatePanel.radius(for: size.height, row: bar.rowHeight))
         if #available(macOS 26.0, *), view is NSGlassEffectView {
             // The glass sizes its content view to itself.
         } else {
@@ -385,8 +503,13 @@ final class CandidateCapsule {
 final class CandidateBar: NSView {
     /// The style of the last layout: the user's, read again at every update.
     private(set) var style = CandidateStyle.current
+    var rowHeight: CGFloat { style.height }
+    /// A dictionary excerpt can be a paragraph. Keep it on the candidate's line.
+    private var replacementLimit: CGFloat { style.fontSize * 20 }
 
     var onAction: ((CandidatePanel.Action) -> Void)?
+    /// Width follows the replacement fade. The panel snaps to each size; the fade curve is the motion.
+    var onTextFade: ((NSSize) -> Void)?
 
     private var page: CandidatePanel.Page?
     private var cells: [NSRect] = []
@@ -405,6 +528,30 @@ final class CandidateBar: NSView {
     private let pill = Passive()
     private let ink = Passive()                 // above the pill: the text
     private var trackingArea: NSTrackingArea?
+    /// Candidate ↔ translation. `fraction` is how much of the translation is showing.
+    private struct LabelBlend {
+        var candidate: String
+        var translation: String
+        /// Set when one translation replaces another, so the fade is between those two strings.
+        var outgoing: String? = nil
+        var from: CGFloat
+        var to: CGFloat
+        var started: CFTimeInterval
+        static let duration: CFTimeInterval = 0.42
+
+        func fraction(at now: CFTimeInterval) -> CGFloat {
+            guard now > started else { return from }
+            let raw = min(1, (now - started) / Self.duration)
+            let eased = 1 - pow(1 - raw, 3)
+            return from + (to - from) * CGFloat(eased)
+        }
+
+        func finished(at now: CFTimeInterval) -> Bool { now - started >= Self.duration }
+    }
+    private var blends: [Int: LabelBlend] = [:]
+    /// Translations that have finished fading in, so a later layout does not play them again.
+    private var resting: [Int: String] = [:]
+    private var fadeLink: CADisplayLink?
 
     override var isFlipped: Bool { true }
 
@@ -436,6 +583,7 @@ final class CandidateBar: NSView {
         style = CandidateStyle.current
         let sameList = sameStyle && self.page?.candidates == page.candidates
             && self.page?.origin == page.origin && self.page?.expanded == page.expanded
+        syncBlends(to: page, sameList: sameList)
         self.page = page
         hovered = nil
         cells.removeAll()
@@ -451,7 +599,7 @@ final class CandidateBar: NSView {
             let target = cells[page.highlighted]
             pill.layer?.cornerRadius = target.height / 2
             pill.isHidden = false
-            if sameList && !pill.frame.isEmpty {        // the highlight moved: slide
+            if sameList && blends.isEmpty && !pill.frame.isEmpty {        // the highlight moved: slide
                 NSAnimationContext.runAnimationGroup { context in
                     context.duration = 0.16
                     context.timingFunction = CAMediaTimingFunction(name: .easeOut)
@@ -459,6 +607,7 @@ final class CandidateBar: NSView {
                     pill.animator().frame = target
                 }
             } else {
+                pill.layer?.removeAllAnimations()
                 pill.frame = target
             }
         } else {
@@ -476,16 +625,16 @@ final class CandidateBar: NSView {
         track = .zero
         thumb = .zero
         gridWidth = 0
-        for (i, text) in page.candidates.enumerated() {
+        for i in page.candidates.indices {
             let width = s.padding * 2 + indexSize(i).width + s.indexGap
-                + attributed(text, highlighted: false).size().width + commentWidth(page.comments[safe: i])
+                + shownWidth(page, i) + commentWidth(page.comments[safe: i])
             cells.append(NSRect(x: x, y: s.inset, width: ceil(width), height: cellHeight))
             x += ceil(width) + s.gap
         }
         if page.hasPrevious || page.hasNext {
             x += 4
             let dividerHeight = round(cellHeight * 0.6)
-            divider = NSRect(x: x, y: s.height / 2 - dividerHeight / 2, width: 1, height: dividerHeight)
+            divider = NSRect(x: x, y: s.inset + cellHeight / 2 - dividerHeight / 2, width: 1, height: dividerHeight)
             x += 5
             previousArrow = NSRect(x: x, y: s.inset, width: s.arrowWidth, height: cellHeight)
             x += s.arrowWidth
@@ -497,7 +646,7 @@ final class CandidateBar: NSView {
             nextArrow = .zero
             x += s.inset - s.gap
         }
-        return NSSize(width: ceil(x), height: s.height)
+        return NSSize(width: ceil(x), height: cellHeight + 2 * s.inset)
     }
 
     /// The grid Down opens: `columns` across, as many rows as fit, a scrollbar
@@ -507,15 +656,14 @@ final class CandidateBar: NSView {
         let cols = max(page.columns, 1)
         let count = page.candidates.count
         let rows = max((count + cols - 1) / cols, 1)
+        let cellHeight = s.cellHeight
         let gutter = indexSize(0).width + s.indexGap
         var columnWidth = [CGFloat](repeating: 0, count: cols)
         var contentWidth = [CGFloat](repeating: 0, count: count)
         for i in 0..<count {
-            let width = s.padding * 2 + gutter
-                + attributed(page.candidates[i], highlighted: false).size().width
-                + commentWidth(page.comments[safe: i])
+            let width = s.padding * 2 + gutter + shownWidth(page, i) + commentWidth(page.comments[safe: i])
             contentWidth[i] = ceil(width)
-            columnWidth[i % cols] = max(columnWidth[i % cols], ceil(width))
+            columnWidth[i % cols] = max(columnWidth[i % cols], contentWidth[i])
         }
         divider = .zero
         previousArrow = .zero
@@ -527,10 +675,10 @@ final class CandidateBar: NSView {
             for col in 0..<cols {
                 let i = row * cols + col
                 guard i < count else { break }
-                cells.append(NSRect(x: x, y: y, width: contentWidth[i], height: s.cellHeight))
+                cells.append(NSRect(x: x, y: y, width: contentWidth[i], height: cellHeight))
                 x += columnWidth[col] + 8
             }
-            y += s.cellHeight
+            y += cellHeight
             if row + 1 < rows {
                 separators.append(y + rowGap / 2)
                 y += rowGap
@@ -574,6 +722,15 @@ final class CandidateBar: NSView {
     func forget() {
         page = nil
         pill.frame = .zero
+        endTextFade()
+    }
+
+    /// Drops the fade link. It retains this view, so a core unload has to stop it.
+    func endTextFade() {
+        blends.removeAll()
+        resting.removeAll()
+        fadeLink?.invalidate()
+        fadeLink = nil
     }
 
     private func commentWidth(_ comment: String?) -> CGFloat {
@@ -585,11 +742,174 @@ final class CandidateBar: NSView {
         NSAttributedString(string: "\(i + 1)", attributes: [.font: style.indexFont]).size()
     }
 
-    private func attributed(_ text: String, highlighted: Bool) -> NSAttributedString {
-        NSAttributedString(string: text, attributes: [
+    private func attributed(_ text: String, highlighted: Bool, alpha: CGFloat = 1) -> NSAttributedString {
+        let color = (highlighted ? style.onAccentColor : NSColor.labelColor).withAlphaComponent(alpha)
+        return NSAttributedString(string: text, attributes: [
             .font: style.textFont,
-            .foregroundColor: highlighted ? style.onAccentColor : NSColor.labelColor,
+            .foregroundColor: color,
         ])
+    }
+
+    /// Soft while it is appearing or leaving: a few offset copies stand in for a blur.
+    private func drawWord(_ text: String, highlighted: Bool, x: CGFloat, y: CGFloat, slot: CGFloat,
+                          alpha: CGFloat, softness: CGFloat) {
+        guard alpha > 0.02, slot > 0.5, !text.isEmpty else { return }
+        let passes: [(CGFloat, CGFloat, CGFloat)] = softness < 0.35
+            ? [(0, 0, alpha)]
+            : [(0, 0, alpha * 0.46), (softness, 0, alpha * 0.135), (-softness, 0, alpha * 0.135),
+               (0, softness, alpha * 0.135), (0, -softness, alpha * 0.135)]
+        NSGraphicsContext.current?.saveGraphicsState()
+        let line = ceil(style.textFont.ascender - style.textFont.descender) + 8
+        NSRect(x: x, y: y - 4, width: slot, height: line).clip()
+        for (dx, dy, passAlpha) in passes {
+            let string = attributed(text, highlighted: highlighted, alpha: passAlpha)
+            if softness < 0.35 && string.size().width > slot + 0.5 {
+                let paragraph = NSMutableParagraphStyle()
+                paragraph.lineBreakMode = .byTruncatingTail
+                let clipped = NSMutableAttributedString(attributedString: string)
+                clipped.addAttribute(.paragraphStyle, value: paragraph, range: NSRange(location: 0, length: clipped.length))
+                let height = string.size().height
+                clipped.draw(with: NSRect(x: x, y: y, width: slot, height: height), options: [.usesLineFragmentOrigin])
+            } else {
+                string.draw(at: NSPoint(x: x + dx, y: y + dy))
+            }
+        }
+        NSGraphicsContext.current?.restoreGraphicsState()
+    }
+
+    /// The candidate, or its translation once that lookup has something to show.
+    private func shownText(_ page: CandidatePanel.Page, _ index: Int) -> String {
+        if let translation = replacementText(page, index) { return translation }
+        return page.candidates[index]
+    }
+
+    private func replacementText(_ page: CandidatePanel.Page, _ index: Int) -> String? {
+        guard let text = page.translations?[safe: index], !text.isEmpty, text != page.candidates[index] else { return nil }
+        return text
+    }
+
+    private func textWidth(_ text: String, capped: Bool) -> CGFloat {
+        let width = attributed(text, highlighted: false).size().width
+        return capped ? min(width, replacementLimit) : width
+    }
+
+    private func shownWidth(_ page: CandidatePanel.Page, _ index: Int) -> CGFloat {
+        if let blend = blends[index], blend.candidate == page.candidates[index] {
+            let t = blend.fraction(at: CACurrentMediaTime())
+            let source = blend.outgoing ?? blend.candidate
+            let from = textWidth(source, capped: blend.outgoing != nil)
+            let to = textWidth(blend.translation, capped: true)
+            return from + (to - from) * t
+        }
+        let text = shownText(page, index)
+        return textWidth(text, capped: replacementText(page, index) != nil)
+    }
+
+    /// Plays a fade when a translation arrives or Option is released. A new candidate list snaps.
+    private func syncBlends(to page: CandidatePanel.Page, sameList: Bool) {
+        guard sameList, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+            blends.removeAll()
+            resting.removeAll()
+            stopFadeLink()
+            return
+        }
+        let now = CACurrentMediaTime()
+        var nextBlends: [Int: LabelBlend] = [:]
+        var nextResting: [Int: String] = [:]
+        for i in page.candidates.indices {
+            let candidate = page.candidates[i]
+            let translation = replacementText(page, i)
+            let want: CGFloat = translation == nil ? 0 : 1
+            if var blend = blends[i], blend.candidate == candidate {
+                let progress = blend.fraction(at: now)
+                if let translation, translation != blend.translation {
+                    if progress > 0.5 {
+                        blend.outgoing = blend.translation
+                        blend.from = 0
+                    } else {
+                        blend.outgoing = nil
+                        blend.from = progress
+                    }
+                    blend.translation = translation
+                    blend.to = 1
+                    blend.started = now
+                    nextBlends[i] = blend
+                    continue
+                }
+                if blend.to == want {
+                    nextBlends[i] = blends[i]
+                    continue
+                }
+                if abs(progress - want) < 0.02 {
+                    if want == 1 { nextResting[i] = blend.translation }
+                    continue
+                }
+                blend.outgoing = nil
+                blend.from = progress
+                blend.to = want
+                blend.started = now
+                nextBlends[i] = blend
+                continue
+            }
+            if let translation {
+                if resting[i] == translation {
+                    nextResting[i] = translation
+                } else if let shown = resting[i] {
+                    nextBlends[i] = LabelBlend(candidate: candidate, translation: translation, outgoing: shown,
+                                               from: 0, to: 1, started: now)
+                } else {
+                    let delay = min(Double(i), 5) * 0.04
+                    nextBlends[i] = LabelBlend(candidate: candidate, translation: translation,
+                                               from: 0, to: 1, started: now + delay)
+                }
+            } else if let shown = resting[i] {
+                nextBlends[i] = LabelBlend(candidate: candidate, translation: shown,
+                                           from: 1, to: 0, started: now)
+            }
+        }
+        blends = nextBlends
+        resting = nextResting
+        if blends.isEmpty { stopFadeLink() } else { startFadeLink() }
+    }
+
+    private func startFadeLink() {
+        guard fadeLink == nil else { return }
+        let link = displayLink(target: self, selector: #selector(stepTextFade(_:)))
+        link.add(to: .main, forMode: .common)
+        fadeLink = link
+    }
+
+    private func stopFadeLink() {
+        fadeLink?.invalidate()
+        fadeLink = nil
+    }
+
+    @objc nonisolated private func stepTextFade(_ link: CADisplayLink) {
+        MainActor.assumeIsolated { self.tickTextFade() }
+    }
+
+    private func tickTextFade() {
+        guard let page else { endTextFade(); return }
+        let now = CACurrentMediaTime()
+        for (i, blend) in blends where blend.finished(at: now) {
+            if blend.to >= 0.5 { resting[i] = blend.translation }
+            else { resting[i] = nil }
+            blends[i] = nil
+        }
+        cells.removeAll()
+        separators.removeAll()
+        let size = page.expanded ? layoutGrid(page) : layoutRow(page)
+        frame.size = size
+        ink.frame = NSRect(origin: .zero, size: size)
+        backdrop.frame = ink.frame
+        if page.highlighted >= 0 && page.highlighted < cells.count {
+            pill.layer?.removeAllAnimations()
+            pill.frame = cells[page.highlighted]
+            pill.isHidden = false
+        }
+        ink.needsDisplay = true
+        onTextFade?(size)
+        if blends.isEmpty { stopFadeLink() }
     }
 
     private func drawContent() {
@@ -608,8 +928,12 @@ final class CandidateBar: NSView {
                 NSColor.labelColor.withAlphaComponent(0.08).setFill()
                 NSBezierPath(roundedRect: cell, xRadius: cell.height / 2, yRadius: cell.height / 2).fill()
             }
-            let text = attributed(page.candidates[i], highlighted: highlighted)
+            let blend = blends[i].flatMap { $0.candidate == page.candidates[i] ? $0 : nil }
+            let raw = shownText(page, i)
+            let text = attributed(raw, highlighted: highlighted)
             let textSize = text.size()
+            let measured = shownWidth(page, i)
+            let drawnWidth = blend == nil ? min(textSize.width, measured) : measured
             let onAccent = style.onAccentColor.withAlphaComponent(0.78)
             let number = page.expanded ? (i % cols) + 1 : i + 1
             let showNumber = !page.expanded || i / cols == numberedRow
@@ -620,14 +944,30 @@ final class CandidateBar: NSView {
             let indexSize = index.size()
             var x = cell.minX + style.padding
             // The index sits on the text's baseline, not centered: like a footnote numeral.
-            let textY = cell.midY - textSize.height / 2
+            let textY = cell.minY + (style.cellHeight - textSize.height) / 2
             let baseline = textY + style.textFont.ascender
             if showNumber {
                 index.draw(at: NSPoint(x: x, y: baseline - style.indexFont.ascender))
             }
             x += indexSize.width + style.indexGap
-            text.draw(at: NSPoint(x: x, y: textY))
-            x += textSize.width
+            if let blend {
+                let t = blend.fraction(at: CACurrentMediaTime())
+                let source = blend.outgoing ?? blend.candidate
+                drawWord(source, highlighted: highlighted, x: x, y: textY - t * 2,
+                         slot: drawnWidth, alpha: 1 - t, softness: t * 1.6)
+                drawWord(blend.translation, highlighted: highlighted, x: x, y: textY + (1 - t) * 3,
+                         slot: drawnWidth, alpha: t, softness: (1 - t) * 2.2)
+            } else if textSize.width > drawnWidth + 0.5 {
+                let paragraph = NSMutableParagraphStyle()
+                paragraph.lineBreakMode = .byTruncatingTail
+                let clipped = NSMutableAttributedString(attributedString: text)
+                clipped.addAttribute(.paragraphStyle, value: paragraph, range: NSRange(location: 0, length: clipped.length))
+                clipped.draw(with: NSRect(x: x, y: textY, width: drawnWidth, height: textSize.height),
+                             options: [.usesLineFragmentOrigin])
+            } else {
+                text.draw(at: NSPoint(x: x, y: textY))
+            }
+            x += drawnWidth
             if let comment = page.comments[safe: i], !comment.isEmpty {
                 let small = NSAttributedString(string: comment, attributes: [
                     .font: style.smallFont,

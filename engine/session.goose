@@ -76,7 +76,7 @@ struct Session { generation: u32, live: bool }
 // A selection made inside a composition: the letters it read, the bytes of
 // its text, how many words it was made of (in picked_ends) and how many
 // character readings they have (in picked_pairs).
-struct Pick { letters: u8, bytes: u16, words: u8, pairs: u8, english: u8 }
+struct Pick { letters: u8, bytes: u16, words: u8, pairs: u8, english: u8, foreign: u8 }
 
 var sessions = slot_pool<Session> {};
 var next_generation: u32 = 1;
@@ -88,6 +88,8 @@ var input: u8[..lattice::MAX_INPUT];        // not yet converted: letters, ' sep
 var caps: u8[..lattice::MAX_INPUT];         // 1 where that input byte was typed as a capital
 var consumed: u8[..lattice::MAX_INPUT];     // letters the selections so far have read
 var confirmed: u8[..512];                   // the selections' text
+var pick_text: u8[..512];
+var pick_for: u64 = 0;
 var picks: Pick[..lattice::MAX_INPUT];
 // The picks' words, copied when picked, so the composition learns what was
 // chosen even if the user dictionary changes before it commits: the words'
@@ -872,8 +874,21 @@ fn commit_passing() -> u32 {
     return DIRTY | HAS_COMMIT;
 }
 
+fn set_pick_text(handle: u64, text: const u8[:]) {
+    pick_text.clear();
+    pick_for = 0;
+    guard index(handle) >= 0 && text.len > 0 && text.len <= pick_text.cap else { return; }
+    pick_text.append(text);
+    pick_for = handle;
+}
+
 fn select(i: i64) -> u32 {
     fresh_menu();
+    var replacement: u8[..512] = [];
+    var replace = pick_text.len > 0 && pick_for == active;
+    if replace { replacement.append(pick_text[..]); }
+    pick_text.clear();
+    pick_for = 0;
     if menu.candidates.len == 0 {                  // nothing to choose from: the letters
         commit_raw();
         return HANDLED | DIRTY | HAS_COMMIT;
@@ -881,17 +896,24 @@ fn select(i: i64) -> u32 {
     guard i >= 0 && i < menu.candidates.len else { return HANDLED; }
     let c = menu.candidates[i];
     let to: i64 = c.to;
-    guard to > 0 && to <= input.len && confirmed.len + c.len <= confirmed.cap && picks.len < picks.cap &&
+    var text_len: i64 = c.len;
+    if replace {
+        if replacement.len > 0 && confirmed.len + replacement.len <= confirmed.cap { text_len = replacement.len; }
+        else { replace = false; }
+    }
+    guard to > 0 && to <= input.len && confirmed.len + text_len <= confirmed.cap && picks.len < picks.cap &&
           consumed.len + to <= consumed.cap && picked_ends.len + c.count <= picked_ends.cap else {
         commit_raw();
         return HANDLED | DIRTY | HAS_COMMIT;
     }
-    confirmed.append(menu.pool[c.text..c.text + c.len]);
+    if replace { confirmed.append(replacement[..]); }
+    else { confirmed.append(menu.pool[c.text..c.text + c.len]); }
     consumed.append(input[..to]);
     let before = picked_pairs.len;
     take_words(c);
-    picks.push(Pick { letters: to as u8, bytes: c.len, words: c.count as u8, pairs: (picked_pairs.len - before) as u8,
-                      english: if c.code_len > 0 { 1 } else { 0 } });
+    picks.push(Pick { letters: to as u8, bytes: text_len as u16, words: c.count as u8,
+                      pairs: (picked_pairs.len - before) as u8, english: if c.code_len > 0 { 1 } else { 0 },
+                      foreign: if replace { 1 } else { 0 } });
     var rest: u8[..lattice::MAX_INPUT] = [];
     var rest_caps: u8[..lattice::MAX_INPUT] = [];
     var from = to;
@@ -952,7 +974,11 @@ fn pairs_of(lex: lexicon::Lexicon&, i: i64, out: lexicon::Pair[>..]&) -> bool {
 // userdb::MAX_SENTENCE syllables, since it was the engine's own guess.
 fn learn_composition() {
     var any_english = false;
-    for p in picks { if p.english != 0 { any_english = true; } }
+    var any_foreign = false;
+    for p in picks {
+        if p.english != 0 { any_english = true; }
+        if p.foreign != 0 { any_foreign = true; }
+    }
     // A pure English pick has no word readings, so picked_ends is empty.
     guard picks.len > 0 && (picked_ends.len > 0 || any_english) else { return; }
     var full: u8[>..] = [];                    // the whole input, without separators
@@ -983,37 +1009,44 @@ fn learn_composition() {
     for p in picks {
         var span: u8[>..] = [];
         for c in consumed[letter..letter + p.letters] { if c != '\'' { span.push(c); } }
-        if p.english != 0 {
-            userdb::learn_english(span, confirmed[byte..byte + p.bytes], id);
-        } else {
-            userdb::choose(span, confirmed[byte..byte + p.bytes], id);
-        }
-        let amount = if p.words == 1 { userdb::EXPLICIT } else { userdb::INCIDENTAL };
-        for k in w..w + p.words {
-            if ends[k] < 0 { continue; }
-            let slice = words[from..ends[k]];
-            if span.len >= 2 { userdb::learn(slice, amount, id); }
-            if slice.len > 0 {
-                let surface = userdb::hash_surface_pairs(slice);
-                if chain_prev != 0 { userdb::observe(chain_prev, chain_ant, userdb::hash_reading_pairs(slice), slice.len); }
-                chain_ant = chain_prev;
-                chain_prev = surface;
-                saw_word = true;
+        if p.foreign != 0 {
+            for k in w..w + p.words {
+                if ends[k] >= 0 { from = ends[k]; }
             }
-            from = ends[k];
+        } else {
+            if p.english != 0 {
+                userdb::learn_english(span, confirmed[byte..byte + p.bytes], id);
+            } else {
+                userdb::choose(span, confirmed[byte..byte + p.bytes], id);
+            }
+            let amount = if p.words == 1 { userdb::EXPLICIT } else { userdb::INCIDENTAL };
+            for k in w..w + p.words {
+                if ends[k] < 0 { continue; }
+                let slice = words[from..ends[k]];
+                if span.len >= 2 { userdb::learn(slice, amount, id); }
+                if slice.len > 0 {
+                    let surface = userdb::hash_surface_pairs(slice);
+                    if chain_prev != 0 { userdb::observe(chain_prev, chain_ant, userdb::hash_reading_pairs(slice), slice.len); }
+                    chain_ant = chain_prev;
+                    chain_prev = surface;
+                    saw_word = true;
+                }
+                from = ends[k];
+            }
         }
         letter += p.letters;
         byte += p.bytes;
         w += p.words;
     }
     let limit = if picks.len >= 2 { userdb::MAX_PHRASE } else { userdb::MAX_SENTENCE };
-    if whole && ends.len >= 2 && words.len <= limit && full.len >= 2 {
+    if !any_foreign && whole && ends.len >= 2 && words.len <= limit && full.len >= 2 {
         userdb::learn(words, userdb::INCIDENTAL, id);
         if picks.len >= 2 { userdb::choose(full, confirmed, id); }
     }
-    if saw_word { userdb::set_carry(chain_ant, chain_prev); }
+    if any_foreign { userdb::set_carry(0, 0); }
+    else if saw_word { userdb::set_carry(chain_ant, chain_prev); }
     else if any_english { userdb::set_carry(0, 0); }
-    remember(full, confirmed, id);
+    remember(full, confirmed, if any_foreign && !saw_word { 0 } else { id });
 }
 
 // Forgets the highlighted candidate if the user dictionary holds it.
@@ -1311,6 +1344,8 @@ fn key(handle: u64, ev: KeyEvent) -> u32 {
     // engine call. Do not keep a second copy for the rest of the session.
     user_saved.clear();
     let result = handle_key(handle, ev);
+    pick_text.clear();
+    pick_for = 0;
     return if reranking() && (result & HANDLED) != 0 { result | PENDING } else { result };
 }
 
@@ -1498,7 +1533,8 @@ fn handle_key(handle: u64, ev: KeyEvent) -> u32 {
                 let before = picked_pairs.len;
                 take_words(c0);
                 picks.push(Pick { letters: input.len as u8, bytes: c0.len, words: c0.count as u8,
-                                  pairs: (picked_pairs.len - before) as u8, english: if c0.code_len > 0 { 1 } else { 0 } });
+                                  pairs: (picked_pairs.len - before) as u8, english: if c0.code_len > 0 { 1 } else { 0 },
+                                  foreign: 0 });
                 let starts = picks.len > 0 && picks[0].english != 0;
                 if english_space && last_commit_english && starts { append_commit(" "); }
                 learn_composition();
