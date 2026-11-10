@@ -86,31 +86,37 @@ final class Installer: NSObject, InstallerProtocol, @unchecked Sendable {
             return (false, "OctoDot 内的输入法已损坏，或不是 OctoDot 的输入法。")
         }
         let before = BundleStamp.of(installedIME)
-        if before == embedded && Signatures.valid(installedIME, identifier: Identity.ime) {
-            guard InputSources.register(installedIME) else { return (false, "macOS 没有注册输入法。") }
-            return activationMessage(activation(of: embedded.core), version: embedded)
-        }
+        let wasEnabled = before != nil && InputSources.isEnabled(Identity.ime)
+        let replaceBundle = before != embedded || !Signatures.valid(installedIME, identifier: Identity.ime)
         let looksBefore = looks(installedIME)
-        do {
-            try fm.createDirectory(at: inputMethods, withIntermediateDirectories: true)
-            try place(embeddedIME, at: installedIME)
-        } catch {
-            return (false, "无法安装输入法：\(error.localizedDescription)")
-        }
-        guard Signatures.valid(installedIME, identifier: Identity.ime) else {
-            return (false, "已安装的输入法未能通过校验。")
+        if replaceBundle {
+            do {
+                try fm.createDirectory(at: inputMethods, withIntermediateDirectories: true)
+                try place(embeddedIME, at: installedIME)
+            } catch {
+                return (false, "无法安装输入法：\(error.localizedDescription)")
+            }
+            guard Signatures.valid(installedIME, identifier: Identity.ime) else {
+                return (false, "已安装的输入法未能通过校验。")
+            }
         }
         guard InputSources.register(installedIME) else {
             return (false, "已安装，但 macOS 没有注册它（TISRegisterInputSource）。")
         }
-        if looks(installedIME) != looksBefore { restartMenuAgent() }
+        let restored = !wasEnabled || InputSources.enable(Identity.ime)
+        if replaceBundle && looks(installedIME) != looksBefore { restartMenuAgent() }
         if let before, before.launcher != embedded.launcher {
             restartIME(Identity.ime)
+            if !restored { return (false, Self.enableAfterInstallMessage) }
             return (true, "已更新到 \(embedded.version)（\(embedded.build)），并换了新的启动程序：输入法已重启。" +
                     "基于 Chromium 的应用（Chrome、VS Code）可能需要重新打开一次。")
         }
-        return activationMessage(activation(of: embedded.core), version: embedded)
+        let coreActivation = activation(of: embedded.core)
+        if !restored { return (false, Self.enableAfterInstallMessage) }
+        return activationMessage(coreActivation, version: embedded)
     }
+
+    private static let enableAfterInstallMessage = "已安装，但 macOS 未能恢复 OctoDot 的启用状态。请在“系统设置 → 键盘 → 输入源”中重新启用。"
 
     private func activation(of core: String) -> CoreActivation {
         guard !NSRunningApplication.runningApplications(withBundleIdentifier: Identity.ime).isEmpty else {
