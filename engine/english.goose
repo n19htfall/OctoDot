@@ -362,9 +362,10 @@ fn compile(d: Dict&, tsv: const u8[:], limit: i64, err: u8[>..]&) -> bool {
             return false;
         }
         var forms: u8[>..] = [];
+        var form_count: i64 = 0;
         var left = rest;
         var more = true;
-        while more && forms.len < MAX_FORMS {
+        while more && form_count < MAX_FORMS {
             let head, tail, ok = split_once(left, '\t');
             let form = if ok { head } else { left };
             more = ok;
@@ -376,6 +377,7 @@ fn compile(d: Dict&, tsv: const u8[:], limit: i64, err: u8[>..]&) -> bool {
             }
             forms.append(form);
             forms.push(0);
+            form_count++;
         }
         guard forms.len > 0 else {
             format(err, "english.tsv:", row, ": a code needs a form\n");

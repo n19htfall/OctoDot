@@ -354,6 +354,22 @@ fn the_reranker_scores_as_trained(images: const u8[:]) {
 }
 
 fn every_english_word(prepared: const u8[:], images: const u8[:]) {
+    var fixture = english::Dict {};
+    var errors: u8[>..] = [];
+    var fixture_img: u8[>..] = [];
+    let compiled = english::compile(fixture, "python\t10\tpython\tPython\tPYTHON\tPyThOn\tpYTHON\n", 0, errors);
+    check(compiled, "English forms fixture compiles");
+    if compiled {
+        english::write(fixture, fixture_img);
+        let loaded = english::load(fixture_img);
+        let i = english::exact("python");
+        var form: u8[>..] = [];
+        english::copy_form(i, 1, form);
+        let second = compare(form, "Python") == 0;
+        english::copy_form(i, 3, form);
+        check(loaded && english::form_count(i) == 4 && second && compare(form, "PyThOn") == 0,
+              "long English forms survive round trip, up to four variants");
+    }
     var tsv: u8[>..] = [];
     var img: u8[>..] = [];
     read(prepared, "english.tsv", tsv);
@@ -374,13 +390,24 @@ fn every_english_word(prepared: const u8[:], images: const u8[:]) {
         let score = english::score_of(i);
         if score < log2(weight as f64) - 0.01 || score > log2(weight as f64) + 0.01 { missing++; continue; }
         var form: u8[>..] = [];
-        english::top_form(i, form);
-        let head, tail, ok = split_once(rest, '\t');
-        let first = if ok { head } else { rest };
-        if compare(form, first) != 0 || english::form_count(i) < 1 { missing++; }
+        var left = rest;
+        var more = true;
+        var count: i64 = 0;
+        var mismatch = false;
+        while more && count < english::MAX_FORMS {
+            let head, tail, ok = split_once(left, '\t');
+            let expected = if ok { head } else { left };
+            more = ok;
+            left = tail;
+            if expected.len == 0 { continue; }
+            english::copy_form(i, count, form);
+            if compare(form, expected) != 0 { mismatch = true; }
+            count++;
+        }
+        if mismatch || count != english::form_count(i) { missing++; }
     }
     check(missing == 0 && rows == english::live.entries.len,
-          str("all ", rows, " English codes come back with their weight, score and first form (", missing, " missing)"));
+          str("all ", rows, " English codes come back with their weight, score and forms (", missing, " missing)"));
     var truncated: u8[>..] = [];
     truncated.append(img[..32]);
     check(!english::load(truncated) && english::live.entries.len == 0, "a truncated English image is refused, and nothing is left loaded");
