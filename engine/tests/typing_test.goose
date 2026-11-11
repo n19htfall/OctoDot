@@ -412,6 +412,46 @@ fn custom_phrases(s: u64) {
           str("a worker that aborts: the job fails with only the check's place (", session::phrases_status(), "), the phrases in use stay"));
     first_is(s, "nihao", "你好", true);
 
+    // A shortcut longer than the old 512-byte selection buffer is committed
+    // whole. Space used to fall through to the keys once the text did not fit.
+    var long: u8[>..] = [];
+    for i in 200 { long.append("长"); }
+    write_file(source, str(long, "\tyx\n"));
+    session::compile_phrases(source, dir);
+    check(settle() && status_starts("ready\t0\t1\t") && long.len == 600,
+          str("a 600-byte shortcut compiles (", session::phrases_status(), ")"));
+    press(s, session::KEY_ESCAPE);
+    type_text(s, "yx");
+    check(candidate(0) == long, str("the long shortcut is offered whole (", candidate(0).len, " bytes)"));
+    let picked = press(s, session::KEY_SPACE);
+    check((picked & session::HAS_COMMIT) != 0 && session::commit == long && !session::composing(),
+          str("space commits the 600-byte shortcut, not its code (got ", session::commit.len, " bytes)"));
+    press(s, session::KEY_ESCAPE);
+    type_text(s, "yx");
+    typed(s, ',');
+    check(session::commit == str(long, "，"),
+          str("a mark after the long shortcut commits the phrase, then the mark (got ", session::commit.len, " bytes)"));
+
+    // Earlier picks already fill the buffer: they are committed, then the phrase.
+    var longer: u8[>..] = [];
+    for i in 341 { longer.append("长"); }
+    write_file(source, str(longer, "\tde\n"));
+    session::compile_phrases(source, dir);
+    check(settle() && longer.len == 1023, "a phrase of the compiler's limit, 1023 bytes, compiles");
+    press(s, session::KEY_ESCAPE);
+    session::set_scheme("fullpinyin");
+    type_text(s, "zhongde");
+    let zhong = rank("中");
+    check(zhong >= 0 && session::menu.candidates[zhong].to == 5, "zhongde offers 中 for its first five letters");
+    session::select(zhong);
+    check(compare(session::input, "de") == 0 && candidate(0) == longer, "after 中, de offers the long shortcut");
+    let both = press(s, session::KEY_SPACE);
+    var want: u8[>..] = [];
+    want.append("中");
+    want.append(longer);
+    check((both & session::HAS_COMMIT) != 0 && session::commit == want,
+          str("the earlier pick and the long shortcut are both committed (got ", session::commit.len, " bytes)"));
+
     // An empty list takes everything away.
     write_file(source, "# nothing\n");
     session::compile_phrases(source, dir);

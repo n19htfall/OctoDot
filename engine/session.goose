@@ -87,8 +87,8 @@ var active: u64 = 0;
 var input: u8[..lattice::MAX_INPUT];        // not yet converted: letters, ' separators, tones, ` shape codes
 var caps: u8[..lattice::MAX_INPUT];         // 1 where that input byte was typed as a capital
 var consumed: u8[..lattice::MAX_INPUT];     // letters the selections so far have read
-var confirmed: u8[..512];                   // the selections' text
-var pick_text: u8[..512];
+var confirmed: u8[..phrases::MAX_TEXT];     // the selections' text; a compiled phrase fits
+var pick_text: u8[..phrases::MAX_TEXT];
 var pick_for: u64 = 0;
 var picks: Pick[..lattice::MAX_INPUT];
 // The picks' words, copied when picked, so the composition learns what was
@@ -115,7 +115,9 @@ struct Recent { input: u8[..lattice::MAX_INPUT], chars: u16, erased: u16, commit
 let RECENT_COMMITS = 4;
 var recent: Recent[..4];
 var commits: u32 = 0;                   // commit ids for the user dictionary's journal
-var commit: u8[..1024];     // what the last key committed
+// One key can commit two phrases: the picks that filled the buffer, then the
+// selection that did not fit, and a punctuation mark after either.
+var commit: u8[..2064];
 var page: i64 = 0;
 var highlight: i64 = 0;     // within the whole menu
 var expanded = false;       // Down opened the candidate grid
@@ -888,9 +890,25 @@ fn set_pick_text(handle: u64, text: const u8[:]) {
     pick_for = handle;
 }
 
+// Makes room for `text_len` more bytes of chosen text. Picks already made are
+// committed on their own when the buffer cannot also hold this selection, so
+// a long phrase is not replaced by the keys that chose it.
+fn room_for_text(text_len: i64) -> bool {
+    if confirmed.len + text_len <= confirmed.cap { return true; }
+    if picks.len == 0 { return false; }
+    learn_composition();
+    append_commit(confirmed);
+    confirmed.clear();
+    consumed.clear();
+    picks.clear();
+    picked_pairs.clear();
+    picked_ends.clear();
+    return text_len <= confirmed.cap;
+}
+
 fn select(i: i64) -> u32 {
     fresh_menu();
-    var replacement: u8[..512] = [];
+    var replacement: u8[..phrases::MAX_TEXT] = [];
     var replace = pick_text.len > 0 && pick_for == active;
     if replace { replacement.append(pick_text[..]); }
     pick_text.clear();
@@ -907,8 +925,12 @@ fn select(i: i64) -> u32 {
         if replacement.len > 0 && confirmed.len + replacement.len <= confirmed.cap { text_len = replacement.len; }
         else { replace = false; }
     }
-    guard to > 0 && to <= input.len && confirmed.len + text_len <= confirmed.cap && picks.len < picks.cap &&
+    guard to > 0 && to <= input.len && picks.len < picks.cap &&
           consumed.len + to <= consumed.cap && picked_ends.len + c.count <= picked_ends.cap else {
+        commit_raw();
+        return HANDLED | DIRTY | HAS_COMMIT;
+    }
+    if !room_for_text(text_len) {
         commit_raw();
         return HANDLED | DIRTY | HAS_COMMIT;
     }
@@ -937,7 +959,7 @@ fn select(i: i64) -> u32 {
         return HANDLED | DIRTY | HAS_COMMIT;
     }
     rebuild();
-    return HANDLED | DIRTY;
+    return with_commit(HANDLED | DIRTY);
 }
 
 // The pairs of a word a candidate was made of; false for a lexicon word
@@ -1520,8 +1542,12 @@ fn handle_key(handle: u64, ev: KeyEvent) -> u32 {
             }
             let c0: decoder::Candidate = if whole >= 0 { menu.candidates[whole] } else { decoder::Candidate {
                 to: 0, text: 0, len: 0, refs: 0, count: 0, code: 0, code_len: 0 } };
+            var took = false;
             if whole >= 0 && picks.len < picks.cap && picked_ends.len + c0.count <= picked_ends.cap &&
-               confirmed.len + c0.len <= confirmed.cap && consumed.len + input.len <= consumed.cap {
+               consumed.len + input.len <= consumed.cap {
+                took = room_for_text(c0.len);
+            }
+            if took {
                 // the whole-input candidate is the last pick
                 confirmed.append(menu.pool[c0.text..c0.text + c0.len]);
                 consumed.append(input);
