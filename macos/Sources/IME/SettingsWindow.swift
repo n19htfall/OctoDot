@@ -333,6 +333,8 @@ private struct InputPane: View {
                             NSWorkspace.shared.open(url)
                         }
                     }
+                } header: {
+                    Text("翻译")
                 } footer: {
                     Note("翻译在本机进行，优先使用内置词汇表。词汇表未收录的内容使用系统翻译；如需下载中英文语言，请在系统设置的“通用 → 语言与地区 → 翻译语言”中安装“简体中文”和“英文（美国）”。")
                 }
