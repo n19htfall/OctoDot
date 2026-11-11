@@ -277,7 +277,7 @@ final class Handler: NSObject, OctoDotHandlerV2 {
         let caret = snapshot.preedit.utf8.index(snapshot.preedit.utf8.startIndex, offsetBy: snapshot.caretUTF8)
         let caretUTF16 = snapshot.preedit.utf16.distance(from: snapshot.preedit.startIndex, to: caret)
         let marked = NSAttributedString(string: snapshot.preedit, attributes: [
-            .underlineStyle: NSUnderlineStyle.thick.rawValue,
+            .underlineStyle: NSUnderlineStyle.single.rawValue,
             .underlineColor: NSColor.controlAccentColor,
         ])
         client.setMarkedText(marked, selectionRange: NSRange(location: caretUTF16, length: 0),
