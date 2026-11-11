@@ -1492,11 +1492,8 @@ fn english_words(s: u64) {
     check(rank("OK") != 0 && session::input == "ok", "Shift-Backspace forgets the learned OK and leaves the letters");
     press(s, session::KEY_ESCAPE);
 
-    session::set_english_space(true);
-    check(pick(s, "ok", "OK", 0), "space: the first English word");
-    check(pick(s, "ok", "OK", 0) && session::commit == " OK", str("  and the next one is spaced (got \"", session::commit, "\")"));
-    session::set_english_space(false);
-    check(pick(s, "ok", "OK", 0) && session::commit == "OK", "with the space off, the next English word is not spaced");
+    check(pick(s, "ok", "OK", 0), "the first English word commits");
+    check(pick(s, "ok", "OK", 0) && session::commit == "OK", "consecutive English words commit without an inserted space");
     userdb::reset();
     userdb::clock_override = 0;
 
@@ -1550,6 +1547,8 @@ fn main() {
         exit(2);
     }
     check(session::open(images) == 0, "the engine opens the images");
+    // The shape-code cases below explicitly opt into their fixture scheme.
+    session::set_aux_scheme("wanxiang");
     let s = session::new_session();
 
     first_is(s, "nihao", "你好", true);

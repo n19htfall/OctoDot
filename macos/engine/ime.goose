@@ -136,9 +136,6 @@ export fn octo_english() -> i32 { if english::on { 1 } else { 0 } }
 
 export fn octo_set_english(on: u32) { session::set_english(on != 0); }
 
-// A space between consecutive English words. Off unless the host asks.
-export fn octo_set_english_space(on: u32) { session::set_english_space(on != 0); }
-
 // The reranker (engine/rerank.goose), which may put a better sentence first.
 // After a key whose result has 8 (pending), call before showing the
 // candidates (a few milliseconds): 2 (dirty) if the menu changed (call

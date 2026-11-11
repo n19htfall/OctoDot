@@ -200,9 +200,6 @@ final class Engine {
 
     func setEnglish(on: Bool) { octo_set_english(on ? 1 : 0) }
 
-    /// A space between consecutive English words. Off by default.
-    func setEnglishSpace(on: Bool) { octo_set_english_space(on ? 1 : 0) }
-
     // MARK: The reranker (docs/rerank-design.md)
 
     /// Whether the reranker is on, or nil if the images have none.

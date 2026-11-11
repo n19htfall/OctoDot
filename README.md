@@ -52,7 +52,8 @@ then move OctoDot.app to the Trash.
 - **Chinese and English together.** Type `woyonggithub` and get
   「我用GitHub」. Common English words appear among the candidates; there is
   no separate English mode to switch into.
-- **Shape codes (形码).** After a syllable, type `` ` `` and one or two
+- **Shape codes (形码).** Off by default; choose a scheme in Settings to enable,
+  or choose 无 to disable. After a syllable, type `` ` `` and one or two
   letters to narrow the candidates by how the character is written
   (`` shi`o `` → 是). Nine schemes, including 万象, 墨奇 and 自然码.
 - **Tones.** After a syllable, `7` `8` `9` `0` pick the first to fourth tone

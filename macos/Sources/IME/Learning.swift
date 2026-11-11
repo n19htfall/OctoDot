@@ -31,7 +31,6 @@ enum Learning {
     private static let setsKey = "lexiconSets"
     private static let grammarKey = "grammarModel"
     private static let englishKey = "englishWords"
-    private static let englishSpaceKey = "englishSpace"
     private static let rerankKey = "reranker"
     private static let fullCharsetKey = "fullCharset"
     private static let fuzzyKey = "fuzzyPinyin"
@@ -73,17 +72,6 @@ enum Learning {
         englishOn = on
     }
 
-    /// A space between consecutive English words. Off unless turned on.
-    static var englishSpace: Bool {
-        get { UserDefaults.standard.bool(forKey: englishSpaceKey) }
-        set { UserDefaults.standard.set(newValue, forKey: englishSpaceKey) }
-    }
-
-    static func useEnglishSpace(_ on: Bool) {
-        Engine.shared.setEnglishSpace(on: on)
-        englishSpace = on
-    }
-
     /// The reranker, remembered across launches: on unless turned off.
     static var rerankOn: Bool {
         get { UserDefaults.standard.object(forKey: rerankKey) as? Bool ?? true }
@@ -113,7 +101,7 @@ enum Learning {
 
     /// The shape-code scheme, remembered across launches.
     static var auxScheme: String {
-        get { UserDefaults.standard.string(forKey: auxSchemeKey) ?? "wanxiang" }
+        get { UserDefaults.standard.string(forKey: auxSchemeKey) ?? "none" }
         set { UserDefaults.standard.set(newValue, forKey: auxSchemeKey) }
     }
 
@@ -134,14 +122,16 @@ enum Learning {
 
     /// The remembered choices, applied after the engine opened its images.
     private static func applyPreferences() {
-        if auxScheme != "wanxiang" && !Engine.shared.setAuxScheme(auxScheme) { auxScheme = "wanxiang" }
+        if !Engine.shared.setAuxScheme(auxScheme) {
+            _ = Engine.shared.setAuxScheme("none")
+            auxScheme = "none"
+        }
         let choices = setChoices
         for set in Engine.shared.lexiconSets() {
             if let on = choices[set.id], on != set.mounted { Engine.shared.useSet(set.id, on: on) }
         }
         if !grammarOn && Engine.shared.grammar == .on { Engine.shared.setGrammar(on: false) }
         Engine.shared.setEnglish(on: englishOn)
-        Engine.shared.setEnglishSpace(on: englishSpace)
         Engine.shared.setRerank(on: rerankOn)
         Engine.shared.setFullCharset(on: fullCharset)
         Engine.shared.setFuzzy(fuzzy)

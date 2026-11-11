@@ -221,7 +221,6 @@ final class SettingsModel {
     var fullCharset = false
     var fuzzy: [Engine.FuzzyGroup] = []
     var english = true
-    var englishSpace = false
     var sets: [Engine.LexiconSet] = []
     var incognito = false
     var phrases = ""
@@ -251,7 +250,6 @@ final class SettingsModel {
         fullCharset = Learning.fullCharset
         fuzzy = Engine.shared.fuzzyGroups()
         english = Learning.englishOn
-        englishSpace = Learning.englishSpace
         sets = Engine.shared.lexiconSets()
         phrases = Phrases.statusLine
     }
@@ -263,7 +261,6 @@ final class SettingsModel {
     func useFullCharset(_ on: Bool) { Learning.useFullCharset(on); refresh() }
     func useFuzzy(_ id: String, on: Bool) { Learning.useFuzzy(id, on: on); refresh() }
     func useEnglish(_ on: Bool) { Learning.useEnglish(on); refresh() }
-    func useEnglishSpace(_ on: Bool) { Learning.useEnglishSpace(on); refresh() }
     func useSet(_ id: String, on: Bool) { Learning.useSet(id, on: on); refresh() }
     func setIncognito(_ on: Bool) { Learning.incognito = on; refresh() }
     func editPhrases() { Phrases.edit() }
@@ -309,11 +306,10 @@ private struct InputPane: View {
                 Picker("输入方案", selection: Binding(get: { model.scheme }, set: { model.useScheme($0) })) {
                     ForEach(model.schemes, id: \.id) { Text($0.name).tag($0.id) }
                 }
-                if !model.auxSchemes.isEmpty {
-                    Picker("形码", selection: Binding(get: { model.auxScheme },
-                                                                 set: { model.useAuxScheme($0) })) {
-                        ForEach(model.auxSchemes, id: \.id) { Text($0.name).tag($0.id) }
-                    }
+                Picker("形码", selection: Binding(get: { model.auxScheme },
+                                                 set: { model.useAuxScheme($0) })) {
+                    Text("无").tag("none")
+                    ForEach(model.auxSchemes, id: \.id) { Text($0.name).tag($0.id) }
                 }
                 Toggle("全部汉字", isOn: Binding(get: { model.fullCharset },
                                                               set: { model.useFullCharset($0) }))
@@ -340,10 +336,6 @@ private struct InputPane: View {
                 Section {
                     Toggle("整句模型", isOn: Binding(get: { rerank }, set: { model.useRerank($0) }))
                 }
-            }
-            Section {
-                Toggle("英文单词", isOn: Binding(get: { model.english }, set: { model.useEnglish($0) }))
-                Toggle("英文后加空格", isOn: Binding(get: { model.englishSpace }, set: { model.useEnglishSpace($0) }))
             }
             if #available(macOS 26.0, *) {
                 Section {
@@ -521,12 +513,11 @@ private struct LexiconPane: View {
     var body: some View {
         Form {
             PaneHeader(pane: .lexicon)
-            if !model.sets.isEmpty {
-                Section("万象词库") {
-                    ForEach(model.sets, id: \.id) { set in
-                        Toggle(set.name, isOn: Binding(get: { set.mounted }, set: { model.useSet(set.id, on: $0) }))
-                    }
+            Section("万象词库") {
+                ForEach(model.sets, id: \.id) { set in
+                    Toggle(set.name, isOn: Binding(get: { set.mounted }, set: { model.useSet(set.id, on: $0) }))
                 }
+                Toggle("英文单词", isOn: Binding(get: { model.english }, set: { model.useEnglish($0) }))
             }
             Section {
                 LabeledContent("自定义短语") {

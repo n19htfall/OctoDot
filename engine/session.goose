@@ -136,16 +136,14 @@ var chinese_full = false;
 // characters (的这螺片蒽酮 for development).
 var chinese_bits = 0.0;
 var weak_chinese = false;   // the exact English match came first over that reading (place_english)
-var english_space = false;  // a space between consecutive English words, off unless asked
 var builds: u64 = 0;        // menus built: a late score applies only to the menu it was for
 var words = decoder::Words {};          // the words the menu being shown was built from
 var shortlist = decoder::Shortlist {};  // what the reranker scores for it
 var rerank_due: u64 = 0;    // the menu (builds) still to be reranked, at refine; 0 for none
 var rerank_sync = false;    // tests and the accuracy harness: score at once, on this thread
-var last_commit_english = false;
 var shown: u8[>..];         // the input as the preedit shows it: the keys typed, by syllable
 var snap: u8[>..];
-var aux_scheme: u8[>..];        // which aux.<scheme>.img open() loads (万象's own by default)
+var aux_scheme: u8[>..];        // which aux.<scheme>.img open() loads; "none" disables shape codes
 var scheme: u8[>..];            // the input scheme: spellings.<scheme>.img
 var data_dir: u8[>..];          // where open() found the images
 var scheme_list: u8[>..];       // "id \t name \t preedit" per scheme found there, for the host
@@ -182,8 +180,10 @@ fn open(directory: const u8[:]) -> i32 {
     }
     userdb::scope.clear();
     userdb::scope.append(scheme);
-    if aux_scheme.len == 0 { aux_scheme.append("wanxiang"); }
-    {
+    if aux_scheme.len == 0 { aux_scheme.append("none"); }
+    if aux_scheme == "none" {
+        auxcode::clear(auxcode::live);
+    } else {
         var img: u8[>..] = [];
         if !read_file(str(directory, "/aux.", aux_scheme, ".img"), img) || !auxcode::load(img) {
             auxcode::clear(auxcode::live);
@@ -234,7 +234,6 @@ fn reset(handle: u64) {
     if handle == active {
         clear_composition();
         recent.clear();                 // the text around the caret is not what we committed
-        last_commit_english = false;
     }
 }
 
@@ -309,7 +308,6 @@ fn make_room() {
     learn_composition();
     append_commit(confirmed);
     append_commit(lead_text);
-    last_commit_english = false;
     var keys: u8[>..] = [];
     for c in input[..lead_to] { if c != '\'' { keys.push(c); } }
     remember(keys, lead_text, 0);
@@ -779,12 +777,21 @@ fn aux_list() -> const u8[:] {
 // image does not verify (the current one stays).
 fn set_aux_scheme(id: const u8[:]) -> i32 {
     guard ready && spelling::is_id(id) else { return 1; }
+    if id == "none" {
+        auxcode::clear(auxcode::live);
+        aux_scheme.clear();
+        aux_scheme.append("none");
+        decoder::forget_fits();
+        if input.len > 0 { rebuild(); }
+        return 0;
+    }
     var img: u8[>..] = [];
     var probe = auxcode::Table {};
     guard read_file(str(data_dir, "/aux.", id, ".img"), img) && auxcode::load_into(probe, img) else { return 1; }
     auxcode::load(img);                             // verified just now
     aux_scheme.clear();
     aux_scheme.append(id);
+    decoder::forget_fits();
     if input.len > 0 { rebuild(); }                 // a code typed already now means this scheme's
     return 0;
 }
@@ -850,7 +857,6 @@ fn commit_raw() {
     append_commit(confirmed);
     for p in input.len { if input[p] != '\'' && commit.len < commit.cap { commit.push(as_typed(p)); } }
     remember("", commit[from..], 0);
-    last_commit_english = false;
     clear_composition();
 }
 
@@ -925,12 +931,8 @@ fn select(i: i64) -> u32 {
     input.append(rest);
     caps.append(rest_caps);
     if input.len == 0 {
-        let starts = picks.len > 0 && picks[0].english != 0;
-        let ends = picks.len > 0 && picks[picks.len - 1].english != 0;
-        if english_space && last_commit_english && starts { append_commit(" "); }
         learn_composition();
         append_commit(confirmed);
-        last_commit_english = ends;
         clear_composition();
         return HANDLED | DIRTY | HAS_COMMIT;
     }
@@ -1294,8 +1296,6 @@ fn set_english(v: bool) {
     if input.len > 0 { rebuild(); }
 }
 
-fn set_english_space(v: bool) { english_space = v; }
-
 // Fuzzy pinyin (docs/fuzzy-pinyin.md): the groups the user has on, by id,
 // space-separated ("z_zh c_ch"); none by default. By id rather than bit, so
 // a choice holds across schemes and builds.
@@ -1383,7 +1383,6 @@ fn handle_key(handle: u64, ev: KeyEvent) -> u32 {
     if composing() && (ev.modifiers & MOD_COMMAND) != 0 { return commit_passing(); }
     if chord != 0 {
         if !composing() { recent.clear(); }
-        last_commit_english = false;
         return 0;
     }
 
@@ -1406,35 +1405,27 @@ fn handle_key(handle: u64, ev: KeyEvent) -> u32 {
     if !composing() {
         if ev.key == KEY_BACKSPACE {
             note_backspace();               // deleting what was just committed?
-            last_commit_english = false;
             return 0;
         }
         if ev.key == KEY_OTHER && c >= '0' && c <= '9' {
             last_was_digit = true;
             recent.clear();
-            last_commit_english = false;
             return 0;
         }
         let after_digit = last_was_digit && (c == '.' || c == ',' || c == ':');
         last_was_digit = false;
         if ev.key != KEY_OTHER || after_digit {
-            // Escape changes nothing in the app. Anything else does, so the
-            // next English word is not consecutive with the last one.
-            if ev.key != KEY_ESCAPE {
-                recent.clear();
-                last_commit_english = false;
-            }
+            // Escape leaves the app text and its learning context intact.
+            if ev.key != KEY_ESCAPE { recent.clear(); }
             return 0;
         }
         let mark = punctuation(c);
         if mark.len == 0 {
             recent.clear();
-            last_commit_english = false;
             return 0;
         }
         append_commit(mark);
         remember("", mark, 0);
-        last_commit_english = false;
         return HANDLED | DIRTY | HAS_COMMIT;
     }
 
@@ -1539,11 +1530,8 @@ fn handle_key(handle: u64, ev: KeyEvent) -> u32 {
                 picks.push(Pick { letters: input.len as u8, bytes: c0.len, words: c0.count as u8,
                                   pairs: (picked_pairs.len - before) as u8, english: if c0.code_len > 0 { 1 } else { 0 },
                                   foreign: 0 });
-                let starts = picks.len > 0 && picks[0].english != 0;
-                if english_space && last_commit_english && starts { append_commit(" "); }
                 learn_composition();
                 append_commit(confirmed);
-                last_commit_english = false;            // the mark follows, so the next word is not adjacent
                 clear_composition();
             } else {
                 commit_raw();
