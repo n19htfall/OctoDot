@@ -136,7 +136,7 @@ a pure function (tested on its own, section 8):
 | `notInstalled` | no `~/Library/Input Methods/OctoDotIME.app` (perhaps the old `OctoDot.app`, which installing removes) | the wizard from step B |
 | `outdated` | the installed build is older, its core differs, its running core has not confirmed activation, or the old `OctoDot.app` is still beside it | an update or activation retry (section 4), then on |
 | `disabled` | installed and current, not enabled in TIS | the wizard at step B's enabling |
-| `ready` | installed, current, enabled | Settings (the IME's window) |
+| `ready` | installed, current, enabled | The companion home screen with a button to open the IME's Settings |
 
 The wizard, one SwiftUI window in the system's design:
 

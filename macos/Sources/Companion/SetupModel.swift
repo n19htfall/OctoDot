@@ -39,9 +39,8 @@ final class SetupModel {
     var steps: [Step] { (state == .wrongLocation ? [.location] : []) + [.install, .privacy, .tryIt] }
 
     /// Looks at the Mac and decides: an outdated input method is brought up
-    /// to date at once (in place, apps keep typing); a ready one goes
-    /// straight to its settings.
-    func refresh(openSettingsWhenReady: Bool = false) async {
+    /// to date in place. Once the input method is ready, show the home screen.
+    func refresh() async {
         guard let facts = await InstallerClient.shared.facts() else {
             screen = .wizard
             report(false, "OctoDot 的安装程序没有响应。请从磁盘映像重新安装 OctoDot。")
@@ -66,10 +65,9 @@ final class SetupModel {
             let (ok, text, note) = await installWithGrammar()
             busy = false
             report(ok && note == nil, [text, note].compactMap { $0 }.joined(separator: " "))
-            if ok { await refresh(openSettingsWhenReady: openSettingsWhenReady) } else { screen = .home }
+            if ok { await refresh() } else { screen = .home }
         case .ready:
             screen = .home
-            if openSettingsWhenReady { IMELink.showSettings() }
             if GrammarStore.isMissing {
                 if let note = await placeGrammar() { report(false, note) } else { IMELink.grammarReady() }
             }

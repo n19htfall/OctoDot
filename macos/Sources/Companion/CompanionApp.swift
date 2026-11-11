@@ -49,8 +49,6 @@ struct RootView: View {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let model = SetupModel()
     let updater = Updater()
-    /// A link opened the app (octodot://…): it says what to do, not the launch.
-    private var openedForURL = false
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         NSAppleEventManager.shared().setEventHandler(self, andSelector: #selector(handleURL(_:reply:)),
@@ -59,11 +57,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        Task {
-            // A moment for a launch link to arrive first.
-            try? await Task.sleep(for: .milliseconds(200))
-            await model.refresh(openSettingsWhenReady: !openedForURL)
-        }
+        Task { await model.refresh() }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
@@ -71,7 +65,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// octodot://update (the input method's "Check for Updates…"),
     /// octodot://settings, octodot://setup.
     @objc private func handleURL(_ event: NSAppleEventDescriptor, reply: NSAppleEventDescriptor) {
-        openedForURL = true
         guard let text = event.paramDescriptor(forKeyword: keyDirectObject)?.stringValue,
               let url = URL(string: text), url.scheme == Identity.urlScheme else { return }
         switch url.host {

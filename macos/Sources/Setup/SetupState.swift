@@ -73,7 +73,7 @@ enum SetupState: Equatable, Sendable {
     case outdated(restart: Bool)
     /// Installed and current, but not among the input sources.
     case disabled
-    /// Installed, current and enabled: straight to Settings.
+    /// Installed, current and enabled: show the companion home screen.
     case ready
 
     static func of(_ facts: SetupFacts) -> SetupState {

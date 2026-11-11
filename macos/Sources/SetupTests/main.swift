@@ -39,7 +39,7 @@ check(SetupState.of(facts(installed: rebuilt)) == .outdated(restart: false),
 check(SetupState.of(facts(installed: current, enabled: false)) == .disabled,
       "installed and current, not enabled → the enabling step")
 check(SetupState.of(facts(installed: current)) == .ready,
-      "installed, enabled and current → skip onboarding, open Settings")
+      "installed, enabled and current → ready to show the home screen")
 var pendingActivation = facts(installed: current)
 pendingActivation.activationPending = true
 pendingActivation.runningCore = "OctoDotCore-older.dylib"
