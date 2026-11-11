@@ -142,6 +142,16 @@ fn editing(s: u64) {
     press(s, session::KEY_PAGE_DOWN);
     check(pages > session::PAGE_SIZE && session::page == 1 && session::highlight == session::PAGE_SIZE,
           "page down moves to the next page of candidates");
+    press(s, session::KEY_END);
+    let last_highlight = session::highlight;
+    check(press(s, session::KEY_PAGE_DOWN) == session::HANDLED && typed(s, '=') == session::HANDLED &&
+          session::highlight == last_highlight,
+          "paging past the last page is consumed without repainting or resetting the highlight");
+    press(s, session::KEY_HOME);
+    press(s, session::KEY_RIGHT);
+    check(press(s, session::KEY_PAGE_UP) == session::HANDLED && typed(s, '-') == session::HANDLED &&
+          session::page == 0 && session::highlight == 1,
+          "paging before the first page is consumed without repainting or resetting the highlight");
     press(s, session::KEY_ESCAPE);
 
     type_text(s, "a");
@@ -150,6 +160,14 @@ fn editing(s: u64) {
     check(session::highlight == 1 && !session::expanded, "right moves along the row");
     press(s, session::KEY_DOWN);
     check(session::expanded && session::highlight == 1, "down opens the grid where the highlight already is");
+    check(press(s, session::KEY_PAGE_UP) == session::HANDLED && session::highlight == 1,
+          "paging before the first grid does not repaint or move the highlight");
+    press(s, session::KEY_END);
+    let grid_last = session::highlight;
+    check(press(s, session::KEY_PAGE_DOWN) == session::HANDLED && session::highlight == grid_last,
+          "paging past the last grid does not repaint or move the highlight");
+    press(s, session::KEY_HOME);
+    press(s, session::KEY_RIGHT);
     let grid = session::snapshot(s);
     let grid_flags: i64 = (grid[6] as i64) | ((grid[7] as i64) << 8);
     check((grid_flags & session::FLAG_EXPANDED) != 0 && session::grid_row == 0, "the snapshot marks the grid open");

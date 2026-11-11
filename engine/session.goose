@@ -1118,19 +1118,23 @@ fn ensure_grid() {
     if grid_row < 0 { grid_row = 0; }
 }
 
-fn turn_page(delta: i64) {
+fn turn_page(delta: i64) -> bool {
     let n = menu.candidates.len;
-    if n == 0 { return; }
+    if n == 0 { return false; }
     if expanded {
+        if delta < 0 && grid_row == 0 { return false; }
+        if delta > 0 && (grid_row + GRID_ROWS) * PAGE_SIZE >= n { return false; }
         move_highlight(delta * GRID_ROWS * PAGE_SIZE);
-        return;
+        return true;
     }
     let last = (n - 1) / PAGE_SIZE;
     var p = page + delta;
     if p < 0 { p = 0; }
     if p > last { p = last; }
+    if p == page { return false; }
     page = p;
     highlight = p * PAGE_SIZE;
+    return true;
 }
 
 // Chinese punctuation for a key, or "" if it has none.
@@ -1473,8 +1477,8 @@ fn handle_key(handle: u64, ev: KeyEvent) -> u32 {
     if ev.key == KEY_RETURN { commit_raw(); return HANDLED | DIRTY | HAS_COMMIT; }
     if ev.key == KEY_SPACE { return select(highlight); }
     if ev.key == KEY_OTHER && c >= '1' && c < '1' + PAGE_SIZE { return select(page * PAGE_SIZE + (c - '1')); }
-    if ev.key == KEY_PAGE_DOWN || (ev.key == KEY_OTHER && c == '=') { turn_page(1); return HANDLED | DIRTY; }
-    if ev.key == KEY_PAGE_UP || (ev.key == KEY_OTHER && c == '-') { turn_page(-1); return HANDLED | DIRTY; }
+    if ev.key == KEY_PAGE_DOWN || (ev.key == KEY_OTHER && c == '=') { return HANDLED | (if turn_page(1) { DIRTY } else { 0 }); }
+    if ev.key == KEY_PAGE_UP || (ev.key == KEY_OTHER && c == '-') { return HANDLED | (if turn_page(-1) { DIRTY } else { 0 }); }
     if ev.key == KEY_DOWN {
         if menu.candidates.len == 0 { return HANDLED; }
         if !expanded {
