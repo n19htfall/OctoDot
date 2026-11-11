@@ -68,9 +68,15 @@ final class Updater {
             if interactive { UpdateNotice.shared.present(self) }
             return
         }
+        let configuration: URLSessionConfiguration
+        do { configuration = try UpdateProxyConfiguration.ephemeral() } catch {
+            phase = .failed("\(error)")
+            if interactive { UpdateNotice.shared.present(self) }
+            return
+        }
         phase = .checking
         if interactive { UpdateNotice.shared.present(self) }
-        let session = URLSession(configuration: .ephemeral)
+        let session = URLSession(configuration: configuration)
         do {
             let (data, response) = try await session.data(from: url)
             UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "lastUpdateCheck")
@@ -95,6 +101,11 @@ final class Updater {
         guard case .available(let manifest) = phase, let manifestData, let key = Self.publicKey,
               let verifier = try? UpdateVerifier(publicKeyBase64: key, releasesPrefix: Identity.releasesPrefix),
               let url = URL(string: manifest.url) else { return }
+        let configuration: URLSessionConfiguration
+        do { configuration = try UpdateProxyConfiguration.ephemeral() } catch {
+            phase = .failed("\(error)")
+            return
+        }
         downloadedBytes = 0
         downloadSize = Int64(manifest.size)
         phase = .downloading
@@ -105,7 +116,7 @@ final class Updater {
                     self.downloadedBytes = max(self.downloadedBytes, bytes)
                 }
             }
-            let (file, _) = try await URLSession(configuration: .ephemeral).download(from: url, delegate: progress)
+            let (file, _) = try await URLSession(configuration: configuration).download(from: url, delegate: progress)
             defer { try? FileManager.default.removeItem(at: file) }
             phase = .verifying
             try await Task.detached {

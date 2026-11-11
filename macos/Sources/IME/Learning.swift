@@ -29,9 +29,7 @@ enum Learning {
 
     private static let auxSchemeKey = "auxScheme"
     private static let setsKey = "lexiconSets"
-    private static let grammarKey = "grammarModel"
     private static let englishKey = "englishWords"
-    private static let rerankKey = "reranker"
     private static let fullCharsetKey = "fullCharset"
     private static let fuzzyKey = "fuzzyPinyin"
 
@@ -72,31 +70,9 @@ enum Learning {
         englishOn = on
     }
 
-    /// The reranker, remembered across launches: on unless turned off.
-    static var rerankOn: Bool {
-        get { UserDefaults.standard.object(forKey: rerankKey) as? Bool ?? true }
-        set { UserDefaults.standard.set(newValue, forKey: rerankKey) }
-    }
-
-    static func useRerank(_ on: Bool) {
-        Engine.shared.setRerank(on: on)
-        rerankOn = on
-    }
-
-    /// Whether the grammar model is on, remembered across launches: on unless turned off.
-    static var grammarOn: Bool {
-        get { UserDefaults.standard.object(forKey: grammarKey) as? Bool ?? true }
-        set { UserDefaults.standard.set(newValue, forKey: grammarKey) }
-    }
-
-    static func useGrammar(_ on: Bool) {
-        if Engine.shared.setGrammar(on: on) || !on { grammarOn = on }
-    }
-
-    /// The companion has put the grammar model in the shared folder: turned
-    /// on now, unless the user turned it off.
+    /// Open the grammar model when the companion puts it in the shared folder.
     static func reopenGrammar() {
-        if grammarOn && Engine.shared.grammar != .on { Engine.shared.setGrammar(on: true) }
+        if Engine.shared.grammar != .on { Engine.shared.setGrammar(on: true) }
     }
 
     /// The shape-code scheme, remembered across launches.
@@ -130,9 +106,7 @@ enum Learning {
         for set in Engine.shared.lexiconSets() {
             if let on = choices[set.id], on != set.mounted { Engine.shared.useSet(set.id, on: on) }
         }
-        if !grammarOn && Engine.shared.grammar == .on { Engine.shared.setGrammar(on: false) }
         Engine.shared.setEnglish(on: englishOn)
-        Engine.shared.setRerank(on: rerankOn)
         Engine.shared.setFullCharset(on: fullCharset)
         Engine.shared.setFuzzy(fuzzy)
     }

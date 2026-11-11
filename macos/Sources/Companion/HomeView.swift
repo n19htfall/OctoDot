@@ -31,8 +31,7 @@ struct HomeView: View {
             Card {
                 UpdateRow(updater: updater)
                 Toggle("自动检查更新", isOn: $updater.automatic)
-                Text("只有这个应用会通过 HTTPS 检查由 OctoDot 密钥签名的发布。输入法本身从不使用网络。")
-                    .font(.caption).foregroundStyle(.secondary)
+                ProxySection()
             }
             if let share = model.grammarProgress { GrammarDownload(share: share) }
             if let message = model.message {
@@ -47,7 +46,7 @@ struct HomeView: View {
             }
         }
         .padding(28)
-        .frame(width: 620, height: 500)
+        .frame(width: 620, height: UpdateProxy.shared.enabled ? 640 : 500)
         .sheet(isPresented: $uninstalling) { UninstallSheet(model: model) }
     }
 
@@ -72,6 +71,40 @@ struct HomeView: View {
             let (ok, text) = await InstallerClient.shared.importUserData(transfer)
             model.failed = !ok
             model.message = text
+        }
+    }
+}
+
+/// The update proxy, shown once it is turned on: kind, host, port, and an
+/// optional username and password.
+private struct ProxySection: View {
+    @Bindable private var proxy = UpdateProxy.shared
+
+    var body: some View {
+        Toggle("使用代理服务器", isOn: $proxy.enabled)
+        if proxy.enabled {
+            HStack(spacing: 8) {
+                Picker("类型", selection: $proxy.kind) {
+                    ForEach(UpdateProxy.Kind.allCases) { kind in
+                        Text(kind.title).tag(kind)
+                    }
+                }
+                .pickerStyle(.menu)
+                .fixedSize()
+                TextField("主机", text: $proxy.host)
+                    .textFieldStyle(.roundedBorder)
+                    .autocorrectionDisabled()
+                TextField("端口", text: $proxy.portText)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 72)
+            }
+            HStack(spacing: 8) {
+                TextField("用户名，可空", text: $proxy.username)
+                    .textFieldStyle(.roundedBorder)
+                    .autocorrectionDisabled()
+                SecureField("密码，可空", text: $proxy.password)
+                    .textFieldStyle(.roundedBorder)
+            }
         }
     }
 }

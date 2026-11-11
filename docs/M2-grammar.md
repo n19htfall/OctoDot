@@ -96,9 +96,8 @@ installs the IME that pins it (docs/distribution-and-onboarding.md, section
   maps `<language>.gram`: beside `grammar.img` if it is there (the images
   folder, the tests), else in the folder the host names
   (`octo_set_grammar_folder`, ABI v16; the IME names the App Group's).
-- **`session::open`** maps the model if the images have one. The host can
-  turn it on or off at once (ABI v8: `octo_grammar`, `octo_set_grammar`;
-  input menu: 语法模型 Grammar Model, remembered). The sandboxed self-test
+- **`session::open`** maps the model when it is available. The IME also opens
+  it when the companion finishes downloading it. The sandboxed self-test
   fails if the bundle pins no model, or if the shared folder holds the
   pinned one and it does not map.
 

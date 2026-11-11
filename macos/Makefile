@@ -255,7 +255,7 @@ $(IME_APP): $(CORE_INPUTS) $(CORE_DATA) $(CORE_ID) $(IMAGES)/$(GRAMMAR_NAME) scr
 
 build/companion/OctoDot: $(SETUP_SWIFT) $(COMPANION_SWIFT)
 	@mkdir -p build/companion
-	$(SWIFTC) $(MAINFLAGS) $(SETUP_SWIFT) $(COMPANION_SWIFT) -framework SwiftUI -o $@
+	$(SWIFTC) $(MAINFLAGS) $(SETUP_SWIFT) $(COMPANION_SWIFT) -framework SwiftUI -framework Network -o $@
 
 build/installer/OctoDotInstaller: $(SETUP_SWIFT) $(INSTALLER_SWIFT)
 	@mkdir -p build/installer

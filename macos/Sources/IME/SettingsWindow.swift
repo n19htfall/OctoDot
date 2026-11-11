@@ -216,8 +216,6 @@ final class SettingsModel {
     var scheme = ""
     var auxSchemes: [Engine.Scheme] = []
     var auxScheme = ""
-    var grammar = Engine.GrammarState.absent
-    var rerank: Bool?                           // nil: the images have no reranker
     var fullCharset = false
     var fuzzy: [Engine.FuzzyGroup] = []
     var english = true
@@ -245,8 +243,6 @@ final class SettingsModel {
         scheme = Learning.scheme
         auxSchemes = Engine.shared.auxSchemes()
         auxScheme = Learning.auxScheme
-        grammar = Engine.shared.grammar
-        rerank = Engine.shared.rerank
         fullCharset = Learning.fullCharset
         fuzzy = Engine.shared.fuzzyGroups()
         english = Learning.englishOn
@@ -256,8 +252,6 @@ final class SettingsModel {
 
     func useScheme(_ id: String) { Learning.useScheme(id); refresh() }
     func useAuxScheme(_ id: String) { Learning.useAuxScheme(id); refresh() }
-    func useGrammar(_ on: Bool) { Learning.useGrammar(on); refresh() }
-    func useRerank(_ on: Bool) { Learning.useRerank(on); refresh() }
     func useFullCharset(_ on: Bool) { Learning.useFullCharset(on); refresh() }
     func useFuzzy(_ id: String, on: Bool) { Learning.useFuzzy(id, on: on); refresh() }
     func useEnglish(_ on: Bool) { Learning.useEnglish(on); refresh() }
@@ -326,17 +320,6 @@ private struct InputPane: View {
                     Text("模糊音")
                 }
             }
-            if model.grammar != .absent {
-                Section {
-                    Toggle("语法模型", isOn: Binding(get: { model.grammar == .on },
-                                                   set: { model.useGrammar($0) }))
-                }
-            }
-            if let rerank = model.rerank {
-                Section {
-                    Toggle("整句模型", isOn: Binding(get: { rerank }, set: { model.useRerank($0) }))
-                }
-            }
             if #available(macOS 26.0, *) {
                 Section {
                     Picker("翻译按键", selection: Binding(get: { model.translationModifier },
@@ -345,16 +328,13 @@ private struct InputPane: View {
                             Text(modifier.label).tag(modifier)
                         }
                     }
-                    Text("按住所选按键显示译文，松开恢复原文。按住时，可用数字选词、用 − / = 翻页。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                     Button("打开系统设置…") {
                         if let url = URL(string: "x-apple.systempreferences:com.apple.Localization-Settings.extension") {
                             NSWorkspace.shared.open(url)
                         }
                     }
                 } footer: {
-                    Note("翻译在本机进行，优先使用内置词汇表。词汇表未收录的内容使用系统翻译；如需下载中英文语言，请在系统设置的“通用 → 语言与地区 → 翻译语言”中安装简体中文和英文（美国）。")
+                    Note("翻译在本机进行，优先使用内置词汇表。词汇表未收录的内容使用系统翻译；如需下载中英文语言，请在系统设置的“通用 → 语言与地区 → 翻译语言”中安装“简体中文”和“英文（美国）”。")
                 }
             }
         }

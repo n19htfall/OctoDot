@@ -118,8 +118,7 @@ percentile. 8 and 64 take a quarter of that, and lose 0.3 (小鹤双拼) and
   snapshot if it says `DIRTY`, else the key's). A key that comes first
   settles it: the menu is reranked before that key acts on it, so Space
   picks what would have been shown. (ABI 12.)
-- Settings → Input: "整句模型 Sentence model", on unless turned off; shown
-  only when the images hold a model.
+- The IME uses the sentence model whenever its weights are available.
 - The sandboxed self-test reports that the weights map inside the sandbox.
 
 ## 5. Tests

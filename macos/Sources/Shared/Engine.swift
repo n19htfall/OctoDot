@@ -208,8 +208,6 @@ final class Engine {
         return state < 0 ? nil : state == 1
     }
 
-    func setRerank(on: Bool) { octo_set_rerank(on ? 1 : 0) }
-
     // MARK: The character set
 
     /// Every character, or only 万象's daily ones (the default Control-G

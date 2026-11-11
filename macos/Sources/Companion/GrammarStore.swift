@@ -120,7 +120,7 @@ private final class Download: NSObject, URLSessionDownloadDelegate, @unchecked S
 
     static func run(_ url: URL, expected: UInt64, progress: @escaping @Sendable (Double) -> Void) async throws -> URL {
         let download = Download(expected: expected, progress: progress)
-        let session = URLSession(configuration: .ephemeral, delegate: download, delegateQueue: nil)
+        let session = URLSession(configuration: try UpdateProxyConfiguration.ephemeral(), delegate: download, delegateQueue: nil)
         defer { session.finishTasksAndInvalidate() }
         return try await withCheckedThrowingContinuation { continuation in
             download.continuation = continuation
