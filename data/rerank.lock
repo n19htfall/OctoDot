@@ -14,6 +14,6 @@
 # run tools/fetch-pinned.sh data/rerank.lock .data/rerank --rehash.
 #
 #    sha256 path url
-file 6706d19df972a8966515678070d7192d65a56b20fdbec63166bc367640e8ad46 rerank.tsv https://github.com/n19htfall/OctoDot/releases/download/rerank-1/rerank.tsv
-file e62a2174b1a71b3a8f73096178c0b618b11cc37253cf3d99bcfba825fdb0989f rerank.weights https://github.com/n19htfall/OctoDot/releases/download/rerank-1/rerank.weights
-file b25ad83980b2df18cc30460c634f677c12302fcb71cc23b8da50320932365001 rerank.check.tsv https://github.com/n19htfall/OctoDot/releases/download/rerank-1/rerank.check.tsv
+file 2dc6354f4494edf035dcb68784e60bac3aa278c987e6a7af1d23d687bc9212f3 rerank.tsv https://github.com/n19htfall/OctoDot/releases/download/rerank-2/rerank.tsv
+file 19594b3cff7c35c99b87bc01b3129c15a8b3cdd8d6e764c0d99e1a0c05dce3e1 rerank.weights https://github.com/n19htfall/OctoDot/releases/download/rerank-2/rerank.weights
+file f2e677b9893f3e813d2d58a69e56a10bcc9903757274f2fbcb0e3c3c411020da rerank.check.tsv https://github.com/n19htfall/OctoDot/releases/download/rerank-2/rerank.check.tsv
