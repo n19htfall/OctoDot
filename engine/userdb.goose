@@ -353,12 +353,14 @@ fn restat(i: i64, uses: f32, day: u32) {
 // Words longer than MAX_PHRASE syllables are not kept.
 fn learn(pairs: const lexicon::Pair[:], amount: f64, commit: u32) {
     if orphan_pairs > 0 { compact_words(); }
-    guard pairs.len > 0 && pairs.len <= MAX_PHRASE && lex.pairs.len + pairs.len < lexicon::MAX_PAIRS else { return; }
-    unbury(pairs);
-    if lex.toned.len == 0 { lex.toned.append(lexicon::live.toned); }
+    guard pairs.len > 0 && pairs.len <= MAX_PHRASE else { return; }
     var code: u16[>..] = [];
     code_of(pairs, code);
     let i, spot = locate(pairs, code, 0);
+    // Only new entries allocate pairs. Existing entries can still be reweighted.
+    if i < 0 && lex.pairs.len + pairs.len >= lexicon::MAX_PAIRS { return; }
+    unbury(pairs);
+    if lex.toned.len == 0 { lex.toned.append(lexicon::live.toned); }
     let day = today();
     var before = Stat { uses: 0.0, day: day, base_uses: 0.0, base_day: 0 };
     if i >= 0 { before = stat_of(i); }

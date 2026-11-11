@@ -987,6 +987,40 @@ fn storage(s: u64) {
     userdb::clock_override = 0;
 }
 
+fn learning_at_capacity() {
+    userdb::reset();
+    userdb::clock_override = 1794000000;
+    var known: lexicon::Pair[>..] = [];
+    var pairs: lexicon::Pair[>..] = [];
+    for i in lexicon::live.entries.len {
+        let n = lexicon::live.entries[i].len;
+        if n < 4 || n > userdb::MAX_PHRASE || userdb::lex.pairs.len + n >= lexicon::MAX_PAIRS { continue; }
+        pairs.clear();
+        if !session::pairs_of(lexicon::live, i, pairs) { continue; }
+        userdb::put(pairs, 1.0, userdb::today());
+        if known.len == 0 { known.append(pairs); }
+        if userdb::lex.pairs.len + known.len >= lexicon::MAX_PAIRS { break; }
+    }
+    let used = userdb::lex.pairs.len;
+    check(known.len > 0 && used + known.len >= lexicon::MAX_PAIRS,
+          "capacity: the dictionary has no room for another word of the same length");
+    if known.len > 0 {
+        var code: u16[>..] = [];
+        userdb::code_of(known, code);
+        let revision = userdb::changes;
+        userdb::learn(known, userdb::EXPLICIT, 1);
+        let i, spot = userdb::locate(known, code, 0);
+        check(i >= 0 && userdb::stat_of(i).uses == 3.0 && userdb::lex.pairs.len == used && userdb::changes > revision,
+              "capacity: an existing word gains uses without allocating pairs and is marked for saving");
+        let undone = userdb::retract(1);
+        let restored, original_spot = userdb::locate(known, code, 0);
+        check(undone == 1 && restored >= 0 && userdb::stat_of(restored).uses == 1.0,
+              "capacity: the additional use can still be undone");
+    }
+    userdb::reset();
+    userdb::clock_override = 0;
+}
+
 fn latency(s: u64) {
     let sentences = ["jintiantianqibucuowomenquchuqiwanba", "woshiyigezhongguoren", "zgrmghg",
                      "xianzaikaishishurufaceshi", "zhegeshurufashiyonggooseyuyanxiede"];
@@ -1587,6 +1621,7 @@ fn main() {
     charsets(session::new_session());
     learning(session::new_session());
     storage(session::new_session());
+    learning_at_capacity();
     shuangpin(session::new_session());
     hot_swaps(session::new_session());
     custom_phrases(session::new_session());
