@@ -7,10 +7,10 @@ const RELEASES = `${GITHUB}/releases`;
 /** The release the download buttons fetch, as its disk image straight from
  *  GitHub. Update both on each release: the image's name carries the version,
  *  and the size is the image's, as Finder shows it. */
-const RELEASE = { version: "0.2.0", size: "413 MB" };
+const RELEASE = { version: "0.2.1", size: "419 MB" };
 const DOWNLOAD = `${RELEASES}/download/v${RELEASE.version}/OctoDot-${RELEASE.version}.dmg`;
 /** The same disk image on Quark's cloud drive, for those GitHub is slow for. */
-const MIRROR = "https://pan.quark.cn/s/23d7eed34f05";
+const MIRROR = "https://pan.quark.cn/s/e3cd8cb5d6b1";
 const ICON = `${import.meta.env.BASE_URL}icon.png`;
 
 /** The icon's gold dot, closing a headline the way 。 closes a sentence. */
