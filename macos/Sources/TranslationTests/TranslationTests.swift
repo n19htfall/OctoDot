@@ -100,7 +100,7 @@ private enum TranslationTests {
         check(prefetched && backend.translationCalls == ["apple"] && redraws == 0,
               "prefetch translates only the highlight, deduplicates entries, and does not redraw until Option")
         let before = backend.translationCalls.count
-        service.setOptionDown(true)
+        service.setTranslationHeld(true)
         let pageReady = await until { service.captions().first == "translated 电脑" }
         check(pageReady && backend.translationCalls.count == before + 1 && backend.translationCalls == ["apple", "电脑"],
               "holding Option reuses the prefetched highlight and translates the remaining page")
@@ -113,7 +113,7 @@ private enum TranslationTests {
         backend.translationCalls.removeAll()
         backend.entries = ["电脑": "computer", "apple": "苹果"]
         service.setPage(["电脑", "apple", "unlisted"], highlighted: 0, policy: .normal)
-        service.setOptionDown(true)
+        service.setTranslationHeld(true)
         let mapped = await until { service.captions() == ["computer", "苹果", "translated unlisted"] }
         check(mapped && backend.translationCalls == ["unlisted"] && service.committedText(for: "电脑") == "computer",
               "glossary matches win in both directions and only a miss reaches system translation")
@@ -130,7 +130,7 @@ private enum TranslationTests {
         service.clear()
         backend.delay = 60_000_000
         service.setPage(["old"], highlighted: 0, policy: .normal)
-        service.setOptionDown(true)
+        service.setTranslationHeld(true)
         let oldStarted = await until { backend.translationCalls.contains("old") }
         service.setPage(["new"], highlighted: 0, policy: .normal)
         let newFinished = await until { service.captions() == ["translated new"] }
@@ -144,14 +144,14 @@ private enum TranslationTests {
         service.setPage(["secret"], highlighted: 0, policy: .incognito)
         try? await Task.sleep(nanoseconds: 30_000_000)
         check(backend.translationCalls.isEmpty, "incognito does not prefetch")
-        service.setOptionDown(true)
+        service.setTranslationHeld(true)
         let secretStarted = await until { backend.translationCalls.contains("secret") }
-        service.setOptionDown(false)
-        service.setOptionDown(true)
+        service.setTranslationHeld(false)
+        service.setTranslationHeld(true)
         let retried = await until { backend.translationCalls.filter { $0 == "secret" }.count >= 2 &&
                                     service.captions() == ["translated secret"] }
         check(secretStarted && retried, "releasing Option discards incognito work and a new hold can retry it")
-        service.setOptionDown(false)
+        service.setTranslationHeld(false)
         check(service.captions() == ["…"] && service.replacements() == [""] &&
               service.committedText(for: "secret") == nil,
               "incognito results are cleared on release, and a pending lookup keeps the candidate")
@@ -160,7 +160,7 @@ private enum TranslationTests {
         backend.glossaryCalls.removeAll()
         backend.translationCalls.removeAll()
         service.setPage(["secret"], highlighted: 0, policy: .disabled)
-        service.setOptionDown(true)
+        service.setTranslationHeld(true)
         try? await Task.sleep(nanoseconds: 50_000_000)
         check(backend.translationCalls.isEmpty && service.captions().isEmpty,
               "secure and password-manager contexts do not send candidates to providers")
@@ -170,7 +170,7 @@ private enum TranslationTests {
         backend.needsLanguages = true
         backend.translationCalls.removeAll()
         service.setPage(["apple", "missing"], highlighted: 0, policy: .normal)
-        service.setOptionDown(true)
+        service.setTranslationHeld(true)
         let entry = await until { service.captions() == ["苹果", "请下载翻译语言"] }
         check(entry && backend.translationCalls == ["missing"] && service.committedText(for: "apple") == "苹果" &&
               service.committedText(for: "missing") == nil,
@@ -214,7 +214,7 @@ private enum TranslationTests {
         check(quietHighlight && !typing.translationCalls.contains("first") && !typing.translationCalls.contains("second"),
               "only the latest highlighted candidate is prefetched after typing settles")
         debounced.setPage(["explicit", "remaining"], highlighted: 0, policy: .normal)
-        debounced.setOptionDown(true)
+        debounced.setTranslationHeld(true)
         let explicitReady = await until(attempts: 30) {
             debounced.replacements() == ["translated explicit", "translated remaining"]
         }
@@ -233,7 +233,7 @@ private enum TranslationTests {
         scheduled.setPage(["old"], highlighted: 0, policy: .normal)
         let heldOld = await until { held.calls == ["old"] }
         scheduled.setPage(["new"], highlighted: 0, policy: .normal)
-        scheduled.setOptionDown(true)
+        scheduled.setTranslationHeld(true)
         let heldNew = await until { held.calls == ["old", "new"] }
         check(heldOld && heldNew && held.pending.count == 2,
               "the current page starts without waiting for an unfinished old translation")
@@ -251,7 +251,7 @@ private enum TranslationTests {
 
         held.calls.removeAll()
         scheduled.setPage(["one"], highlighted: 0, policy: .normal)
-        scheduled.setOptionDown(true)
+        scheduled.setTranslationHeld(true)
         let oneStarted = await until { held.calls == ["one"] }
         scheduled.setPage(["two"], highlighted: 0, policy: .normal)
         let twoStarted = await until { held.calls == ["one", "two"] }
@@ -288,9 +288,9 @@ private enum TranslationTests {
 
         held.calls.removeAll()
         scheduled.setPage(["private"], highlighted: 0, policy: .incognito)
-        scheduled.setOptionDown(true)
+        scheduled.setTranslationHeld(true)
         let privateStarted = await until { held.calls == ["private"] }
-        scheduled.setOptionDown(false)
+        scheduled.setTranslationHeld(false)
         scheduled.setPage(["public"], highlighted: 0, policy: .normal)
         held.finish("private")
         let publicStarted = await until { held.calls.contains("public") }

@@ -61,7 +61,7 @@ final class Handler: NSObject, OctoDotHandlerV2 {
 
     /// The launcher has checked that there is no active composition.
     func retire() {
-        OptionChords.release(ObjectIdentifier(self))
+        TranslationChords.release(ObjectIdentifier(self))
         guard let session else { return }
         // Termination can also retire a handler, without a reload's wait.
         if hasActiveComposition() { commitComposition(for: client()) }
@@ -72,9 +72,9 @@ final class Handler: NSObject, OctoDotHandlerV2 {
     deinit {
         let id = ObjectIdentifier(self)
         if Thread.isMainThread {
-            MainActor.assumeIsolated { OptionChords.release(id) }
+            MainActor.assumeIsolated { TranslationChords.release(id) }
         } else {
-            DispatchQueue.main.async { MainActor.assumeIsolated { OptionChords.release(id) } }
+            DispatchQueue.main.async { MainActor.assumeIsolated { TranslationChords.release(id) } }
         }
         Self.live -= 1
         if let session {
@@ -98,10 +98,10 @@ final class Handler: NSObject, OctoDotHandlerV2 {
         let app = clientApp
         if #available(macOS 26.0, *),
            MainActor.assumeIsolated({ Learning.candidateLookupPolicy(forApp: app) != .disabled }),
-           event.modifierFlags.intersection([.shift, .control, .option, .command]) == .option,
-           let plain = Self.optionCandidateKey(event),
+           MainActor.assumeIsolated({ TranslationModifier.isActive(event.modifierFlags) }),
+           let plain = Self.translationCandidateKey(event),
            MainActor.assumeIsolated({ Engine.shared.snapshot(session).isComposing }) {
-            if OptionChords.recentlyHandled(event.keyCode) { return true }
+            if TranslationChords.recentlyHandled(event.keyCode) { return true }
             return run(plain, session, client, replaceSelection: Self.isDigitSelection(plain))
         }
         if let arrow = Self.emacsNavigation(event),
@@ -111,15 +111,20 @@ final class Handler: NSObject, OctoDotHandlerV2 {
         return run(Self.translate(event), session, client)
     }
 
-    private static func optionCandidateKey(_ event: NSEvent) -> TranslatedKey? {
+    private static func translationCandidateKey(_ event: NSEvent) -> TranslatedKey? {
+        // Control can turn charactersIgnoringModifiers into control characters.
+        // Match the same physical keys as the registered candidate shortcuts.
         switch Int(event.keyCode) {
         case kVK_PageUp: return .special(.pageUp)
         case kVK_PageDown: return .special(.pageDown)
-        default: break
-        }
-        guard let raw = event.charactersIgnoringModifiers, raw.count == 1, let c = raw.first else { return nil }
-        switch c {
-        case "1", "2", "3", "4", "5", "6", "-", "=": return .character(c)
+        case kVK_ANSI_1, kVK_ANSI_Keypad1: return .character("1")
+        case kVK_ANSI_2, kVK_ANSI_Keypad2: return .character("2")
+        case kVK_ANSI_3, kVK_ANSI_Keypad3: return .character("3")
+        case kVK_ANSI_4, kVK_ANSI_Keypad4: return .character("4")
+        case kVK_ANSI_5, kVK_ANSI_Keypad5: return .character("5")
+        case kVK_ANSI_6, kVK_ANSI_Keypad6: return .character("6")
+        case kVK_ANSI_Minus, kVK_ANSI_KeypadMinus: return .character("-")
+        case kVK_ANSI_Equal, kVK_ANSI_KeypadEquals: return .character("=")
         default: return nil
         }
     }
@@ -150,7 +155,7 @@ final class Handler: NSObject, OctoDotHandlerV2 {
                 }
             }
         }
-        defer { syncOptionChords(session) }
+        defer { syncTranslationChords(session) }
         let app = clientApp
         let (result, snapshot) = MainActor.assumeIsolated {
             let outcome = Engine.shared.process(session, key, flags: Learning.flags(forApp: app).union(extra))
@@ -231,7 +236,7 @@ final class Handler: NSObject, OctoDotHandlerV2 {
             return Engine.shared.process(session, .special(.enter)).1
         }
         if let snapshot { show(snapshot, in: client) }
-        syncOptionChords(session)
+        syncTranslationChords(session)
     }
 
     func activate(_ sender: Any?) {
@@ -242,7 +247,7 @@ final class Handler: NSObject, OctoDotHandlerV2 {
     /// never says which): the composition ends and the session goes. The
     /// next key makes a new one.
     func deactivate(_ sender: Any?) {
-        OptionChords.release(ObjectIdentifier(self))
+        TranslationChords.release(ObjectIdentifier(self))
         anchorGeneration &+= 1                  // no late move after the panel is gone
         waiting = nil                           // nor late candidates
         if let session {
@@ -323,7 +328,7 @@ final class Handler: NSObject, OctoDotHandlerV2 {
             let page = MainActor.assumeIsolated { Engine.shared.snapshot(session).page }
             let index = page * Snapshot.columns + position
             guard index >= 0 else { return }
-            let replace = NSEvent.modifierFlags.contains(.option)
+            let replace = MainActor.assumeIsolated({ TranslationModifier.isActive(NSEvent.modifierFlags) })
             _ = run(TranslatedKey(key: .other, codepoint: UInt32(index), modifiers: []), session, client,
                     extra: .pick, replaceSelection: replace)
         case .previousPage:
@@ -386,43 +391,44 @@ final class Handler: NSObject, OctoDotHandlerV2 {
         return snap.candidates[index].text
     }
 
-    fileprivate func performOptionChord(_ key: TranslatedKey) {
+    fileprivate func performTranslationChord(_ key: TranslatedKey) {
+        guard MainActor.assumeIsolated({ TranslationModifier.isActive(NSEvent.modifierFlags) }) else { return }
         let app = clientApp
         guard #available(macOS 26.0, *),
               MainActor.assumeIsolated({ Learning.candidateLookupPolicy(forApp: app) != .disabled }) else {
-            OptionChords.release(ObjectIdentifier(self))
+            TranslationChords.release(ObjectIdentifier(self))
             return
         }
         guard let session, let client = client() else {
-            OptionChords.release(ObjectIdentifier(self))
+            TranslationChords.release(ObjectIdentifier(self))
             return
         }
         let composing = MainActor.assumeIsolated { Engine.shared.snapshot(session).isComposing }
         guard composing else {
-            OptionChords.release(ObjectIdentifier(self))
+            TranslationChords.release(ObjectIdentifier(self))
             return
         }
         _ = run(key, session, client, replaceSelection: Self.isDigitSelection(key))
     }
 
-    private func syncOptionChords(_ session: Engine.Session) {
+    private func syncTranslationChords(_ session: Engine.Session) {
         let composing = MainActor.assumeIsolated { Engine.shared.snapshot(session).isComposing }
         let app = clientApp
         let allowed = MainActor.assumeIsolated { Learning.candidateLookupPolicy(forApp: app) != .disabled }
-        if #available(macOS 26.0, *), composing && allowed { OptionChords.acquire(self) }
-        else { OptionChords.release(ObjectIdentifier(self)) }
+        if #available(macOS 26.0, *), composing && allowed { TranslationChords.acquire(self) }
+        else { TranslationChords.release(ObjectIdentifier(self)) }
     }
 }
 
-private struct OptionChord {
+private struct TranslationChord {
     var keyCode: UInt32
     var id: UInt32
     var key: TranslatedKey
 }
 
-private enum OptionChords {
+enum TranslationChords {
     private static let signature: OSType = 0x4F63746F
-    private static let chords: [OptionChord] = [
+    private static let chords: [TranslationChord] = [
         .init(keyCode: UInt32(kVK_ANSI_1), id: 1, key: .character("1")),
         .init(keyCode: UInt32(kVK_ANSI_2), id: 2, key: .character("2")),
         .init(keyCode: UInt32(kVK_ANSI_3), id: 3, key: .character("3")),
@@ -464,9 +470,10 @@ private enum OptionChords {
         ownerID = id
         guard install() else { return }
         var registered = 0
+        let modifiers = MainActor.assumeIsolated { TranslationModifier.current.carbonFlags }
         for chord in chords {
             var ref: EventHotKeyRef?
-            let status = RegisterEventHotKey(chord.keyCode, UInt32(optionKey),
+            let status = RegisterEventHotKey(chord.keyCode, modifiers,
                                              EventHotKeyID(signature: signature, id: chord.id),
                                              GetApplicationEventTarget(), UInt32(kEventHotKeyExclusive), &ref)
             if status == noErr, let ref {
@@ -474,7 +481,7 @@ private enum OptionChords {
                 registered += 1
             } else if !reported {
                 reported = true
-                log.notice("option chord hotkey status \(status, privacy: .public)")
+                log.notice("translation chord hotkey status \(status, privacy: .public)")
             }
         }
         if registered == 0 {
@@ -482,6 +489,12 @@ private enum OptionChords {
             if let handler { RemoveEventHandler(handler) }
             handler = nil
         }
+    }
+
+    @MainActor static func reconfigure() {
+        let previousOwner = owner
+        tearDown()
+        if let previousOwner { acquire(previousOwner) }
     }
 
     static func release(_ id: ObjectIdentifier) {
@@ -503,15 +516,16 @@ private enum OptionChords {
             if repeatingID == chord.id { stopRepeat() }
             return noErr
         }
-        guard let owner else { return noErr }
+        guard MainActor.assumeIsolated({ TranslationModifier.isActive(NSEvent.modifierFlags) }),
+              let owner else { return noErr }
         handledKey = chord.keyCode
         handledAt = CACurrentMediaTime()
         beginRepeat(chord)
-        owner.performOptionChord(chord.key)
+        owner.performTranslationChord(chord.key)
         return noErr
     }
 
-    private static func beginRepeat(_ chord: OptionChord) {
+    private static func beginRepeat(_ chord: TranslationChord) {
         stopRepeat()
         repeating = chord.key
         repeatingID = chord.id
@@ -522,11 +536,11 @@ private enum OptionChords {
     }
 
     private static func pump() {
-        guard NSEvent.modifierFlags.contains(.option), let key = repeating, let owner else {
+        guard MainActor.assumeIsolated({ TranslationModifier.isActive(NSEvent.modifierFlags) }), let key = repeating, let owner else {
             stopRepeat()
             return
         }
-        owner.performOptionChord(key)
+        owner.performTranslationChord(key)
     }
 
     private static func stopRepeat() {
@@ -542,11 +556,11 @@ private enum OptionChords {
             EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased)),
         ]
         let status = specs.withUnsafeMutableBufferPointer { buffer in
-            InstallEventHandler(GetApplicationEventTarget(), optionChordEvent, 2, buffer.baseAddress, nil, &handler)
+            InstallEventHandler(GetApplicationEventTarget(), translationChordEvent, 2, buffer.baseAddress, nil, &handler)
         }
         if status != noErr, !reported {
             reported = true
-            log.notice("option chord hotkey status \(status, privacy: .public)")
+            log.notice("translation chord hotkey status \(status, privacy: .public)")
         }
         return status == noErr
     }
@@ -570,7 +584,7 @@ private enum OptionChords {
     }
 }
 
-private func optionChordEvent(_ next: EventHandlerCallRef?, _ event: EventRef?,
+private func translationChordEvent(_ next: EventHandlerCallRef?, _ event: EventRef?,
                               _ user: UnsafeMutableRawPointer?) -> OSStatus {
     guard let event else { return OSStatus(eventNotHandledErr) }
     var hotKey = EventHotKeyID()
@@ -578,7 +592,7 @@ private func optionChordEvent(_ next: EventHandlerCallRef?, _ event: EventRef?,
                                    nil, MemoryLayout<EventHotKeyID>.size, nil, &hotKey)
     guard status == noErr else { return status }
     let released = GetEventKind(event) == UInt32(kEventHotKeyReleased)
-    return MainActor.assumeIsolated { OptionChords.deliver(hotKey, released: released) }
+    return MainActor.assumeIsolated { TranslationChords.deliver(hotKey, released: released) }
 }
 
 /// The candidate window's clicks come back on the main thread, to whichever

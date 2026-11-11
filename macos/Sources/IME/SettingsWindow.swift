@@ -227,6 +227,7 @@ final class SettingsModel {
     var phrases = ""
     var health: String?
     var forgot: String?
+    var translationModifier = TranslationModifier.current
     var style = CandidateStyle.current
     var pane: Pane? = .input {
         didSet { onPane?(pane ?? .input) }
@@ -235,6 +236,7 @@ final class SettingsModel {
     @ObservationIgnored var onPane: ((Pane) -> Void)?
 
     func refresh() {
+        translationModifier = TranslationModifier.current
         style = CandidateStyle.current
         incognito = Learning.incognito
         health = Health.menuLine
@@ -265,6 +267,14 @@ final class SettingsModel {
     func useSet(_ id: String, on: Bool) { Learning.useSet(id, on: on); refresh() }
     func setIncognito(_ on: Bool) { Learning.incognito = on; refresh() }
     func editPhrases() { Phrases.edit() }
+
+    func setTranslationModifier(_ modifier: TranslationModifier) {
+        guard modifier != TranslationModifier.current else { return }
+        TranslationModifier.select(modifier)
+        CandidatePanel.translationModifierChanged()
+        TranslationChords.reconfigure()
+        translationModifier = TranslationModifier.current
+    }
 
     func setFontSize(_ size: Double) { change { $0.fontSize = CGFloat(size) } }
     func setAccent(_ accent: String) { change { $0.accent = accent } }
@@ -337,14 +347,22 @@ private struct InputPane: View {
             }
             if #available(macOS 26.0, *) {
                 Section {
-                    LabeledContent("候选词翻译", value: "按住 ⌥ Option 查看")
+                    Picker("翻译按键", selection: Binding(get: { model.translationModifier },
+                                                        set: { model.setTranslationModifier($0) })) {
+                        ForEach(TranslationModifier.allCases) { modifier in
+                            Text(modifier.label).tag(modifier)
+                        }
+                    }
+                    Text("按住所选按键显示译文，松开恢复原文。按住时，可用数字选词、用 − / = 翻页。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     Button("打开系统设置…") {
                         if let url = URL(string: "x-apple.systempreferences:com.apple.Localization-Settings.extension") {
                             NSWorkspace.shared.open(url)
                         }
                     }
                 } footer: {
-                    Note("翻译在本机进行，优先使用内置词汇表。词汇表未收录的内容使用系统翻译；如需下载中英文语言，请在系统设置的“通用 → 语言与地区 → 翻译语言”中安装。")
+                    Note("翻译在本机进行，优先使用内置词汇表。词汇表未收录的内容使用系统翻译；如需下载中英文语言，请在系统设置的“通用 → 语言与地区 → 翻译语言”中安装简体中文和英文（美国）。")
                 }
             }
         }

@@ -25,6 +25,7 @@ final class CandidatePanel {
 
     /// The core stops: the window is closed and let go, views and all.
     static func release() {
+        TranslationModifier.stopWaitingForRelease()
         guard let instance else { return }
         instance.halt()
         instance.onAction = nil
@@ -42,6 +43,14 @@ final class CandidatePanel {
     }
 
     /// Do not create a panel just to clear its temporary lookup cache.
+    static func translationModifierChanged() {
+        guard let instance else { return }
+        instance.translations?.setTranslationHeld(false)
+        instance.translationHeld = false
+        instance.bar.forget()
+        instance.refreshTranslationDisplay()
+    }
+
     static func clearTranslations() { instance?.clearTranslations() }
     static func trimTranslations() { instance?.translations?.trim() }
 
@@ -55,7 +64,7 @@ final class CandidatePanel {
     struct Page: Sendable, Equatable {
         var candidates: [String]
         var comments: [String]
-        /// nil unless Option is held. An empty string keeps that candidate;
+        /// nil unless the translation key is held. An empty string keeps that candidate;
         /// any other string is drawn in its place, at the same row height.
         var translations: [String]?
         var highlighted: Int
@@ -126,8 +135,8 @@ final class CandidatePanel {
     private var visibleCaret = NSRect.zero
     private var lookupApp: String?
     private var lookupPolicy: CandidateLookupPolicy = .disabled
-    private var optionDown = false
-    private var optionTimer: Timer?
+    private var translationHeld = false
+    private var modifierTimer: Timer?
     private var translations: CandidateTranslations?
 
     private init() {
@@ -157,19 +166,19 @@ final class CandidatePanel {
         if #available(macOS 26.0, *), let clientApp {
             let service = translationService()
             let policy = Learning.candidateLookupPolicy(forApp: clientApp)
-            let down = NSEvent.modifierFlags.contains(.option)
-            if policy != lookupPolicy || (policy == .incognito && optionDown && !down) { bar.forget() }
+            let down = TranslationModifier.isActive(NSEvent.modifierFlags)
+            if policy != lookupPolicy || (policy == .incognito && translationHeld && !down) { bar.forget() }
             lookupPolicy = policy
             service.setPage(shown.candidates, highlighted: shown.highlighted, policy: lookupPolicy)
-            optionDown = down
-            service.setOptionDown(optionDown)
-            if optionDown && lookupPolicy != .disabled { shown.translations = service.replacements() }
-            startOptionTimer()
+            translationHeld = down
+            service.setTranslationHeld(translationHeld)
+            if translationHeld && lookupPolicy != .disabled { shown.translations = service.replacements() }
+            startModifierTimer()
         } else {
-            stopOptionTimer()
+            stopModifierTimer()
             translations?.clear()
             lookupPolicy = .disabled
-            optionDown = false
+            translationHeld = false
         }
         render(shown, near: caretRect)
     }
@@ -322,7 +331,7 @@ final class CandidatePanel {
     /// Drops the display link. `release` needs this: the link retains its
     /// target, and the core's window must be free to deallocate.
     private func halt() {
-        stopOptionTimer()
+        stopModifierTimer()
         translations?.clear()
         translations = nil
         visiblePage = nil
@@ -378,10 +387,10 @@ final class CandidatePanel {
     }
 
     func hide() {
-        stopOptionTimer()
+        stopModifierTimer()
         if lookupPolicy == .incognito { translations?.clear() }
-        else { translations?.setOptionDown(false); translations?.setPage([], highlighted: 0, policy: lookupPolicy) }
-        optionDown = false
+        else { translations?.setTranslationHeld(false); translations?.setPage([], highlighted: 0, policy: lookupPolicy) }
+        translationHeld = false
         visiblePage = nil
         lookupApp = nil
         onScreen = false
@@ -406,39 +415,39 @@ final class CandidatePanel {
         return service
     }
 
-    private func startOptionTimer() {
-        guard optionTimer == nil else { return }
+    private func startModifierTimer() {
+        guard modifierTimer == nil else { return }
         let timer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.checkOption() }
+            MainActor.assumeIsolated { self?.checkTranslationModifier() }
         }
         RunLoop.main.add(timer, forMode: .common)
-        optionTimer = timer
+        modifierTimer = timer
     }
 
-    private func stopOptionTimer() {
-        optionTimer?.invalidate()
-        optionTimer = nil
+    private func stopModifierTimer() {
+        modifierTimer?.invalidate()
+        modifierTimer = nil
     }
 
-    private func checkOption() {
+    private func checkTranslationModifier() {
         guard #available(macOS 26.0, *), onScreen, let page = visiblePage,
               let app = lookupApp, let translations else { return }
         let policy = Learning.candidateLookupPolicy(forApp: app)
-        let down = NSEvent.modifierFlags.contains(.option)
-        let needsUpdate = down != optionDown || policy != lookupPolicy
-        if policy != lookupPolicy || (policy == .incognito && optionDown && !down) { bar.forget() }
+        let down = TranslationModifier.isActive(NSEvent.modifierFlags)
+        let needsUpdate = down != translationHeld || policy != lookupPolicy
+        if policy != lookupPolicy || (policy == .incognito && translationHeld && !down) { bar.forget() }
         if policy != lookupPolicy {
             lookupPolicy = policy
             translations.setPage(page.candidates, highlighted: page.highlighted, policy: policy)
         }
-        optionDown = down
-        translations.setOptionDown(down)
+        translationHeld = down
+        translations.setTranslationHeld(down)
         if needsUpdate { refreshTranslationDisplay() }
     }
 
     private func refreshTranslationDisplay() {
         guard onScreen, var page = visiblePage else { return }
-        if optionDown && lookupPolicy != .disabled { page.translations = translations?.replacements() }
+        if translationHeld && lookupPolicy != .disabled { page.translations = translations?.replacements() }
         render(page, near: visibleCaret)
     }
 
@@ -891,7 +900,7 @@ final class CandidateBar: NSView {
         textLimit = low
     }
 
-    /// Plays a fade when a translation arrives or Option is released. A new candidate list snaps.
+    /// Plays a fade when a translation arrives or the translation key is released. A new candidate list snaps.
     private func syncBlends(to page: CandidatePanel.Page, sameList: Bool) {
         guard sameList, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
             blends.removeAll()

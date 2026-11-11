@@ -66,7 +66,8 @@ then move OctoDot.app to the Trash.
   effect a moment after you save (`yx` → 我的邮箱).
 - **More candidates at once.** Press ↓ to open the candidates as a grid.
 - **Candidate translations.** On macOS 26 or later, hold Option to replace
-  the visible candidates with their Chinese–English translations. The bundled
+  the visible candidates with their Chinese–English translations. You can change
+  the translation key to Command or Control in Settings. The bundled
   glossary is used first; entries it does not cover use on-device system
   translation. Install Chinese and English in System Settings → General →
   Language & Region → Translation Languages to use the system fallback.

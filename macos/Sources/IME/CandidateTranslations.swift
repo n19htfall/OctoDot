@@ -3,7 +3,7 @@ import SQLite3
 @preconcurrency import Translation
 
 /// The privacy policy for candidate lookups. Incognito requires an explicit
-/// Option hold and keeps no results after it ends.
+/// translation-key hold and keeps no results after it ends.
 enum CandidateLookupPolicy: Equatable {
     case normal, incognito, disabled
 }
@@ -89,7 +89,7 @@ final class CandidateTranslations {
     private let prefetchDelay: UInt64
     private var epoch: UInt64 = 0
     private var policy: CandidateLookupPolicy = .disabled
-    private var optionDown = false
+    private var translationHeld = false
     private let changed: @MainActor () -> Void
     private let maxEntries = 128
 
@@ -144,12 +144,12 @@ final class CandidateTranslations {
             $0 != inFlight && !isTranslating($0) && !fallbackQueued.contains($0) && cached($0) == nil
         }
         if policyChanged || oldPage != page || oldPriority != priority { resetPrefetch() }
-        if policy == .normal || optionDown { startWorkers() }
+        if policy == .normal || translationHeld { startWorkers() }
     }
 
-    func setOptionDown(_ down: Bool) {
-        guard optionDown != down else { return }
-        optionDown = down
+    func setTranslationHeld(_ down: Bool) {
+        guard translationHeld != down else { return }
+        translationHeld = down
         if policy == .incognito && !down {
             epoch &+= 1
             cancelWorkers()
@@ -174,7 +174,7 @@ final class CandidateTranslations {
         }
     }
 
-    /// What replaces each candidate while Option is held. Empty until there is
+    /// What replaces each candidate while the translation key is held. Empty until there is
     /// a translation or the missing-language notice.
     func replacements() -> [String] {
         page.map { key in
@@ -207,13 +207,13 @@ final class CandidateTranslations {
         cache.removeAll()
         order.removeAll()
         policy = .disabled
-        optionDown = false
+        translationHeld = false
     }
 
-    /// Keep visible replacements usable while Option is held. Otherwise the
+    /// Keep visible replacements usable while the translation key is held. Otherwise the
     /// next hold can repopulate the small cache from the current page.
     func trim() {
-        guard !optionDown else { return }
+        guard !translationHeld else { return }
         cache.removeAll()
         order.removeAll()
     }
@@ -221,7 +221,7 @@ final class CandidateTranslations {
     private func cached(_ key: CandidateLookupKey) -> CandidateLookupResult? {
         guard let item = cache[key] else { return nil }
         // Do not let a visible replacement expire while it can be selected.
-        if item.expires <= Date() && !(optionDown && page.contains(key)) {
+        if item.expires <= Date() && !(translationHeld && page.contains(key)) {
             cache.removeValue(forKey: key)
             order.removeAll { $0 == key }
             return nil
@@ -244,7 +244,7 @@ final class CandidateTranslations {
     }
 
     private func startWorkers() {
-        guard policy != .disabled, policy == .normal || optionDown else { return }
+        guard policy != .disabled, policy == .normal || translationHeld else { return }
         if worker == nil, !queued.isEmpty { worker = Task { [weak self] in await self?.drainGlossary() } }
         startFallback()
     }
@@ -253,7 +253,7 @@ final class CandidateTranslations {
         prefetchTask?.cancel()
         prefetchTask = nil
         prefetchReady = false
-        guard policy == .normal, !optionDown, !priority.isEmpty else { return }
+        guard policy == .normal, !translationHeld, !priority.isEmpty else { return }
         let delay = prefetchDelay
         prefetchTask = Task { [weak self] in
             do { try await Task.sleep(nanoseconds: delay) } catch { return }
@@ -269,11 +269,11 @@ final class CandidateTranslations {
     }
 
     private func startFallback() {
-        guard optionDown || prefetchReady else { return }
-        // Keep normal prefetch to the highlighted candidate. Option requests
+        guard translationHeld || prefetchReady else { return }
+        // Keep normal prefetch to the highlighted candidate. Holding the translation key requests
         // the whole page, in highlight order, without the typing debounce.
         guard let key = priority.first(where: {
-            (optionDown || $0 == priority.first) && fallbackQueued.contains($0)
+            (translationHeld || $0 == priority.first) && fallbackQueued.contains($0)
                 && !isTranslating($0) && cached($0) == nil
         }) else { return }
         // Only one request for this page at a time. The second slot lets a
@@ -308,14 +308,14 @@ final class CandidateTranslations {
     }
 
     private func drainGlossary() async {
-        while !Task.isCancelled && !queued.isEmpty && policy != .disabled && (policy == .normal || optionDown) {
+        while !Task.isCancelled && !queued.isEmpty && policy != .disabled && (policy == .normal || translationHeld) {
             let key = queued.removeFirst()
             inFlight = key
             let started = epoch
             let entry = await provider.glossary(key)
             if let entry, canRemember(key, epoch: started) {
                 remember(.translation(entry), for: key)
-                if optionDown && isCurrent(key, epoch: started) { changed() }
+                if translationHeld && isCurrent(key, epoch: started) { changed() }
             } else if entry == nil, isCurrent(key, epoch: started),
                       !isTranslating(key), !fallbackQueued.contains(key) {
                 fallbackQueued.append(key)
@@ -346,7 +346,7 @@ final class CandidateTranslations {
             default: break
             }
         }
-        if remembered && current && optionDown { changed() }
+        if remembered && current && translationHeld { changed() }
         fallbackFlights[slot] = nil
         requeueIfNeeded(key)
         startWorkers()
@@ -355,13 +355,13 @@ final class CandidateTranslations {
     private func requeueIfNeeded(_ key: CandidateLookupKey) {
         // A privacy change may have invalidated a request for a word that is
         // visible again. Ask for it afresh, without duplicating in-flight work.
-        if page.contains(key), policy != .disabled, (policy == .normal || optionDown),
+        if page.contains(key), policy != .disabled, (policy == .normal || translationHeld),
            key != inFlight, !isTranslating(key), cached(key) == nil,
            !queued.contains(key), !fallbackQueued.contains(key) { queued.insert(key, at: 0) }
     }
 
     private func isCurrent(_ key: CandidateLookupKey, epoch started: UInt64) -> Bool {
-        epoch == started && page.contains(key) && policy != .disabled && (policy == .normal || optionDown)
+        epoch == started && page.contains(key) && policy != .disabled && (policy == .normal || translationHeld)
     }
 
     private func canRemember(_ key: CandidateLookupKey, epoch started: UInt64) -> Bool {
