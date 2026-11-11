@@ -15,11 +15,53 @@ private final class FakeLookup: CandidateLookupProvider {
         return entries[key.text]
     }
 
-    func translate(_ key: CandidateLookupKey) async -> MachineTranslation {
+    func cancelTranslation(in slot: Int) {}
+
+    func translate(_ key: CandidateLookupKey, slot: Int) async -> MachineTranslation {
         translationCalls.append(key.text)
         try? await Task.sleep(nanoseconds: delay)
         if needsLanguages { return .needsLanguages }
         return .text("translated " + key.text)
+    }
+}
+
+/// Completion is controlled explicitly, including providers that do not return
+/// immediately when cancelled. This makes queue and privacy checks independent
+/// of the system model's speed or language installation.
+@MainActor
+private final class HeldLookup: CandidateLookupProvider {
+    struct Pending {
+        let text: String
+        let slot: Int
+        let continuation: CheckedContinuation<MachineTranslation, Never>
+    }
+    var calls: [String] = []
+    var pending: [Pending] = []
+    var cancelled: [Int] = []
+    var peakActive = 0
+    var redraws = 0
+
+    func glossary(_ key: CandidateLookupKey) async -> String? { nil }
+
+    func translate(_ key: CandidateLookupKey, slot: Int) async -> MachineTranslation {
+        calls.append(key.text)
+        return await withCheckedContinuation { continuation in
+            pending.append(Pending(text: key.text, slot: slot, continuation: continuation))
+            peakActive = max(peakActive, pending.count)
+        }
+    }
+
+    func cancelTranslation(in slot: Int) { cancelled.append(slot) }
+
+    func finish(_ text: String, result: MachineTranslation? = nil) {
+        guard let i = pending.firstIndex(where: { $0.text == text }) else { return }
+        pending.remove(at: i).continuation.resume(returning: result ?? .text("translated " + text))
+    }
+
+    func finishAll() {
+        let remaining = pending
+        pending.removeAll()
+        for item in remaining { item.continuation.resume(returning: .unavailable) }
     }
 }
 
@@ -28,8 +70,8 @@ private final class FakeLookup: CandidateLookupProvider {
 private enum TranslationTests {
     static func main() async { exit(await run()) }
 
-    static func until(_ condition: @escaping @MainActor () -> Bool) async -> Bool {
-        for _ in 0..<200 {
+    static func until(attempts: Int = 200, _ condition: @escaping @MainActor () -> Bool) async -> Bool {
+        for _ in 0..<attempts {
             if condition() { return true }
             try? await Task.sleep(nanoseconds: 5_000_000)
         }
@@ -52,16 +94,16 @@ private enum TranslationTests {
 
         let backend = FakeLookup()
         var redraws = 0
-        let service = CandidateTranslations(provider: backend) { redraws += 1 }
+        let service = CandidateTranslations(provider: backend, prefetchDelay: 0) { redraws += 1 }
         service.setPage(["电脑", "apple", "apple"], highlighted: 1, policy: .normal)
-        let prefetched = await until { service.captions() == ["translated 电脑", "translated apple", "translated apple"] }
-        check(prefetched && backend.translationCalls == ["apple", "电脑"] && redraws == 0,
-              "prefetch starts with the highlight, deduplicates entries, and does not redraw until Option")
+        let prefetched = await until { service.captions() == ["…", "translated apple", "translated apple"] }
+        check(prefetched && backend.translationCalls == ["apple"] && redraws == 0,
+              "prefetch translates only the highlight, deduplicates entries, and does not redraw until Option")
         let before = backend.translationCalls.count
         service.setOptionDown(true)
-        try? await Task.sleep(nanoseconds: 20_000_000)
-        check(service.captions().first == "translated 电脑" && backend.translationCalls.count == before,
-              "holding Option uses prefetched results")
+        let pageReady = await until { service.captions().first == "translated 电脑" }
+        check(pageReady && backend.translationCalls.count == before + 1 && backend.translationCalls == ["apple", "电脑"],
+              "holding Option reuses the prefetched highlight and translates the remaining page")
         check(service.replacements() == ["translated 电脑", "translated apple", "translated apple"],
               "a finished translation replaces the candidate")
         check(service.committedText(for: "电脑") == "translated 电脑" && service.committedText(for: "nope") == nil,
@@ -71,6 +113,7 @@ private enum TranslationTests {
         backend.translationCalls.removeAll()
         backend.entries = ["电脑": "computer", "apple": "苹果"]
         service.setPage(["电脑", "apple", "unlisted"], highlighted: 0, policy: .normal)
+        service.setOptionDown(true)
         let mapped = await until { service.captions() == ["computer", "苹果", "translated unlisted"] }
         check(mapped && backend.translationCalls == ["unlisted"] && service.committedText(for: "电脑") == "computer",
               "glossary matches win in both directions and only a miss reaches system translation")
@@ -127,6 +170,7 @@ private enum TranslationTests {
         backend.needsLanguages = true
         backend.translationCalls.removeAll()
         service.setPage(["apple", "missing"], highlighted: 0, policy: .normal)
+        service.setOptionDown(true)
         let entry = await until { service.captions() == ["苹果", "请下载翻译语言"] }
         check(entry && backend.translationCalls == ["missing"] && service.committedText(for: "apple") == "苹果" &&
               service.committedText(for: "missing") == nil,
@@ -154,6 +198,108 @@ private enum TranslationTests {
         temporary = nil
         let released = await until { releasedService == nil }
         check(lifetimeStarted && released, "cleared lookup workers release the service after in-flight work ends")
+
+        // Rapid typing only reads the glossary; Option bypasses the quiet period.
+        let typing = FakeLookup()
+        typing.entries = ["apple": "苹果"]
+        let debounced = CandidateTranslations(provider: typing, prefetchDelay: 300_000_000) {}
+        debounced.setPage(["first", "apple"], highlighted: 0, policy: .normal)
+        let immediateGlossary = await until { debounced.captions().last == "苹果" }
+        debounced.setPage(["second", "apple"], highlighted: 0, policy: .normal)
+        try? await Task.sleep(nanoseconds: 30_000_000)
+        check(immediateGlossary && typing.translationCalls.isEmpty,
+              "glossary hits remain immediate while transient pages do not start system translation")
+        debounced.setPage(["final", "other"], highlighted: 1, policy: .normal)
+        let quietHighlight = await until { typing.translationCalls == ["other"] }
+        check(quietHighlight && !typing.translationCalls.contains("first") && !typing.translationCalls.contains("second"),
+              "only the latest highlighted candidate is prefetched after typing settles")
+        debounced.setPage(["explicit", "remaining"], highlighted: 0, policy: .normal)
+        debounced.setOptionDown(true)
+        let explicitReady = await until(attempts: 30) {
+            debounced.replacements() == ["translated explicit", "translated remaining"]
+        }
+        check(explicitReady,
+              "Option bypasses the 300 ms debounce and translates the whole current page")
+        debounced.clear()
+        let callsAfterClear = typing.translationCalls.count
+        debounced.setPage(["hidden"], highlighted: 0, policy: .normal)
+        debounced.setPage([], highlighted: 0, policy: .normal)
+        try? await Task.sleep(nanoseconds: 350_000_000)
+        check(typing.translationCalls.count == callsAfterClear, "hiding the page cancels deferred prefetch")
+        debounced.clear()
+
+        let held = HeldLookup()
+        let scheduled = CandidateTranslations(provider: held, prefetchDelay: 0) { held.redraws += 1 }
+        scheduled.setPage(["old"], highlighted: 0, policy: .normal)
+        let heldOld = await until { held.calls == ["old"] }
+        scheduled.setPage(["new"], highlighted: 0, policy: .normal)
+        scheduled.setOptionDown(true)
+        let heldNew = await until { held.calls == ["old", "new"] }
+        check(heldOld && heldNew && held.pending.count == 2,
+              "the current page starts without waiting for an unfinished old translation")
+        held.finish("new")
+        let visibleNew = await until { scheduled.replacements() == ["translated new"] }
+        let beforeOld = held.redraws
+        held.finish("old")
+        let cachedOld = await until { scheduled.committedText(for: "old") == "translated old" }
+        check(visibleNew && cachedOld && scheduled.replacements() == ["translated new"] && held.redraws == beforeOld,
+              "a successful old result is cached without repainting or replacing the current page")
+        scheduled.setPage(["old"], highlighted: 0, policy: .normal)
+        check(scheduled.replacements() == ["translated old"] && held.calls == ["old", "new"],
+              "returning to an old page reuses its result without another system translation")
+        scheduled.clear()
+
+        held.calls.removeAll()
+        scheduled.setPage(["one"], highlighted: 0, policy: .normal)
+        scheduled.setOptionDown(true)
+        let oneStarted = await until { held.calls == ["one"] }
+        scheduled.setPage(["two"], highlighted: 0, policy: .normal)
+        let twoStarted = await until { held.calls == ["one", "two"] }
+        scheduled.setPage(["three"], highlighted: 0, policy: .normal)
+        let cancellationRequested = await until { held.cancelled.count == 2 }
+        check(oneStarted && twoStarted && cancellationRequested && held.calls == ["one", "two"] && held.peakActive == 2,
+              "rapid page changes cancel obsolete work and never exceed two occupied translation slots")
+        held.finish("one", result: .unavailable)
+        let threeStarted = await until { held.calls == ["one", "two", "three"] }
+        held.finish("three")
+        let threeReady = await until { scheduled.replacements() == ["translated three"] }
+        check(threeStarted && threeReady && held.peakActive == 2,
+              "the latest page starts as soon as a cancelled slot returns")
+        scheduled.clear()
+        held.finishAll()
+
+        held.calls.removeAll()
+        scheduled.setPage(["sensitive"], highlighted: 0, policy: .normal)
+        let sensitiveStarted = await until { held.calls == ["sensitive"] }
+        scheduled.setPage(["sensitive"], highlighted: 0, policy: .disabled)
+        held.finish("sensitive")
+        // Re-entering normal mode must issue a new lookup even if the cancelled
+        // provider returned a successful answer after the privacy boundary.
+        scheduled.setPage(["sensitive"], highlighted: 0, policy: .normal)
+        let sensitiveRetried = await until { held.calls == ["sensitive", "sensitive"] }
+        check(sensitiveStarted && sensitiveRetried && scheduled.committedText(for: "sensitive") == nil,
+              "secure mode invalidates late normal results, including when the same word becomes visible again")
+        held.finish("sensitive")
+        let freshSensitive = await until { scheduled.committedText(for: "sensitive") == "translated sensitive" }
+        check(freshSensitive, "the fresh request can complete after an earlier privacy epoch was cancelled")
+        scheduled.clear()
+        held.finishAll()
+        _ = await until { scheduled.committedText(for: "two") == nil }
+
+        held.calls.removeAll()
+        scheduled.setPage(["private"], highlighted: 0, policy: .incognito)
+        scheduled.setOptionDown(true)
+        let privateStarted = await until { held.calls == ["private"] }
+        scheduled.setOptionDown(false)
+        scheduled.setPage(["public"], highlighted: 0, policy: .normal)
+        held.finish("private")
+        let publicStarted = await until { held.calls.contains("public") }
+        held.finish("public")
+        let publicReady = await until { scheduled.committedText(for: "public") == "translated public" }
+        check(privateStarted && publicStarted && publicReady && scheduled.committedText(for: "private") == nil,
+              "a late incognito result cannot populate the normal cache after release or a policy change")
+        scheduled.clear()
+        held.finishAll()
 
         if #available(macOS 26.0, *) {
             let index = URL(fileURLWithPath: "build/glossary.sqlite3")

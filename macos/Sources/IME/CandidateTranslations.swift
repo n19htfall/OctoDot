@@ -54,11 +54,14 @@ enum MachineTranslation: Equatable, Sendable {
 @MainActor
 protocol CandidateLookupProvider: AnyObject, Sendable {
     func glossary(_ key: CandidateLookupKey) async -> String?
-    func translate(_ key: CandidateLookupKey) async -> MachineTranslation
+    /// Each occupied slot has its own session; it is not reused until the call returns.
+    func translate(_ key: CandidateLookupKey, slot: Int) async -> MachineTranslation
+    func cancelTranslation(in slot: Int)
 }
 
 /// Replaceable queues for the visible page. The fast glossary can make
-/// progress while one slower system translation is in flight.
+/// progress independently of system translation. One obsolete translation can
+/// finish beside the current page's request, without growing an unbounded queue.
 @MainActor
 final class CandidateTranslations {
     private struct Cached {
@@ -75,16 +78,25 @@ final class CandidateTranslations {
     private var inFlight: CandidateLookupKey?
     private var worker: Task<Void, Never>?
     private var fallbackQueued: [CandidateLookupKey] = []
-    private var fallbackInFlight: CandidateLookupKey?
-    private var fallbackWorker: Task<Void, Never>?
+    private struct FallbackFlight {
+        let key: CandidateLookupKey
+        let epoch: UInt64
+        let task: Task<Void, Never>
+    }
+    private var fallbackFlights: [Int: FallbackFlight] = [:]
+    private var prefetchTask: Task<Void, Never>?
+    private var prefetchReady = false
+    private let prefetchDelay: UInt64
     private var epoch: UInt64 = 0
     private var policy: CandidateLookupPolicy = .disabled
     private var optionDown = false
     private let changed: @MainActor () -> Void
     private let maxEntries = 128
 
-    init(provider: any CandidateLookupProvider, changed: @escaping @MainActor () -> Void) {
+    init(provider: any CandidateLookupProvider, prefetchDelay: UInt64 = 120_000_000,
+         changed: @escaping @MainActor () -> Void) {
         self.provider = provider
+        self.prefetchDelay = prefetchDelay
         self.changed = changed
     }
 
@@ -94,7 +106,10 @@ final class CandidateTranslations {
     }
 
     func setPage(_ candidates: [String], highlighted: Int, policy: CandidateLookupPolicy) {
-        if self.policy != policy {
+        let oldPage = page
+        let oldPriority = priority
+        let policyChanged = self.policy != policy
+        if policyChanged {
             epoch &+= 1
             cancelWorkers()
             queued.removeAll()
@@ -112,6 +127,8 @@ final class CandidateTranslations {
             cancelWorkers()
             cache.removeAll()
             order.removeAll()
+            queued.removeAll()
+            fallbackQueued.removeAll()
         }
         page = nextPage
         // Prefer the highlighted word, then the other words on this page.
@@ -124,8 +141,9 @@ final class CandidateTranslations {
         priority = candidates.filter { seen.insert($0).inserted }
         fallbackQueued = priority.filter { fallbackQueued.contains($0) && cached($0) == nil }
         queued = priority.filter {
-            $0 != inFlight && $0 != fallbackInFlight && !fallbackQueued.contains($0) && cached($0) == nil
+            $0 != inFlight && !isTranslating($0) && !fallbackQueued.contains($0) && cached($0) == nil
         }
+        if policyChanged || oldPage != page || oldPriority != priority { resetPrefetch() }
         if policy == .normal || optionDown { startWorkers() }
     }
 
@@ -142,10 +160,11 @@ final class CandidateTranslations {
         } else if down {
             // An incognito page is not prefetched; make its requests now.
             queued = priority.filter {
-                $0 != inFlight && $0 != fallbackInFlight && !fallbackQueued.contains($0) && cached($0) == nil
+                $0 != inFlight && !isTranslating($0) && !fallbackQueued.contains($0) && cached($0) == nil
             }
-            startWorkers()
         }
+        resetPrefetch()
+        startWorkers()
     }
 
     func captions() -> [String] {
@@ -227,14 +246,65 @@ final class CandidateTranslations {
     private func startWorkers() {
         guard policy != .disabled, policy == .normal || optionDown else { return }
         if worker == nil, !queued.isEmpty { worker = Task { [weak self] in await self?.drainGlossary() } }
-        if fallbackWorker == nil, !fallbackQueued.isEmpty {
-            fallbackWorker = Task { [weak self] in await self?.drainFallback() }
+        startFallback()
+    }
+
+    private func resetPrefetch() {
+        prefetchTask?.cancel()
+        prefetchTask = nil
+        prefetchReady = false
+        guard policy == .normal, !optionDown, !priority.isEmpty else { return }
+        let delay = prefetchDelay
+        prefetchTask = Task { [weak self] in
+            do { try await Task.sleep(nanoseconds: delay) } catch { return }
+            guard !Task.isCancelled, let self else { return }
+            self.prefetchTask = nil
+            self.prefetchReady = true
+            self.startWorkers()
         }
+    }
+
+    private func isTranslating(_ key: CandidateLookupKey) -> Bool {
+        fallbackFlights.values.contains { $0.key == key && $0.epoch == epoch && !$0.task.isCancelled }
+    }
+
+    private func startFallback() {
+        guard optionDown || prefetchReady else { return }
+        // Keep normal prefetch to the highlighted candidate. Option requests
+        // the whole page, in highlight order, without the typing debounce.
+        guard let key = priority.first(where: {
+            (optionDown || $0 == priority.first) && fallbackQueued.contains($0)
+                && !isTranslating($0) && cached($0) == nil
+        }) else { return }
+        // Only one request for this page at a time. The second slot lets a
+        // new page proceed while an old request finishes for the normal cache.
+        guard !fallbackFlights.values.contains(where: {
+            $0.epoch == epoch && !$0.task.isCancelled && page.contains($0.key)
+        }) else { return }
+        guard let slot = (0..<2).first(where: { fallbackFlights[$0] == nil }) else {
+            // Cancellation is cooperative: retain occupied slots until their
+            // calls return, even when a provider is slow to acknowledge it.
+            for (slot, flight) in fallbackFlights where !flight.task.isCancelled {
+                flight.task.cancel()
+                provider.cancelTranslation(in: slot)
+            }
+            return
+        }
+        fallbackQueued.removeAll { $0 == key }
+        let started = epoch
+        let task = Task<Void, Never> { [weak self] in await self?.translate(key, slot: slot, epoch: started) }
+        fallbackFlights[slot] = FallbackFlight(key: key, epoch: started, task: task)
     }
 
     private func cancelWorkers() {
         worker?.cancel()
-        fallbackWorker?.cancel()
+        prefetchTask?.cancel()
+        prefetchTask = nil
+        prefetchReady = false
+        for (slot, flight) in fallbackFlights where !flight.task.isCancelled {
+            flight.task.cancel()
+            provider.cancelTranslation(in: slot)
+        }
     }
 
     private func drainGlossary() async {
@@ -243,14 +313,13 @@ final class CandidateTranslations {
             inFlight = key
             let started = epoch
             let entry = await provider.glossary(key)
-            if isCurrent(key, epoch: started) {
-                if let entry {
-                    remember(.translation(entry), for: key)
-                    if optionDown { changed() }
-                } else if fallbackInFlight != key && !fallbackQueued.contains(key) {
-                    fallbackQueued.append(key)
-                    startWorkers()
-                }
+            if let entry, canRemember(key, epoch: started) {
+                remember(.translation(entry), for: key)
+                if optionDown && isCurrent(key, epoch: started) { changed() }
+            } else if entry == nil, isCurrent(key, epoch: started),
+                      !isTranslating(key), !fallbackQueued.contains(key) {
+                fallbackQueued.append(key)
+                startWorkers()
             }
             inFlight = nil
             if !isCurrent(key, epoch: started) { requeueIfNeeded(key) }
@@ -259,24 +328,27 @@ final class CandidateTranslations {
         startWorkers()
     }
 
-    private func drainFallback() async {
-        while !Task.isCancelled && !fallbackQueued.isEmpty && policy != .disabled && (policy == .normal || optionDown) {
-            let key = fallbackQueued.removeFirst()
-            fallbackInFlight = key
-            let started = epoch
-            let result = await provider.translate(key)
-            if isCurrent(key, epoch: started) {
-                switch result {
-                case .text(let text): remember(.translation(text), for: key)
-                case .needsLanguages: remember(.needsLanguages, for: key)
-                case .unavailable: remember(.unavailable, for: key)
-                }
-                if optionDown { changed() }
+    private func translate(_ key: CandidateLookupKey, slot: Int, epoch started: UInt64) async {
+        let result: MachineTranslation = Task.isCancelled ? .unavailable : await provider.translate(key, slot: slot)
+        let current = isCurrent(key, epoch: started)
+        var remembered = false
+        if canRemember(key, epoch: started) {
+            switch result {
+            case .text(let text):
+                remember(.translation(text), for: key)
+                remembered = true
+            case .needsLanguages where current && !Task.isCancelled:
+                remember(.needsLanguages, for: key)
+                remembered = true
+            case .unavailable where current && !Task.isCancelled:
+                remember(.unavailable, for: key)
+                remembered = true
+            default: break
             }
-            fallbackInFlight = nil
-            if !isCurrent(key, epoch: started) { requeueIfNeeded(key) }
         }
-        fallbackWorker = nil
+        if remembered && current && optionDown { changed() }
+        fallbackFlights[slot] = nil
+        requeueIfNeeded(key)
         startWorkers()
     }
 
@@ -284,12 +356,16 @@ final class CandidateTranslations {
         // A privacy change may have invalidated a request for a word that is
         // visible again. Ask for it afresh, without duplicating in-flight work.
         if page.contains(key), policy != .disabled, (policy == .normal || optionDown),
-           key != inFlight, key != fallbackInFlight, cached(key) == nil,
+           key != inFlight, !isTranslating(key), cached(key) == nil,
            !queued.contains(key), !fallbackQueued.contains(key) { queued.insert(key, at: 0) }
     }
 
     private func isCurrent(_ key: CandidateLookupKey, epoch started: UInt64) -> Bool {
         epoch == started && page.contains(key) && policy != .disabled && (policy == .normal || optionDown)
+    }
+
+    private func canRemember(_ key: CandidateLookupKey, epoch started: UInt64) -> Bool {
+        epoch == started && (policy == .normal || isCurrent(key, epoch: started))
     }
 }
 
@@ -347,13 +423,21 @@ private final class GlossaryIndex: @unchecked Sendable {
 final class SystemCandidateLookup: CandidateLookupProvider {
     private let index: GlossaryIndex
     private var availability: [CandidateLanguage: (LanguageAvailability.Status, Date)] = [:]
-    private var sessions: [CandidateLanguage: TranslationSession] = [:]
+    // Preserve both language directions in each of the two slots, so mixed
+    // candidate pages do not rebuild a session every time the language changes.
+    private var sessions: [Int: [CandidateLanguage: TranslationSession]] = [:]
 
     init(glossaryURL: URL) { index = GlossaryIndex(url: glossaryURL) }
 
     func glossary(_ key: CandidateLookupKey) async -> String? { await index.lookup(key).flatMap(Self.excerpt) }
 
-    func translate(_ key: CandidateLookupKey) async -> MachineTranslation {
+    func cancelTranslation(in slot: Int) {
+        guard let cancelled = sessions.removeValue(forKey: slot) else { return }
+        for session in cancelled.values { session.cancel() }
+    }
+
+    func translate(_ key: CandidateLookupKey, slot: Int) async -> MachineTranslation {
+        guard !Task.isCancelled else { return .unavailable }
         let source = Locale.Language(identifier: key.language == .chinese ? "zh-Hans" : "en")
         let target = Locale.Language(identifier: key.language == .chinese ? "en" : "zh-Hans")
         let state: LanguageAvailability.Status
@@ -361,11 +445,12 @@ final class SystemCandidateLookup: CandidateLookupProvider {
             state = cached.0
         } else {
             state = await LanguageAvailability().status(from: source, to: target)
+            guard !Task.isCancelled else { return .unavailable }
             availability[key.language] = (state, Date().addingTimeInterval(state == .installed ? 60 : 15))
         }
         guard state == .installed else { return state == .supported ? .needsLanguages : .unavailable }
         let session: TranslationSession
-        if let existing = sessions[key.language] {
+        if let existing = sessions[slot]?[key.language] {
             session = existing
         } else {
             if #available(macOS 26.4, *) {
@@ -373,15 +458,16 @@ final class SystemCandidateLookup: CandidateLookupProvider {
             } else {
                 session = TranslationSession(installedSource: source, target: target)
             }
-            sessions[key.language] = session
+            sessions[slot, default: [:]][key.language] = session
         }
         do {
             let response = try await session.translate(key.text)
             guard let text = Self.excerpt(response.targetText) else { return .unavailable }
             return .text(text)
         } catch {
+            guard !Task.isCancelled else { return .unavailable }
             // A language can be removed after the availability check.
-            sessions.removeValue(forKey: key.language)
+            if sessions[slot]?[key.language] === session { sessions[slot]?[key.language] = nil }
             availability.removeValue(forKey: key.language)
             return .unavailable
         }
