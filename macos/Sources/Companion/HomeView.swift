@@ -52,10 +52,8 @@ struct HomeView: View {
     }
 
     private var versionLine: String {
-        let info = Bundle.main.infoDictionary ?? [:]
-        let app = "\(info["CFBundleShortVersionString"] as? String ?? "?") (\(info["CFBundleVersion"] as? String ?? "?"))"
-        guard let ime = model.facts?.installed else { return "版本 \(app)" }
-        return "版本 \(app) · 输入法 \(ime.version)（\(ime.build)）"
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        return "版本\(version)"
     }
 
     private func restore() {

@@ -522,7 +522,7 @@ private struct LexiconPane: View {
         Form {
             PaneHeader(pane: .lexicon)
             if !model.sets.isEmpty {
-                Section("词库") {
+                Section("万象词库") {
                     ForEach(model.sets, id: \.id) { set in
                         Toggle(set.name, isOn: Binding(get: { set.mounted }, set: { model.useSet(set.id, on: $0) }))
                     }
