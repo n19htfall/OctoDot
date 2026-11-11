@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import DotField from "./DotField.jsx";
+import Translation from "./Translation.jsx";
 import { candidatesFor, preeditOf, schemes } from "./lexicon.js";
 
 const GITHUB = "https://github.com/n19htfall/OctoDot";
@@ -22,6 +23,7 @@ const NAV = [
   { id: "privacy", label: "隐私" },
   { id: "isolation", label: "网络隔离" },
   { id: "accuracy", label: "准确率" },
+  { id: "translation", label: "一键翻译" },
   { id: "features", label: "功能" },
 ];
 
@@ -575,7 +577,7 @@ function Features() {
     <section className="section" id="features" aria-labelledby="features-title">
       <div className="section-head reveal">
         <p className="eyebrow">
-          <span className="idx">04</span>
+          <span className="idx">05</span>
           其他功能
         </p>
         <h2 id="features-title">
@@ -712,6 +714,7 @@ export default function App() {
         <Privacy />
         <Isolation />
         <Accuracy />
+        <Translation reduced={reduced} />
         <Features />
 
         <section className="cta reveal" aria-labelledby="cta-title">
