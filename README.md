@@ -4,9 +4,6 @@ A privacy-first Chinese input method for macOS. It types whole sentences in
 全拼 (full pinyin) or 小鹤双拼, and everything it does happens on your Mac:
 the input method runs in a sandbox with no network access at all.
 
-[**Download OctoDot 0.1.0**](https://github.com/n19htfall/OctoDot/releases/download/v0.1.0/OctoDot-0.1.0.dmg)
-(413 MB, macOS 14 or later, Apple silicon) ·
-[mirror on Quark](https://pan.quark.cn/s/b9a29be252cb) ·
 [all releases](https://github.com/n19htfall/OctoDot/releases) ·
 [website](https://n19htfall.github.io/OctoDot/)
 
