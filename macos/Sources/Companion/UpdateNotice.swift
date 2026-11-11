@@ -141,6 +141,14 @@ private struct UpdateNoticeView: View {
                 .font(.system(size: 15, weight: .semibold))
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
+            if case .downloading = updater.phase {
+                ProgressView(value: downloadFraction)
+                    .padding(.top, 16)
+                Text(downloadStatus)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 8)
+            }
             if let detail {
                 Text(detail)
                     .font(.system(size: 13))
@@ -202,19 +210,27 @@ private struct UpdateNoticeView: View {
         return version.isEmpty ? nil : version
     }
 
+    private var downloadFraction: Double {
+        min(Double(updater.downloadedBytes) / Double(max(updater.downloadSize, 1)), 1)
+    }
+
+    /// Percent, bytes received against the manifest's size, and the average rate.
+    private var downloadStatus: String {
+        let done = ByteCountFormatter.string(fromByteCount: updater.downloadedBytes, countStyle: .file)
+        let size = ByteCountFormatter.string(fromByteCount: updater.downloadSize, countStyle: .file)
+        var line = "\(Int(downloadFraction * 100))% · \(done) / \(size)"
+        if updater.bytesPerSecond > 0 {
+            line += " · \(ByteCountFormatter.string(fromByteCount: updater.bytesPerSecond, countStyle: .file))/s"
+        }
+        return line
+    }
+
     @ViewBuilder private var controls: some View {
         switch updater.phase {
         case .downloading:
-            VStack(spacing: 8) {
-                ProgressView(value: min(Double(updater.downloadedBytes) / Double(max(updater.downloadSize, 1)), 1))
-                Text("\(Int(min(Double(updater.downloadedBytes) / Double(max(updater.downloadSize, 1)), 1) * 100))% · \(ByteCountFormatter.string(fromByteCount: updater.downloadedBytes, countStyle: .file)) / \(ByteCountFormatter.string(fromByteCount: updater.downloadSize, countStyle: .file))")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                Button("关闭", action: onClose)
-                    .buttonStyle(.borderless)
-                    .keyboardShortcut(.cancelAction)
-                    .padding(.top, 10)
-            }
+            Button("关闭", action: onClose)
+                .buttonStyle(.borderless)
+                .keyboardShortcut(.cancelAction)
         case .checking, .verifying, .installing, .idle:
             ProgressView()
                 .controlSize(.small)

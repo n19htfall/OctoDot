@@ -23,6 +23,8 @@ final class Updater {
     var phase = Phase.idle
     var downloadedBytes: Int64 = 0
     var downloadSize: Int64 = 0
+    /// Average rate since the download started; 0 until a fifth of a second has passed.
+    var bytesPerSecond: Int64 = 0
     /// Checks once a day while the companion runs, if the user wants it.
     var automatic: Bool {
         didSet { UserDefaults.standard.set(automatic, forKey: "automaticUpdateChecks") }
@@ -30,6 +32,7 @@ final class Updater {
 
     private var manifestData: Data?
     private var timer: Timer?
+    private var downloadStarted = Date.distantPast
 
     /// The key built into this app; nil in a build made without one (then
     /// there are no updates to check).
@@ -107,17 +110,16 @@ final class Updater {
             return
         }
         downloadedBytes = 0
+        bytesPerSecond = 0
         downloadSize = Int64(manifest.size)
+        downloadStarted = Date()
         phase = .downloading
         do {
-            let progress = DownloadProgress { [weak self] bytes in
-                Task { @MainActor in
-                    guard let self, self.phase == .downloading else { return }
-                    self.downloadedBytes = max(self.downloadedBytes, bytes)
-                }
+            let file = try await UpdateDownload.fetch(url, configuration: configuration) { [weak self] bytes in
+                Task { @MainActor in self?.note(bytes) }
             }
-            let (file, _) = try await URLSession(configuration: configuration).download(from: url, delegate: progress)
             defer { try? FileManager.default.removeItem(at: file) }
+            note(downloadSize)
             phase = .verifying
             try await Task.detached {
                 try verifier.verifyPayload(at: file, for: manifest)
@@ -136,6 +138,15 @@ final class Updater {
         }
     }
 
+    private func note(_ bytes: Int64) {
+        guard phase == .downloading else { return }
+        downloadedBytes = max(downloadedBytes, bytes)
+        let elapsed = Date().timeIntervalSince(downloadStarted)
+        if elapsed >= 0.2, downloadedBytes > 0 {
+            bytesPerSecond = Int64((Double(downloadedBytes) / elapsed).rounded())
+        }
+    }
+
     /// The new app is where this one was: start it, and end this one.
     private func relaunch() {
         let configuration = NSWorkspace.OpenConfiguration()
@@ -146,19 +157,73 @@ final class Updater {
     }
 }
 
-private final class DownloadProgress: NSObject, URLSessionDownloadDelegate {
+/// URLSession's async `download(from:)` reports no progress. A resumed download
+/// task does: its delegate is called as bytes arrive. The callbacks come one
+/// at a time, on the session's own serial queue. The file is deleted when
+/// `didFinishDownloadingTo` returns, so it is moved aside first.
+private final class UpdateDownload: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
     private let report: @Sendable (Int64) -> Void
+    private var continuation: CheckedContinuation<URL, Error>?
+    private var file: URL?
+    private var failure: Error?
+    private var reportedAt = Date.distantPast
 
-    init(report: @escaping @Sendable (Int64) -> Void) {
+    private init(report: @escaping @Sendable (Int64) -> Void) {
         self.report = report
+    }
+
+    static func fetch(_ url: URL, configuration: URLSessionConfiguration,
+                      report: @escaping @Sendable (Int64) -> Void) async throws -> URL {
+        let download = UpdateDownload(report: report)
+        let session = URLSession(configuration: configuration, delegate: download, delegateQueue: nil)
+        defer { session.finishTasksAndInvalidate() }
+        return try await withCheckedThrowingContinuation { continuation in
+            download.continuation = continuation
+            session.downloadTask(with: url).resume()
+        }
     }
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
                     didWriteData bytesWritten: Int64, totalBytesWritten: Int64,
                     totalBytesExpectedToWrite: Int64) {
+        let done = totalBytesExpectedToWrite > 0 && totalBytesWritten >= totalBytesExpectedToWrite
+        let now = Date()
+        guard done || now.timeIntervalSince(reportedAt) >= 0.1 else { return }
+        reportedAt = now
         report(totalBytesWritten)
     }
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
-                    didFinishDownloadingTo location: URL) {}
+                    didFinishDownloadingTo location: URL) {
+        if let status = (downloadTask.response as? HTTPURLResponse)?.statusCode, status != 200 {
+            failure = UpdateDownloadError(status: status)
+            return
+        }
+        let kept = FileManager.default.temporaryDirectory
+            .appendingPathComponent("octodot-update-\(UUID().uuidString).zip")
+        do {
+            try FileManager.default.moveItem(at: location, to: kept)
+            file = kept
+        } catch {
+            failure = error
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        let continuation = self.continuation
+        self.continuation = nil
+        if let error = error ?? failure {
+            if let file { try? FileManager.default.removeItem(at: file) }
+            continuation?.resume(throwing: error)
+        } else if let file {
+            continuation?.resume(returning: file)
+        } else {
+            continuation?.resume(throwing: UpdateDownloadError(status: 0))
+        }
+    }
+}
+
+private struct UpdateDownloadError: Error, CustomStringConvertible {
+    let status: Int
+    var description: String { "更新服务器返回 \(status)。" }
 }
