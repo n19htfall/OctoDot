@@ -8,6 +8,18 @@ import AppKit
 @MainActor
 enum Companion {
     private static var observer: SettingsObserver?
+    private static var lastImportID: String?
+    private static var lastImportResult = false
+
+    fileprivate static func importData(_ id: String) {
+        if lastImportID != id {
+            lastImportResult = Maintenance.importStaged(id)
+            lastImportID = id
+        }
+        DistributedNotificationCenter.default().postNotificationName(
+            Notification.Name(Identity.ime + ".imported"), object: id + (lastImportResult ? ".ok" : ".failed"),
+            userInfo: nil, deliverImmediately: true)
+    }
 
     /// Listens for the companion (distributed notifications, which a
     /// sandboxed app may post as long as they carry no data, so the request
@@ -24,6 +36,9 @@ enum Companion {
                                name: Notification.Name(Identity.ime + "." + name), object: nil,
                                suspensionBehavior: .deliverImmediately)
         }
+        center.addObserver(observer, selector: #selector(SettingsObserver.importData(_:)),
+                           name: Notification.Name(Identity.ime + ".import"), object: nil,
+                           suspensionBehavior: .deliverImmediately)
         Self.observer = observer
     }
 
@@ -58,5 +73,10 @@ private final class SettingsObserver: NSObject {
     @objc func request(_ note: Notification) {
         let request = String(note.name.rawValue.dropFirst(Identity.ime.count + 1))
         MainActor.assumeIsolated { Companion.handle(request) }
+    }
+
+    @objc func importData(_ note: Notification) {
+        guard let id = note.object as? String, UUID(uuidString: id) != nil else { return }
+        MainActor.assumeIsolated { Companion.importData(id) }
     }
 }

@@ -328,7 +328,8 @@ What differs from the plan above, and how far each part was checked on
   (`octodot://update`).
 - **Backups** are the user's data sealed under a passphrase (PBKDF2-SHA256,
   600,000 rounds, AES-GCM, `.octodot-backup`); "Restore a Backup…" brings
-  one back through `--import`.
+  one back through the running IME. The installer stages an encrypted
+  transfer and waits for the IME to import it and confirm the result.
 - **Builds are all or nothing**: each bundle is assembled in a `.partial`
   folder and moved into place only once signed and verified.
 
@@ -349,7 +350,7 @@ Verified:
   carry a code-signing requirement, as do the companion's).
 - In the IME's sandbox: `--preflight` (the team-prefixed App Group works
   without a provisioning profile; the Keychain key reads without a prompt
-  under the team signature), and `--import` → sealed on disk → `--export` →
+  under the team signature), and the former `--import` → sealed on disk → `--export` →
   `--wipe` with sample data.
 - The release tools: a manifest signed by `octo-update-sign` verifies; one
   with a changed field, or replayed to the same build, does not.

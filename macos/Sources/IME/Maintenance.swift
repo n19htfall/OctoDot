@@ -14,8 +14,7 @@ import InputMethodKit
 /// and for the companion's installer (docs/distribution-and-onboarding.md),
 /// each run in this IME's own sandbox, never starting the IMK server:
 ///   --preflight  the container, the App Group and the Keychain key, as JSON
-///   --import     a Transfer (JSON) on standard input: the user dictionary,
-///                custom phrases and settings, sealed under this IME's key
+///   --stage-import ID  seal a Transfer from standard input for the running IME
 ///   --export     the same out, on standard output
 ///   --wipe       the user dictionary, phrases, key and settings, deleted
 @MainActor
@@ -40,8 +39,8 @@ enum Maintenance {
             return releaseTest()
         case "--preflight":
             return preflight()
-        case "--import":
-            return importUserData()
+        case "--stage-import":
+            return stageImport()
         case "--export":
             return exportUserData()
         case "--wipe":
@@ -84,53 +83,48 @@ enum Maintenance {
         return ok ? 0 : 1
     }
 
-    /// The user's data from the installer (a backup coming back), on
-    /// standard input: restored into the engine, so
-    /// it is in this build's format, and sealed under this IME's own key. The
-    /// dictionary there before stays as user-dictionary.previous, and a
-    /// phrase list there before as custom_phrases.txt.before-import.
-    private static func importUserData() -> Int32 {
+    /// Stage encrypted data for the running input method. The identifier is
+    /// carried in the notification, while the plaintext stays in the pipe.
+    private static func stageImport() -> Int32 {
+        guard let id = CommandLine.arguments.last, UUID(uuidString: id) != nil,
+              let key = KeychainKeyProvider(service: Learning.keychainService).key() else { return 1 }
         let input = FileHandle.standardInput.readDataToEndOfFile()
-        guard let transfer = try? JSONDecoder().decode(Transfer.self, from: input) else {
-            print("{\"ok\": false, \"why\": \"not a transfer\"}")
-            return 1
-        }
-        guard Core.startEngine() == 0 else {
-            print("{\"ok\": false, \"why\": \"the images did not load\"}")
-            return 1
-        }
-        defer { Engine.shared.stop() }
-        var dictionary = false
-        if let text = transfer.userDictionary {
-            guard Engine.shared.restoreUserDictionary(text) else {
-                print("{\"ok\": false, \"why\": \"the user dictionary is not in the expected format\"}")
-                return 1
-            }
-            let store = UserStore(directory: Learning.directory, keys: KeychainKeyProvider(service: Learning.keychainService))
-            guard store.save(Engine.shared.saveUserDictionary()) else {
-                print("{\"ok\": false, \"why\": \"the user dictionary could not be sealed and saved\"}")
-                return 1
-            }
-            dictionary = true
-        }
-        var phrases = false
+        guard (try? JSONDecoder().decode(Transfer.self, from: input)) != nil else { return 1 }
+        let store = UserStore(directory: Learning.directory, keys: KeychainKeyProvider(service: Learning.keychainService))
+        guard let sealed = try? store.seal(input, with: key) else { return 1 }
+        do {
+            try FileManager.default.createDirectory(at: Learning.directory, withIntermediateDirectories: true,
+                                                    attributes: [.posixPermissions: 0o700])
+            try sealed.write(to: Learning.directory.appendingPathComponent("import-" + id), options: .atomic)
+            return 0
+        } catch { return 1 }
+    }
+
+    /// Called by the active engine on the main thread, serialized with typing
+    /// and dictionary saves. A request can be consumed only once.
+    static func importStaged(_ id: String) -> Bool {
+        guard UUID(uuidString: id) != nil else { return false }
+        let file = Learning.directory.appendingPathComponent("import-" + id)
+        guard let sealed = try? Data(contentsOf: file) else { return false }
+        try? FileManager.default.removeItem(at: file)
+        let keys = KeychainKeyProvider(service: Learning.keychainService)
+        let store = UserStore(directory: Learning.directory, keys: keys)
+        guard let key = keys.key(), let input = store.open(sealed, with: key),
+              let transfer = try? JSONDecoder().decode(Transfer.self, from: input) else { return false }
+        if let text = transfer.userDictionary, !Learning.importDictionary(text) { return false }
         if let text = transfer.customPhrases {
             let file = Learning.directory.appendingPathComponent("custom_phrases.txt")
             if let old = try? Data(contentsOf: file), old != text {
                 try? old.write(to: file.appendingPathExtension("before-import"), options: .atomic)
             }
-            phrases = (try? text.write(to: file, options: .atomic)) != nil
+            guard (try? text.write(to: file, options: .atomic)) != nil else { return false }
         }
-        var settings = 0
         if let data = transfer.preferences,
            let values = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] {
-            for (key, value) in values {
-                UserDefaults.standard.set(value, forKey: key)
-                settings += 1
-            }
+            for (key, value) in values { UserDefaults.standard.set(value, forKey: key) }
+            Learning.reloadPreferences()
         }
-        print("{\"ok\": true, \"dictionary\": \(dictionary), \"phrases\": \(phrases), \"settings\": \(settings)}")
-        return 0
+        return true
     }
 
     /// The user's data, out, as a Transfer on standard output (for a backup

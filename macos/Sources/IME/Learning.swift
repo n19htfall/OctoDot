@@ -137,6 +137,11 @@ enum Learning {
         Engine.shared.setFuzzy(fuzzy)
     }
 
+    static func reloadPreferences() {
+        if !Engine.shared.setScheme(scheme) { _ = Engine.shared.setScheme("fullpinyin") }
+        applyPreferences()
+    }
+
     /// Incognito: nothing typed teaches the dictionary until it is turned off.
     static var incognito: Bool {
         get { UserDefaults.standard.bool(forKey: incognitoKey) }
@@ -269,6 +274,27 @@ enum Learning {
             log.error("user dictionary: could not save")
             return false
         }
+    }
+
+    /// Restore on the engine's thread, keeping memory and disk in step.
+    static func importDictionary(_ data: Data) -> Bool {
+        guard let store else { return false }
+        let old = Engine.shared.saveUserDictionary()
+        let journal = Engine.shared.journal()
+        guard Engine.shared.restoreUserDictionary(data) else {
+            _ = Engine.shared.restoreUserDictionary(old)
+            _ = Engine.shared.restoreJournal(journal)
+            return false
+        }
+        guard store.save(Engine.shared.saveUserDictionary()) else {
+            _ = Engine.shared.restoreUserDictionary(old)
+            _ = Engine.shared.restoreJournal(journal)
+            return false
+        }
+        pending?.invalidate()
+        pending = nil
+        savedChanges = Engine.shared.userDictionaryChanges
+        return true
     }
 
     static func forget(_ scope: Engine.ForgetScope) {

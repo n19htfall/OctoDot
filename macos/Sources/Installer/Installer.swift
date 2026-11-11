@@ -261,9 +261,33 @@ final class Installer: NSObject, InstallerProtocol, @unchecked Sendable {
             reply(false, "这不是 OctoDot 的数据。")
             return
         }
-        let result = runIME(installedIME, ["--import"], input: transfer)
-        reply(result.status == 0, result.status == 0 ? "数据已恢复。" :
-              "输入法无法接收这些数据：" + String(decoding: result.output ?? Data(), as: UTF8.self))
+        let id = UUID().uuidString
+        let staged = runIME(installedIME, ["--stage-import", id], input: transfer)
+        guard staged.status == 0 else { reply(false, "无法准备恢复数据。"); return }
+        guard run("/usr/bin/open", ["-g", installedIME.path]).status == 0 else {
+            reply(false, "无法启动输入法以恢复数据。")
+            return
+        }
+        let center = DistributedNotificationCenter.default()
+        let answered = DispatchSemaphore(value: 0)
+        let result = OSAllocatedUnfairLock<Bool?>(initialState: nil)
+        let token = center.addObserver(forName: Notification.Name(Identity.ime + ".imported"), object: nil,
+                                       queue: nil) { note in
+            guard let answer = note.object as? String, answer == id + ".ok" || answer == id + ".failed" else { return }
+            result.withLock { $0 = answer == id + ".ok" }
+            answered.signal()
+        }
+        defer { center.removeObserver(token) }
+        for _ in 0..<20 {
+            center.postNotificationName(Notification.Name(Identity.ime + ".import"), object: id,
+                                        userInfo: nil, deliverImmediately: true)
+            if answered.wait(timeout: .now() + 0.5) == .success { break }
+        }
+        switch result.withLock({ $0 }) {
+        case true: reply(true, "数据已恢复。")
+        case false: reply(false, "输入法无法恢复这些数据。")
+        case nil: reply(false, "输入法未确认恢复结果，请检查输入法是否正常运行。")
+        }
     }
 
     /// Runs the IME's executable with a command, in the IME's own sandbox

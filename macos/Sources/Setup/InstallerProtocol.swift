@@ -34,7 +34,7 @@ import Foundation
     /// settings as a Transfer, JSON, or nil.
     func exportUserData(reply: @escaping (Data?) -> Void)
 
-    /// The installed IME's --import, of a Transfer (JSON): a backup coming back.
+    /// Restores a Transfer (JSON) through the running input method.
     func importUserData(_ transfer: Data, reply: @escaping (Bool, String) -> Void)
 
     /// Copies the running companion to /Applications; the message is the new path or why not.
