@@ -557,9 +557,11 @@ final class CandidateBar: NSView {
     private var wheel: CGFloat = 0
     private var thumbDrag: (startY: CGFloat, origin: Int)?
     private var dragged = false
-    private let backdrop = Passive()            // dark mode: under everything, so white text always reads
-    private let pill = Passive()
-    private let ink = Passive()                 // above the pill: the text
+    private let backdrop = Passive()
+    private let plain = Passive()
+    private let pill = HighlightPill()
+    private let accent = Passive()
+    private let chrome = Passive()
     private var trackingArea: NSTrackingArea?
     /// Candidate ↔ translation. `fraction` is how much of the translation is showing.
     private struct LabelBlend {
@@ -585,12 +587,8 @@ final class CandidateBar: NSView {
     /// Translations that have finished fading in, so a later layout does not play them again.
     private var resting: [Int: String] = [:]
     private var fadeLink: CADisplayLink?
-    /// The highlight slide. The pill's frame is the frame on screen: text takes the accent
-    /// color only where this frame covers it, so the color moves with the pill.
-    private var highlightLink: CADisplayLink?
-    private var highlightFrom = NSRect.zero
-    private var highlightTo = NSRect.zero
-    private var highlightStart = CFTimeInterval(0)
+    private var drawnNumberRow: Int?
+    private var drawnCells: [NSRect] = []
     private static let highlightSlide: CFTimeInterval = 0.16
 
     override var isFlipped: Bool { true }
@@ -601,12 +599,21 @@ final class CandidateBar: NSView {
         layer?.masksToBounds = true
         pill.wantsLayer = true
         pill.layer?.cornerCurve = .continuous
+        pill.layer?.masksToBounds = true
         backdrop.wantsLayer = true
         backdrop.layer?.cornerCurve = .continuous
+        plain.wantsLayer = true
+        accent.wantsLayer = true
+        chrome.wantsLayer = true
+        plain.draws = { [weak self] in self?.drawPlain() }
+        accent.draws = { [weak self] in self?.drawAccent() }
+        chrome.draws = { [weak self] in self?.drawChrome() }
+        pill.onFrameChange = { [weak self] in self?.placeAccentInk() }
         addSubview(backdrop)
+        addSubview(plain)
         addSubview(pill)
-        ink.draws = { [weak self] in self?.drawContent() }
-        addSubview(ink)
+        pill.addSubview(accent)
+        addSubview(chrome)
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -621,35 +628,48 @@ final class CandidateBar: NSView {
     func update(_ page: CandidatePanel.Page) -> NSSize {
         let sameStyle = style == CandidateStyle.current
         style = CandidateStyle.current
-        let sameList = sameStyle && self.page?.candidates == page.candidates
-            && self.page?.origin == page.origin && self.page?.expanded == page.expanded
+        let previous = self.page
+        let sameList = sameStyle && previous?.candidates == page.candidates
+            && previous?.origin == page.origin && previous?.expanded == page.expanded
         syncBlends(to: page, sameList: sameList)
+        let clearHover = hovered != nil
         self.page = page
         hovered = nil
         cells.removeAll()
         separators.removeAll()
         let size = page.expanded ? layoutGrid(page) : layoutRow(page)
         frame.size = size
-        ink.frame = NSRect(origin: .zero, size: size)
-        backdrop.frame = ink.frame
+        let full = NSRect(origin: .zero, size: size)
+        plain.frame = full
+        chrome.frame = full
+        backdrop.frame = full
         backdrop.layer?.cornerRadius = page.expanded ? min(18, size.height / 2) : size.height / 2
         updateColors()
 
         if page.highlighted >= 0 && page.highlighted < cells.count {
             let target = cells[page.highlighted]
-            pill.layer?.cornerRadius = target.height / 2
             pill.isHidden = false
             if sameList && blends.isEmpty && !pill.frame.isEmpty && displaced(pill.frame, target) {
                 slideHighlight(to: target)
             } else {
                 setHighlightFrame(target)
-                stopHighlightSlide()
             }
         } else {
             pill.isHidden = true
             stopHighlightSlide()
         }
-        ink.needsDisplay = true
+        let row = numberRow(page)
+        let textSame = sameList && blends.isEmpty && !clearHover && drawnNumberRow == row
+            && drawnCells == cells && previous?.comments == page.comments
+            && previous?.translations == page.translations
+        if textSame {
+            if previous?.hasPrevious != page.hasPrevious || previous?.hasNext != page.hasNext
+                || previous?.menuCount != page.menuCount {
+                chrome.needsDisplay = true
+            }
+        } else {
+            invalidateText()
+        }
         return size
     }
 
@@ -754,11 +774,13 @@ final class CandidateBar: NSView {
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         updateColors()
-        ink.needsDisplay = true
+        invalidateText()
     }
 
     func forget() {
         page = nil
+        drawnNumberRow = nil
+        drawnCells = []
         stopHighlightSlide()
         setHighlightFrame(.zero)
         endTextFade()
@@ -773,89 +795,95 @@ final class CandidateBar: NSView {
         stopHighlightSlide()
     }
 
-    /// Moves the pill from wherever it is. Its frame stays the visible one, and each
-    /// frame redraws the text against that frame.
     private func slideHighlight(to target: NSRect) {
-        guard window != nil else {
+        guard window != nil, let pillLayer = pill.layer else {
             setHighlightFrame(target)
-            stopHighlightSlide()
             return
         }
-        highlightFrom = pill.frame
-        highlightTo = target
-        highlightStart = CACurrentMediaTime()
-        startHighlightLink()
+        let fromPosition = pillLayer.presentation()?.position ?? pillLayer.position
+        let fromBounds = pillLayer.presentation()?.bounds ?? pillLayer.bounds
+        let fromAccent = accent.layer?.presentation()?.position ?? accent.layer?.position
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        pillLayer.removeAllAnimations()
+        accent.layer?.removeAllAnimations()
+        pill.frame = target
+        pillLayer.cornerRadius = target.height / 2
+        CATransaction.commit()
+        slide(pillLayer, "position", from: NSValue(point: fromPosition))
+        slide(pillLayer, "bounds", from: NSValue(rect: fromBounds))
+        if let accentLayer = accent.layer, let fromAccent {
+            slide(accentLayer, "position", from: NSValue(point: fromAccent))
+        }
+    }
+
+    private func slide(_ layer: CALayer, _ keyPath: String, from: NSValue) {
+        let animation = CABasicAnimation(keyPath: keyPath)
+        animation.fromValue = from
+        animation.duration = Self.highlightSlide
+        animation.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        layer.add(animation, forKey: "highlight-" + keyPath)
     }
 
     private func setHighlightFrame(_ rect: NSRect) {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         pill.layer?.removeAllAnimations()
+        accent.layer?.removeAllAnimations()
         pill.frame = rect
+        if rect.height > 0.5 { pill.layer?.cornerRadius = rect.height / 2 }
         CATransaction.commit()
-    }
-
-    private func startHighlightLink() {
-        guard highlightLink == nil, window != nil else { return }
-        let link = displayLink(target: self, selector: #selector(stepHighlight(_:)))
-        link.add(to: .main, forMode: .common)
-        link.isPaused = false
-        highlightLink = link
     }
 
     private func stopHighlightSlide() {
-        highlightLink?.invalidate()
-        highlightLink = nil
-    }
-
-    @objc nonisolated private func stepHighlight(_ link: CADisplayLink) {
-        MainActor.assumeIsolated { self.tickHighlight() }
-    }
-
-    private func tickHighlight() {
-        let raw = CGFloat(min(1, max(0, (CACurrentMediaTime() - highlightStart) / Self.highlightSlide)))
+        guard let pillLayer = pill.layer,
+              pillLayer.animation(forKey: "highlight-position") != nil
+                || pillLayer.animation(forKey: "highlight-bounds") != nil,
+              let shown = pillLayer.presentation() else {
+            pill.layer?.removeAllAnimations()
+            accent.layer?.removeAllAnimations()
+            return
+        }
+        let frame = Self.viewFrame(position: shown.position, bounds: shown.bounds, anchor: pillLayer.anchorPoint)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        pill.layer?.removeAllAnimations()
-        pill.frame = Self.mix(highlightFrom, highlightTo, Self.easeOut(raw))
-        ink.needsDisplay = true
-        ink.displayIfNeeded()
+        pillLayer.removeAllAnimations()
+        accent.layer?.removeAllAnimations()
+        pill.frame = frame
+        if frame.height > 0.5 { pillLayer.cornerRadius = frame.height / 2 }
         CATransaction.commit()
-        if raw >= 1 { stopHighlightSlide() }
     }
 
-    /// `CAMediaTimingFunction.easeOut`: cubic-bezier(0, 0, 0.58, 1).
-    private static func easeOut(_ t: CGFloat) -> CGFloat {
-        if t <= 0 { return 0 }
-        if t >= 1 { return 1 }
-        let x2 = 0.58
-        var u = t
-        for _ in 0..<8 {
-            let x = 3 * (1 - u) * u * u * x2 + u * u * u
-            let dx = 6 * x2 * u + (3 - 9 * x2) * u * u
-            if abs(dx) < 1e-6 { break }
-            u = min(1, max(0, u - (x - t) / dx))
-        }
-        return min(1, max(0, 3 * (1 - u) * u * u + u * u * u))
+    private static func viewFrame(position: CGPoint, bounds: CGRect, anchor: CGPoint) -> NSRect {
+        NSRect(x: position.x - anchor.x * bounds.width, y: position.y - anchor.y * bounds.height,
+               width: bounds.width, height: bounds.height)
     }
 
-    private static func mix(_ a: NSRect, _ b: NSRect, _ t: CGFloat) -> NSRect {
-        func m(_ p: CGFloat, _ q: CGFloat) -> CGFloat { p + (q - p) * t }
-        return NSRect(x: m(a.minX, b.minX), y: m(a.minY, b.minY),
-                      width: m(a.width, b.width), height: m(a.height, b.height))
+    private func placeAccentInk() {
+        let next = NSRect(x: -pill.frame.minX, y: -pill.frame.minY, width: bounds.width, height: bounds.height)
+        guard accent.frame != next else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        accent.frame = next
+        CATransaction.commit()
+    }
+
+    private func numberRow(_ page: CandidatePanel.Page) -> Int {
+        guard page.expanded, page.highlighted >= 0 else { return -1 }
+        return page.highlighted / max(page.columns, 1)
+    }
+
+    private func invalidateText() {
+        if let page { drawnNumberRow = numberRow(page) }
+        drawnCells = cells
+        plain.needsDisplay = true
+        accent.needsDisplay = true
+        chrome.needsDisplay = true
     }
 
     private func displaced(_ a: NSRect, _ b: NSRect) -> Bool {
         abs(a.minX - b.minX) > 0.5 || abs(a.minY - b.minY) > 0.5
             || abs(a.width - b.width) > 0.5 || abs(a.height - b.height) > 0.5
-    }
-
-    /// Where the pill is now, in the text view's coordinates.
-    private func highlightCover() -> NSRect? {
-        guard !pill.isHidden else { return nil }
-        let rect = pill.frame
-        guard rect.width > 0.5, rect.height > 0.5 else { return nil }
-        return ink.convert(rect, from: self)
     }
 
     private func commentWidth(_ comment: String?) -> CGFloat {
@@ -1086,19 +1114,20 @@ final class CandidateBar: NSView {
         separators.removeAll()
         let size = page.expanded ? layoutGrid(page) : layoutRow(page)
         frame.size = size
-        ink.frame = NSRect(origin: .zero, size: size)
-        backdrop.frame = ink.frame
+        let full = NSRect(origin: .zero, size: size)
+        plain.frame = full
+        chrome.frame = full
+        backdrop.frame = full
         if page.highlighted >= 0 && page.highlighted < cells.count {
-            pill.layer?.removeAllAnimations()
-            pill.frame = cells[page.highlighted]
+            setHighlightFrame(cells[page.highlighted])
             pill.isHidden = false
         }
-        ink.needsDisplay = true
+        invalidateText()
         onTextFade?(size)
         if blends.isEmpty { stopFadeLink() }
     }
 
-    private func drawContent() {
+    private func drawPlain() {
         guard let page else { return }
         if page.expanded {
             NSColor.separatorColor.withAlphaComponent(0.22).setFill()
@@ -1107,7 +1136,15 @@ final class CandidateBar: NSView {
             }
         }
         drawLabels(page, covered: false)
-        drawCoveredText(page)
+    }
+
+    private func drawAccent() {
+        guard let page else { return }
+        drawLabels(page, covered: true)
+    }
+
+    private func drawChrome() {
+        guard let page else { return }
         if !thumb.isEmpty {
             NSColor.tertiaryLabelColor.setFill()
             NSBezierPath(roundedRect: thumb, xRadius: thumb.width / 2, yRadius: thumb.width / 2).fill()
@@ -1118,21 +1155,6 @@ final class CandidateBar: NSView {
             drawArrow("chevron.left", in: previousArrow, enabled: page.hasPrevious, hovered: hovered == -1)
             drawArrow("chevron.right", in: nextArrow, enabled: page.hasNext, hovered: hovered == -2)
         }
-    }
-
-    /// Resting ink, then the same ink again in the accent color, clipped to the pill.
-    /// Clearing first lets the translucent index and comment composite over the pill.
-    private func drawCoveredText(_ page: CandidatePanel.Page) {
-        guard let cover = highlightCover(), let context = NSGraphicsContext.current?.cgContext else { return }
-        NSGraphicsContext.saveGraphicsState()
-        let radius = cover.height / 2
-        NSBezierPath(roundedRect: cover, xRadius: radius, yRadius: radius).addClip()
-        context.setFillColor(NSColor.black.cgColor)
-        context.setBlendMode(.clear)
-        context.fill(cover)
-        context.setBlendMode(.normal)
-        drawLabels(page, covered: true)
-        NSGraphicsContext.restoreGraphicsState()
     }
 
     private func drawLabels(_ page: CandidatePanel.Page, covered: Bool) {
@@ -1299,13 +1321,15 @@ final class CandidateBar: NSView {
         let now = target(at: convert(event.locationInWindow, from: nil))
         if now != hovered {
             hovered = now
-            ink.needsDisplay = true
+            plain.needsDisplay = true
+            chrome.needsDisplay = true
         }
     }
 
     override func mouseExited(with event: NSEvent) {
         hovered = nil
-        ink.needsDisplay = true
+        plain.needsDisplay = true
+        chrome.needsDisplay = true
     }
 
     override func mouseUp(with event: NSEvent) {
@@ -1325,11 +1349,25 @@ final class CandidateBar: NSView {
 /// A view that never takes the mouse (the bar beneath handles it), and
 /// draws with a closure if given one.
 @MainActor
-final class Passive: NSView {
+class Passive: NSView {
     var draws: (() -> Void)?
     override var isFlipped: Bool { true }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
     override func draw(_ dirtyRect: NSRect) { draws?() }
+}
+
+@MainActor
+private final class HighlightPill: Passive {
+    var onFrameChange: (() -> Void)?
+
+    override var frame: NSRect {
+        get { super.frame }
+        set {
+            let before = frame
+            super.frame = newValue
+            if before != frame { onFrameChange?() }
+        }
+    }
 }
 
 /// A critically damped spring on a window frame. No overshoot: the panel
