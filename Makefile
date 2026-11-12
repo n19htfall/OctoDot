@@ -106,10 +106,10 @@ app: images $(IMAGES)/semantic.tsv
 # image, checked (mounted read-only); or a release, Developer ID signed,
 # notarized and stapled, with its update archive. make appcast signs a
 # release's update manifest; make release-key makes the signing key, once.
-dmg-dev: images
+dmg-dev: images $(IMAGES)/semantic.tsv
 	$(MAKE) -C macos test-dmg SIGN_PROFILE=dev
 
-dmg-release: images
+dmg-release: images $(IMAGES)/semantic.tsv
 	$(MAKE) -C macos release SIGN_PROFILE=release
 
 appcast:
@@ -121,7 +121,7 @@ release-key:
 uninstall:
 	$(MAKE) -C macos uninstall
 
-install: images
+install: images $(IMAGES)/semantic.tsv
 	$(MAKE) -C macos install
 
 test: check-privacy test-prep test-images test-typing test-app test-accuracy
@@ -139,7 +139,10 @@ test-images: images $(BIN)/images-test
 
 # Chinese senses of English words already in the dictionary. Missing file:
 # the mixed decoder keeps its previous scores.
-$(IMAGES)/semantic.tsv: tools/compile-semantic.py data/glossary_clean.tsv $(PREPARED)/english.tsv $(PREPARED)/lexicon.tsv
+# report.json is what octo-prep writes; english.tsv and lexicon.tsv come out
+# of that same run, so a clean tree can build the sense table without a
+# separate rule for those two files.
+$(IMAGES)/semantic.tsv: tools/compile-semantic.py data/glossary_clean.tsv $(PREPARED)/report.json
 	python3 tools/compile-semantic.py data/glossary_clean.tsv $(PREPARED)/english.tsv $(PREPARED)/lexicon.tsv $@
 
 test-typing: images $(IMAGES)/semantic.tsv $(BIN)/typing-test
