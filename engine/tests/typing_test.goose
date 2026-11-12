@@ -1950,6 +1950,78 @@ fn commit_first(s: u64, input: const u8[:], want: const u8[:]) {
     check(session::commit == want && session::input.len == 0, str("space commits ", want, " (got ", session::commit, ")"));
 }
 
+fn mx(word: i32, score: f64, en: u8, zh_at: i32, zh_prev: i32) -> decoder::Mx {
+    return decoder::Mx { prev: -1, word: word, score: score, last_en: en, zh_prev: zh_prev, zh_at: zh_at,
+                         anchor: 0, saw_zh: 1, tail: -1 };
+}
+
+fn alive(next: i32[>..]&, heads: i32[>..]&, to: i64) -> i64 {
+    var n: i64 = 0;
+    var c: i64 = heads[to];
+    while c >= 0 && c < next.len {
+        n++;
+        c = next[c];
+    }
+    return n;
+}
+
+// The merge keeps two English endings that share a position when the Chinese
+// word before them differs: the lower score can still win once 吧 is scored
+// against that context. Identical futures collapse to the better score.
+fn state_merge() {
+    decoder::set_mixed_beam(4);
+    var states: decoder::Mx[>..] = [];
+    var next: i32[>..] = [];
+    var heads: i32[>..] = [];
+    heads.push(-1);
+    heads.push(-1);
+    // A is behind now and ahead after the next word. Both must survive.
+    decoder::consider_mx(states, next, heads, 1, mx(7, -31.0, 1, 10, -1));
+    decoder::consider_mx(states, next, heads, 1, mx(7, -30.0, 1, 11, -1));
+    check(alive(next, heads, 1) == 2, "distinct contexts before the same English word both stay");
+    // Same English edge and the same Chinese context: only the better score.
+    decoder::consider_mx(states, next, heads, 1, mx(7, -29.0, 1, 11, -1));
+    check(alive(next, heads, 1) == 2, "a repeated context replaces its own score and does not add a state");
+    var seen_better = false;
+    var c: i64 = heads[1];
+    while c >= 0 && c < states.len {
+        if states[c].zh_at == 11 && states[c].score == -29.0 { seen_better = true; }
+        c = next[c];
+    }
+    check(seen_better, "the repeated context keeps the higher score");
+    // A different English token ending here is not the same future.
+    decoder::consider_mx(states, next, heads, 1, mx(8, -28.0, 1, 11, -1));
+    check(alive(next, heads, 1) == 3, "two English tokens ending together stay apart");
+    // Chinese endings: the same word after different predecessors.
+    var zh: decoder::Mx[>..] = [];
+    var zn: i32[>..] = [];
+    var zhds: i32[>..] = [];
+    zhds.push(-1);
+    decoder::consider_mx(zh, zn, zhds, 0, mx(3, -10.0, 0, -1, -1));
+    decoder::consider_mx(zh, zn, zhds, 0, mx(3, -9.0, 0, -1, 4));
+    check(alive(zn, zhds, 0) == 2, "the same Chinese word keeps each predecessor apart");
+    decoder::consider_mx(zh, zn, zhds, 0, mx(3, -8.0, 0, -1, 4));
+    check(alive(zn, zhds, 0) == 2, "a repeated Chinese context collapses to its better score");
+    // The beam still drops the worst distinct state.
+    decoder::set_mixed_beam(2);
+    var boxed: decoder::Mx[>..] = [];
+    var bn: i32[>..] = [];
+    var bh: i32[>..] = [];
+    bh.push(-1);
+    decoder::consider_mx(boxed, bn, bh, 0, mx(1, -1.0, 1, 1, -1));
+    decoder::consider_mx(boxed, bn, bh, 0, mx(1, -2.0, 1, 2, -1));
+    decoder::consider_mx(boxed, bn, bh, 0, mx(1, -3.0, 1, 3, -1));
+    check(alive(bn, bh, 0) == 2, "a full beam drops the lowest distinct context");
+    var kept_low = false;
+    c = bh[0];
+    while c >= 0 && c < boxed.len {
+        if boxed[c].score == -3.0 { kept_low = true; }
+        c = bn[c];
+    }
+    check(!kept_low, "the dropped context is the lowest score");
+    decoder::set_mixed_beam(4);
+}
+
 fn mixed_sentences(s: u64) {
     check(session::set_scheme("fullpinyin") == 0, "mixed sentences, full pinyin");
     commit_first(s, "jintianxiawuyougemeeting", "今天下午有个meeting");
@@ -2300,6 +2372,7 @@ fn main() {
     userdb::reset();
     english_words(session::new_session());
     userdb::reset();
+    state_merge();
     mixed_sentences(session::new_session());
     userdb::reset();
     reranking(session::new_session());

@@ -85,7 +85,7 @@ let SEM_LIFT = 8.0;          // most a Chinese sense of an English word may add 
 let EN_PAGE = 2.0;           // ...to stay on the first page, behind the Chinese
 let EN_THREE = 100;          // a lowercase 3-letter word must be at least this common
 let MAX_EN_EDGES = 48;
-let MIXED_BEAM = 4;
+var mixed_beam: i64 = 4;
 // How many English edges the scan found, kept, and refused for the quota.
 var en_seen: i64 = 0;
 var en_kept: i64 = 0;
@@ -735,16 +735,30 @@ fn forget_fits() {
     for i in FIT_SLOTS { fits.push(Fit { key: 0, value: 0.0 }); }
 }
 
+var fit_hits: i64 = 0;
+var fit_misses: i64 = 0;
+
 fn fit(context: const u8[:], context_hash: u64, word: const u8[:], word_hash: u64, rear: bool) -> f64 {
     var key = (context_hash * 0x100000001B3) ^ (word_hash * 0x9E3779B97F4A7C15) ^ (if rear { 1 } else { 0 });
     if key == 0 { key = 1; }                // 0 marks an empty slot
     if fits.len != FIT_SLOTS { forget_fits(); }
     let slot: i64 = (key & (FIT_SLOTS - 1)) as i64;
-    if fits[slot].key == key { return fits[slot].value; }
+    if fits[slot].key == key {
+        fit_hits++;
+        return fits[slot].value;
+    }
+    fit_misses++;
     let f = grammar::query(context, word, rear) / lattice::LN2;
     fits[slot] = Fit { key: key, value: f };
     return f;
 }
+
+fn reset_fit_stats() {
+    fit_hits = 0;
+    fit_misses = 0;
+}
+
+fn fit_stats() -> i64, i64 { return fit_hits, fit_misses; }
 
 // Emissions, for the second pass's experiments (the accuracy harness's
 // --emissions): per syllable of one segmentation of the input, a
@@ -1373,33 +1387,43 @@ fn mixed_boost(w: Words&, prev: i64, ant: i64, current: i64) -> f64 {
 
 fn reached_front(p: i64) -> bool { p >= 0 && p < front_score.len && front_score[p] > -1.0e20 }
 
+// Two states may share a slot only when every later extension adds the same
+// delta to both. The backpointer, the anchor and the substituted tail change
+// the text already built, not the score of a word that has not been read yet.
+fn same_future(a: Mx, b: Mx) -> bool {
+    if a.last_en != b.last_en { return false; }
+    if a.last_en != 0 { return a.word == b.word && a.zh_at == b.zh_at; }
+    return a.word == b.word && a.zh_prev == b.zh_prev;
+}
+
+// Strict: a higher score wins, and a tie keeps the earlier word index. Equal
+// scores therefore do not swap, so the survivor of a tie does not depend on
+// which path was inserted last.
+fn prefer_state(a: Mx, b: Mx) -> bool {
+    if a.score != b.score { return a.score > b.score; }
+    if a.word != b.word { return a.word < b.word; }
+    let ak: i32 = if a.last_en != 0 { a.zh_at } else { a.zh_prev };
+    let bk: i32 = if b.last_en != 0 { b.zh_at } else { b.zh_prev };
+    return ak < bk;
+}
+
 fn consider_mx(states: Mx[>..]&, next: i32[>..]&, heads: i32[>..]&, to: i64, st: Mx) {
     guard to >= 0 && to < heads.len else { return; }
     var c: i64 = heads[to];
-    var zh_n: i64 = 0;
+    var n: i64 = 0;
     var worst: i64 = -1;
-    var worst_s = 1.0e300;
     while c >= 0 && c < states.len {
         let cur = states[c];
-        if st.last_en != 0 && cur.last_en != 0 {
-            if st.score > cur.score { states[c] = st; }
+        if same_future(st, cur) {
+            if prefer_state(st, cur) { states[c] = st; }
             return;
         }
-        if st.last_en == 0 && cur.last_en == 0 && cur.word == st.word {
-            if st.score > cur.score { states[c] = st; }
-            return;
-        }
-        if cur.last_en == 0 {
-            zh_n++;
-            if cur.score < worst_s {
-                worst_s = cur.score;
-                worst = c;
-            }
-        }
+        if worst < 0 || prefer_state(states[worst], cur) { worst = c; }
+        n++;
         c = next[c];
     }
-    if st.last_en == 0 && zh_n >= MIXED_BEAM {
-        if worst >= 0 && st.score > states[worst].score { states[worst] = st; }
+    if n >= mixed_beam {
+        if worst >= 0 && prefer_state(st, states[worst]) { states[worst] = st; }
         return;
     }
     states.push(st);
@@ -1407,9 +1431,34 @@ fn consider_mx(states: Mx[>..]&, next: i32[>..]&, heads: i32[>..]&, to: i64, st:
     heads[to] = (states.len - 1) as i32;
 }
 
+fn set_mixed_beam(n: i64) {
+    if n >= 1 { mixed_beam = n; }
+}
+
+fn mixed_beam_width() -> i64 { mixed_beam }
+
+var mx_peak: i64 = 0;
+var mx_extend: i64 = 0;
+var mx_peak_max: i64 = 0;
+var mx_extend_sum: i64 = 0;
+var mx_searches: i64 = 0;
+
+fn mixed_load() -> i64, i64, i64 { return mx_peak_max, mx_extend_sum, mx_searches; }
+
+fn reset_mixed_load() {
+    mx_peak = 0;
+    mx_extend = 0;
+    mx_peak_max = 0;
+    mx_extend_sum = 0;
+    mx_searches = 0;
+}
+
 // The best mixed sentence, inserted into the menu. True when it became the
 // first candidate, whose word path then replaced the Chinese one.
 fn place_mixed(m: Menu&, w: Words&, input: const u8[:]) -> bool {
+    mx_peak = 0;
+    mx_extend = 0;
+    mx_searches++;
     var english: i64 = 0;
     for word in w.list { if word.source == ENGLISH { english++; } }
     guard english > 0 && input.len > 0 && front_score.len == input.len + 1 else { return false; }
@@ -1499,6 +1548,10 @@ fn place_mixed(m: Menu&, w: Words&, input: const u8[:]) -> bool {
             here.push(c as i32);
             c = next[c];
         }
+        if here.len > mx_peak { mx_peak = here.len; }
+        if mx_peak > mx_peak_max { mx_peak_max = mx_peak; }
+        mx_extend += here.len;
+        mx_extend_sum += here.len;
         if here.len == 0 { continue; }
         for s_i in here {
             let s = states[s_i];
