@@ -448,6 +448,20 @@ fn find_choice(input: const u8[:], text: const u8[:]) -> i64 {
     return c;
 }
 
+// Drops the remembered choice of `text` for `typed`. Shift-Backspace on a
+// mixed sentence uses this: the Chinese words stay, the sentence does not.
+fn forget_choice(typed: const u8[:], text: const u8[:]) -> bool {
+    guard live_choices > 0 else { return false; }
+    var input: u8[>..] = [];
+    scoped(typed, input);
+    let c = find_choice(input, text);
+    guard c >= 0 else { return false; }
+    kill_choice(c);
+    changes++;
+    reclaim();
+    return true;
+}
+
 fn kill_choice(c: i64) {
     let ch = choices[c];
     guard ch.live else { return; }

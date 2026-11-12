@@ -21,6 +21,7 @@ import sets;
 import phrases;
 import grammar;
 import english;
+import spelling;
 
 namespace decoder;
 
@@ -69,6 +70,34 @@ let SET = 2;
 // words read as English, dropping them from every sentence.
 let ENGLISH = 255;
 
+// Mixed sentences (docs/mixed-input-design.md). English edges are scored in
+// the same log2 units as a Chinese word. The pure Chinese search never reads
+// them, so its paths stay as they were; a separate beam weighs the mixture.
+let EN_ALPHA = 1.0;          // english::bits, already a log2 probability
+let EN_BETA = 1.15;          // per typed letter, against the Chinese words it replaces
+let EN_GAMMA = 24.0;         // the span has a capital the user typed
+let EN_BIAS = -10.0;
+let EN_SWITCH = -5.0;        // once per ZH↔EN boundary, not between two English words
+let EN_PREFIX_PENALTY = 12.0;
+let EN_TOP1 = 18.0;          // mixed score − Chinese score, to take the first place
+let EN_PAGE = 2.0;           // ...to stay on the first page, behind the Chinese
+let EN_THREE = 100;          // a lowercase 3-letter word must be at least this common
+let MAX_EN_EDGES = 48;
+let MIXED_BEAM = 4;
+// How many English edges the scan found, kept, and refused for the quota.
+var en_seen: i64 = 0;
+var en_kept: i64 = 0;
+var en_quota: i64 = 0;
+
+// Capitals parallel to the input, set by the session before a search. Empty
+// means every letter was lowercase.
+var typed_case: u8[>..] = [];
+
+fn set_case(c: const u8[:]) {
+    typed_case.clear();
+    typed_case.append(c);
+}
+
 fn source_lexicon(source: i64) -> lexicon::Lexicon& {
     if source == USER { userdb::lex }
     else if source >= SET && source < SET + sets::SLOTS { sets::slot(source - SET) }
@@ -77,7 +106,9 @@ fn source_lexicon(source: i64) -> lexicon::Lexicon& {
 
 // Entry `entry` of `source`, read over input[from..to]; to is past any
 // separator after it.
-struct Word { from: u8, to: u8, source: u8, entry: u32, score: f32 }
+// `end` is the letter span's end. For a Chinese word it equals `to`. For an
+// English word, `to` is past a trailing ', and [from, end) is the letters.
+struct Word { from: u8, end: u8, to: u8, source: u8, entry: u32, score: f32 }
 
 // A word a candidate is made of.
 struct Ref { source: u8, entry: u32 }
@@ -138,8 +169,6 @@ fn skip_separators(input: const u8[:], at: i64) -> i64 {
 fn search(w: Words&, g: lattice::Graph&, lex: lexicon::Lexicon&, input: const u8[:]) {
     if sets::log_total == 0.0 { sets::retotal(); }
     let log_total = sets::log_total;
-    var spellable = true;              // English spans are of the raw letters; a tone or a shape code is Chinese
-    for c in input { if !((c >= 'a' && c <= 'z') || c == '\'') { spellable = false; } }
     if english::active() { english::begin_spellings(); }
     let begin = skip_separators(input, 0);
     for start in input.len {
@@ -159,64 +188,227 @@ fn search(w: Words&, g: lattice::Graph&, lex: lexicon::Lexicon&, input: const u8
         }
         }
     }
-    // Only where the Chinese reading stops. A sentence Chinese can already
-    // read gains no English words, so the search stays as fast, and a span
-    // like github in 我用GitHub still completes it.
-    if spellable && english::active() { add_english_extensions(w, input); }
-}
-
-fn add_english_extensions(w: Words&, input: const u8[:]) {
-    var reached: bool[lattice::MAX_INPUT + 1] = [false; lattice::MAX_INPUT + 1];
-    let begin = skip_separators(input, 0);
-    reached[begin] = true;
-    var far = begin;
-    for word in w.list {
-        if word.source == ENGLISH { continue; }
-        if reached[word.from] {
-            reached[word.to] = true;
-            if word.to > far { far = word.to; }
-        }
-    }
-    if far >= input.len { return; }
-    var extra: Word[>..] = [];
-    for start in input.len {
-        if !reached[start] || input[start] < 'a' || input[start] > 'z' { continue; }
-        var run: i64 = 0;
-        while start + run < input.len && input[start + run] >= 'a' && input[start + run] <= 'z' && run < english::MAX_CODE {
-            run++;
-        }
-        if run < english::MIN_SPAN || !english::head_has(input[start], input[start + 1], input[start + 2]) { continue; }
-        let slice = input[start..start + run];
-        for len in english::MIN_SPAN..run + 1 {
-            var covers = false;
-            for p in start..start + len { if !reached[p] { covers = true; } }
-            if !covers || extra.len + w.list.len >= MAX_WORDS { continue; }
-            let i = english::exact(slice[..len]);
-            if i < 0 { continue; }
-            var text: u8[>..] = [];
-            english::top_form(i, text);
-            if text.len == 0 || text.len > 65535 { continue; }
-            let id = english::note(text);
-            extra.push(Word { from: start as u8, to: (start + len) as u8, source: ENGLISH, entry: id as u32,
-                              score: (english::score_of(i) - english::SWITCH_PENALTY) as f32 });
-        }
-    }
-    if extra.len == 0 { return; }
-    var merged: Word[>..] = [];
-    var i: i64 = 0;
-    var j: i64 = 0;
-    while i < w.list.len || j < extra.len {
-        let take_extra = j < extra.len && (i >= w.list.len || extra[j].from < w.list[i].from);
-        if take_extra { merged.push(extra[j]); j++; } else { merged.push(w.list[i]); i++; }
-    }
-    w.list.clear();
-    w.list.append(merged);
+    if english::active() { add_english_edges(w, g, input); }
 }
 
 // Extends the words in [lo, hi), which share `depth` syllables read so far,
 // by every edge from `at`. An edge's syllables come in runs of consecutive
 // ids; each run narrows the range at once, which then splits into one group
 // per syllable actually present, so an abbreviation costs what it finds.
+fn is_letter(c: u8) -> bool { c >= 'a' && c <= 'z' }
+
+fn span_capital(from: i64, len: i64) -> bool {
+    guard typed_case.len > from + len - 1 else { return false; }
+    for i in from..from + len { if typed_case[i] != 0 { return true; } }
+    return false;
+}
+
+// A 小鹤 key pair that this start cuts in two, so the syllable before it
+// would be left as a single key.
+fn cuts_pair(g: lattice::Graph&, input: const u8[:], from: i64) -> bool {
+    guard spelling::live.meta.len == 1 && spelling::live.meta[0].preedit == spelling::PREEDIT_SYLLABLES else { return false; }
+    guard from > 0 && from < input.len && is_letter(input[from - 1]) && is_letter(input[from]) else { return false; }
+    let p = from - 1;
+    guard p + 1 < g.first_edge.len else { return false; }
+    for k in g.first_edge[p]..g.first_edge[p + 1] {
+        let e = g.edges[k];
+        if e.kind > spelling::FUZZY { continue; }
+        var letters: i64 = 0;
+        var i: i64 = e.from;
+        while i < e.to && i < input.len && is_letter(input[i]) {
+            letters++;
+            i++;
+        }
+        if letters >= 2 && (e.from as i64) < from && i > from { return true; }
+    }
+    return false;
+}
+
+fn isolated_span(input: const u8[:], from: i64, end: i64) -> bool {
+    let left = from == 0 || input[from - 1] == '\'';
+    let right = end == input.len || (end < input.len && input[end] == '\'');
+    return left && right;
+}
+
+fn short_listed(code: const u8[:]) -> bool {
+    compare(code, "ai") == 0 || compare(code, "ok") == 0 || compare(code, "ui") == 0 ||
+        compare(code, "pc") == 0 || compare(code, "tv") == 0
+}
+
+fn en_local(dict: i64, len: i64, capital: bool, prefix: bool) -> f64 {
+    var s = EN_ALPHA * english::bits(dict) + EN_BETA * (len as f64) + EN_BIAS;
+    if capital { s += EN_GAMMA; }
+    if prefix { s -= EN_PREFIX_PENALTY; }
+    return s;
+}
+
+fn cased_letters(input: const u8[:], from: i64, end: i64, out: u8[>..]&) {
+    out.clear();
+    let marked = typed_case.len == input.len;
+    for p in from..end {
+        let c = input[p];
+        out.push(if marked && typed_case[p] != 0 && c >= 'a' && c <= 'z' { c - 32 } else { c });
+    }
+}
+
+// An English word the scan may keep. `prefix` is the one unfinished tail.
+struct EnCand { from: u8, end: u8, to: u8, spell: u32, score: f32 }
+
+fn admit_english(input: const u8[:], from: i64, len: i64, dict: i64, cut: bool) -> bool {
+    let capital = span_capital(from, len);
+    if cut && len < 4 && !capital { return false; }
+    if len >= 4 { return true; }
+    if len == 3 { return capital || english::live.entries[dict].weight >= EN_THREE; }
+    if capital || isolated_span(input, from, from + len) { return true; }
+    return short_listed(english::live.entries[dict].code);
+}
+
+fn push_english(input: const u8[:], from: i64, len: i64, dict: i64, prefix: bool, out: EnCand[>..]&) {
+    guard from + len <= input.len && out.len + 8 < MAX_WORDS else { return; }
+    var typed: u8[>..] = [];
+    cased_letters(input, from, from + len, typed);
+    var text: u8[>..] = [];
+    if prefix {
+        english::top_form(dict, text);
+        if span_capital(from, len) && text.len > 0 {
+            var cased: u8[>..] = [];
+            english::apply_case(text, typed, cased);
+            text.clear();
+            text.append(cased);
+        }
+    } else {
+        english::prefer(dict, typed, text);
+    }
+    guard text.len > 0 && text.len <= 65535 else { return; }
+    let end = from + len;
+    let to = skip_separators(input, end);
+    let id = english::note(text);
+    out.push(EnCand { from: from as u8, end: end as u8, to: to as u8, spell: id as u32,
+                      score: en_local(dict, len, span_capital(from, len), prefix) as f32 });
+}
+
+// Exact English words over the raw letters, from the start of the input, from
+// where a Chinese word ends, and from where an English word ends. In 小鹤 a
+// start may also fall inside a key pair, and then only a longer word or a
+// capital is kept. One unfinished prefix may cover the tail being typed.
+fn add_english_edges(w: Words&, g: lattice::Graph&, input: const u8[:]) {
+    en_seen = 0;
+    en_kept = 0;
+    en_quota = 0;
+    guard input.len > 0 && input.len <= lattice::MAX_INPUT else { return; }
+    var start: u8[lattice::MAX_INPUT + 1] = [0; lattice::MAX_INPUT + 1];
+    var used: u8[lattice::MAX_INPUT + 1] = [0; lattice::MAX_INPUT + 1];
+    let origin = skip_separators(input, 0);
+    start[origin] = 1;
+    for word in w.list {
+        if word.source == ENGLISH { continue; }
+        if (word.to as i64) <= input.len { start[word.to] = 1; }
+    }
+    let pairs = spelling::live.meta.len == 1 && spelling::live.meta[0].preedit == spelling::PREEDIT_SYLLABLES;
+    if pairs {
+        for p in 1..input.len { if cuts_pair(g, input, p) { start[p] = 1; } }
+    }
+    var extra: EnCand[>..] = [];
+    var prefix_at: i64 = -1;
+    var guard_n: i64 = 0;
+    while guard_n < 8 {
+        guard_n++;
+        var added: i64 = 0;
+        var fresh: u8[lattice::MAX_INPUT + 1] = [0; lattice::MAX_INPUT + 1];
+        for from in input.len {
+            if start[from] == 0 || used[from] != 0 || !is_letter(input[from]) { continue; }
+            used[from] = 1;
+            var run: i64 = 0;
+            while from + run < input.len && is_letter(input[from + run]) && run < english::MAX_CODE { run++; }
+            if run < 2 { continue; }
+            let cut = pairs && cuts_pair(g, input, from);
+            let slice = input[from..from + run];
+            for len in 2..run + 1 {
+                if len >= 3 && !english::head_has(slice[0], slice[1], slice[2]) { break; }
+                if extra.len >= MAX_EN_EDGES * 4 { break; }
+                let dict = english::exact(slice[..len]);
+                if dict < 0 || !admit_english(input, from, len, dict, cut) { continue; }
+                en_seen++;
+                let before = extra.len;
+                push_english(input, from, len, dict, false, extra);
+                if extra.len > before {
+                    added++;
+                    let to: i64 = extra[extra.len - 1].to;
+                    if to < input.len && start[to] == 0 && used[to] == 0 { fresh[to] = 1; }
+                }
+            }
+        }
+        var any = false;
+        for p in input.len {
+            if fresh[p] != 0 { start[p] = 1; any = true; }
+        }
+        if !any || added == 0 { break; }
+    }
+    // The tail being typed: at most one completion, so the first candidate
+    // does not flicker while the last letters of a word are still missing.
+    var best_prefix = -1.0e30;
+    var best_from: i64 = -1;
+    var best_dict: i64 = -1;
+    var best_len: i64 = 0;
+    for from in input.len {
+        if used[from] == 0 || !is_letter(input[from]) { continue; }
+        var run: i64 = 0;
+        while from + run < input.len && is_letter(input[from + run]) { run++; }
+        if from + run != input.len || run < 4 || run > english::MAX_CODE { continue; }
+        let slice = input[from..from + run];
+        if english::exact(slice) >= 0 { continue; }
+        if !english::head_has(slice[0], slice[1], slice[2]) { continue; }
+        var ids: i64[>..] = [];
+        english::completions(slice, 1, ids);
+        if ids.len == 0 { continue; }
+        let cut = pairs && cuts_pair(g, input, from);
+        if cut && !span_capital(from, run) { continue; }
+        let local = en_local(ids[0], run, span_capital(from, run), true);
+        if local > best_prefix {
+            best_prefix = local;
+            best_from = from;
+            best_dict = ids[0];
+            best_len = run;
+        }
+    }
+    if best_dict >= 0 {
+        let before = extra.len;
+        push_english(input, best_from, best_len, best_dict, true, extra);
+        if extra.len > before { prefix_at = extra.len - 1; }
+    }
+    if extra.len == 0 { return; }
+    if extra.len > MAX_EN_EDGES {
+        en_quota++;
+        var order: i64[>..] = [];
+        for i in extra.len { if i != prefix_at { order.push(i); } }
+        sort(order) { a, b => extra[a].score > extra[b].score };
+        let room: i64 = if prefix_at >= 0 { MAX_EN_EDGES - 1 } else { MAX_EN_EDGES };
+        var kept: EnCand[>..] = [];
+        for i in order.len {
+            if kept.len >= room { break; }
+            kept.push(extra[order[i]]);
+        }
+        if prefix_at >= 0 { kept.push(extra[prefix_at]); }
+        extra.clear();
+        extra.append(kept);
+    }
+    en_kept = extra.len;
+    var words: Word[>..] = [];
+    for e in extra {
+        words.push(Word { from: e.from, end: e.end, to: e.to, source: ENGLISH, entry: e.spell,
+                          score: e.score });
+    }
+    var merged: Word[>..] = [];
+    var i: i64 = 0;
+    var j: i64 = 0;
+    while i < w.list.len || j < words.len {
+        let take = j < words.len && (i >= w.list.len || words[j].from < w.list[i].from);
+        if take { merged.push(words[j]); j++; } else { merged.push(w.list[i]); i++; }
+    }
+    w.list.clear();
+    w.list.append(merged);
+}
+
 recursive fn walk(w: Words&, g: lattice::Graph&, lex: lexicon::Lexicon&, source: i64, input: const u8[:], start: i64,
                   at: i64, depth: i64, lo: i64, hi: i64, credibility: f64, log_total: f64, wide: bool,
                   budget: i64&) {
@@ -321,7 +513,7 @@ recursive fn group(w: Words&, g: lattice::Graph&, lex: lexicon::Lexicon&, source
             if userdb::tombs.len > 0 && source != USER && source != ENGLISH && userdb::demoted(lex, i) {
                 penalty = userdb::DEMOTE_BITS;
             }
-            w.list.push(Word { from: start as u8, to: to as u8, source: source as u8, entry: i as u32,
+            w.list.push(Word { from: start as u8, end: to as u8, to: to as u8, source: source as u8, entry: i as u32,
                                score: (weight - log_total + score - word_penalty - penalty) as f32 });
             kept++;
         }
@@ -394,6 +586,59 @@ fn context_boost(w: Words&, anterior: i64, prev: i64, current: i64) -> f64 {
     return userdb::recall(prev_h, ant_h, userdb::hash_reading_entry(lex, word.entry), len);
 }
 
+// Best pure-Chinese score at each input position, and the words that reach
+// it (first first). Recorded by whichever search assembled the menu.
+var front_score: f64[>..] = [];
+var front_at: i32[>..] = [];
+var front_n: i32[>..] = [];
+var front_ids: i32[>..] = [];
+
+fn reset_front(n: i64) {
+    front_score.clear();
+    front_at.clear();
+    front_n.clear();
+    front_ids.clear();
+    for i in n {
+        front_score.push(NONE);
+        front_at.push(0);
+        front_n.push(0);
+    }
+}
+
+fn store_front(at: i64, score: f64, words: i32[>..]&) {
+    guard at >= 0 && at < front_score.len else { return; }
+    front_score[at] = score;
+    front_at[at] = front_ids.len as i32;
+    front_n[at] = words.len as i32;
+    front_ids.append(words);
+}
+
+fn note_viterbi(w: Words&, input: const u8[:], begin: i64, best: f64[lattice::MAX_INPUT + 1], back: i64[lattice::MAX_INPUT + 1]) {
+    reset_front(input.len + 1);
+    front_score[begin] = 0.0;
+    for p in input.len + 1 {
+        if p == begin { continue; }
+        if back[p] < 0 { continue; }
+        var chain: i32[>..] = [];
+        var at = p;
+        var steps: i64 = 0;
+        while at != begin && steps < 64 {
+            let i = back[at];
+            if i < 0 || i >= w.list.len { break; }
+            chain.push(i as i32);
+            at = w.list[i].from;
+            steps++;
+        }
+        var seq: i32[>..] = [];
+        var k = chain.len - 1;
+        while k >= 0 {
+            seq.push(chain[k]);
+            k--;
+        }
+        store_front(p, best[p], seq);
+    }
+}
+
 fn best_path(w: Words&, input: const u8[:], end: i64, path: i64[>..]&) -> bool {
     var best: f64[lattice::MAX_INPUT + 1] = [NONE; lattice::MAX_INPUT + 1];
     var back: i64[lattice::MAX_INPUT + 1] = [-1; lattice::MAX_INPUT + 1];
@@ -401,6 +646,7 @@ fn best_path(w: Words&, input: const u8[:], end: i64, path: i64[>..]&) -> bool {
     best[begin] = 0.0;
     for i in w.list.len {                    // words come in order of where they start
         let word = w.list[i];
+        if word.source == ENGLISH { continue; }
         if best[word.from] <= NONE { continue; }
         let pi = back[word.from];
         var boost = 0.0;
@@ -412,6 +658,7 @@ fn best_path(w: Words&, input: const u8[:], end: i64, path: i64[>..]&) -> bool {
             back[word.to] = i;
         }
     }
+    note_viterbi(w, input, begin, best, back);
     if back[end] < 0 { return false; }
     var at = end;
     while at != begin {
@@ -434,6 +681,40 @@ var preceding: u8[>..];
 
 // Partial sentences the beam keeps, ending where their last word ends.
 struct Line { prev: i32, word: i32, score: f64 }
+
+fn note_beam(input: const u8[:], begin: i64, lines: Line[>..]&, next: i32[>..]&, ends: i32[>..]&, offered: i64[>..]&) {
+    reset_front(input.len + 1);
+    for p in input.len + 1 {
+        var best_i: i64 = -1;
+        var best_s = NONE;
+        var c: i64 = if p < ends.len { ends[p] } else { -1 };
+        while c >= 0 && c < lines.len {
+            if lines[c].score > best_s && (lines[c].word >= 0 || p == begin) {
+                best_s = lines[c].score;
+                best_i = c;
+            }
+            c = next[c];
+        }
+        if best_i < 0 { continue; }
+        var chain: i32[>..] = [];
+        var at = best_i;
+        var steps: i64 = 0;
+        while at >= 0 && steps < 64 && lines[at].word >= 0 {
+            let o: i64 = lines[at].word;
+            if o < 0 || o >= offered.len { break; }
+            chain.push(offered[o] as i32);
+            at = lines[at].prev;
+            steps++;
+        }
+        var seq: i32[>..] = [];
+        var k = chain.len - 1;
+        while k >= 0 {
+            seq.push(chain[k]);
+            k--;
+        }
+        store_front(p, best_s, seq);
+    }
+}
 
 // The grammar model's answers, by the exact question (context, word, and
 // whether it ends the input): a key adds one letter, so nearly every pair
@@ -567,6 +848,7 @@ fn kbest_sentences(w: Words&, input: const u8[:], end: i64, beam: i64, homophone
         while j < w.list.len && w.list[j].from == from { j++; }
         span_words.clear();
         for x in i..j {
+            if w.list[x].source == ENGLISH { continue; }
             let to: i64 = w.list[x].to;
             if to <= end && !(from == begin && to == end) { span_words.push(x); }
         }
@@ -698,6 +980,7 @@ fn kbest_sentences(w: Words&, input: const u8[:], end: i64, beam: i64, homophone
         c = next[c];
     }
     sort(finals) { a, b => lines[a].score > lines[b].score };
+    note_beam(input, begin, lines, next, ends, offered);
     var found: i64 = 0;
     for f in finals {
         if found == keep { break; }
@@ -795,6 +1078,7 @@ fn prune(w: Words&, input: const u8[:], end: i64, delta: f64, kept: bool[>..]&) 
     forward[begin] = 0.0;
     backward[end] = 0.0;
     for word in w.list {                    // words come in order of where they start
+        if word.source == ENGLISH { continue; }
         let to: i64 = word.to;
         if to > end || forward[word.from] <= NONE { continue; }
         let s = forward[word.from] + (word.score as f64);
@@ -803,10 +1087,12 @@ fn prune(w: Words&, input: const u8[:], end: i64, delta: f64, kept: bool[>..]&) 
     var i = w.list.len - 1;
     while i >= 0 {
         let word = w.list[i];
-        let to: i64 = word.to;
-        if to <= end && backward[to] > NONE {
-            let s = (word.score as f64) + backward[to];
-            if s > backward[word.from] { backward[word.from] = s; }
+        if word.source != ENGLISH {
+            let to: i64 = word.to;
+            if to <= end && backward[to] > NONE {
+                let s = (word.score as f64) + backward[to];
+                if s > backward[word.from] { backward[word.from] = s; }
+            }
         }
         i--;
     }
@@ -814,7 +1100,7 @@ fn prune(w: Words&, input: const u8[:], end: i64, delta: f64, kept: bool[>..]&) 
     var n: i64 = 0;
     for word in w.list {
         let to: i64 = word.to;
-        let keep = to <= end && forward[word.from] > NONE && backward[to] > NONE &&
+        let keep = word.source != ENGLISH && to <= end && forward[word.from] > NONE && backward[to] > NONE &&
                    forward[word.from] + (word.score as f64) + backward[to] >= floor;
         kept.push(keep);
         if keep { n++; }
@@ -899,7 +1185,10 @@ fn assemble(m: Menu&, w: Words&, lex: lexicon::Lexicon&, input: const u8[:]) -> 
     // are the menu, and the path, made the plain way, only splits the
     // preedit and names the first word.
     var whole_word = false;
-    for word in w.list { if word.from == begin && word.to == end { whole_word = true; break; } }
+    for word in w.list {
+        if word.source == ENGLISH { continue; }
+        if word.from == begin && word.to == end { whole_word = true; break; }
+    }
     let sentence_allowed = !grammar::on || !whole_word;
     let found = if grammar::on && !whole_word { best_line(w, input, end, path) } else { best_path(w, input, end, path) };
     if found {
@@ -960,6 +1249,348 @@ struct Segment { from: u8, to: u8, edge: u32, word: u32, depth: u8 }
 // ("ke zd wo xb", or for shuangpin each syllable's pinyin). Each word of
 // the best sentence is matched again against the graph's edges; only those
 // few words, so the search itself carries nothing extra.
+struct Mx { prev: i32, word: i32, score: f64, last_en: u8, zh_prev: i32, zh_at: i32, anchor: i32, saw_zh: u8 }
+
+fn mixed_boost(w: Words&, prev: i64, ant: i64, current: i64) -> f64 {
+    guard prev >= 0 && current >= 0 else { return 0.0; }
+    let prev_h = surface_of(w, prev);
+    guard prev_h != 0 else { return 0.0; }
+    var ant_h: u64 = 0;
+    if ant >= 0 { ant_h = surface_of(w, ant); }
+    let word = w.list[current];
+    if word.source == ENGLISH { return 0.0; }
+    let lex = source_lexicon(word.source);
+    let len = lex.entries[word.entry].len;
+    return userdb::recall(prev_h, ant_h, userdb::hash_reading_entry(lex, word.entry), len);
+}
+
+fn reached_front(p: i64) -> bool { p >= 0 && p < front_score.len && front_score[p] > -1.0e20 }
+
+fn consider_mx(states: Mx[>..]&, next: i32[>..]&, heads: i32[>..]&, to: i64, st: Mx) {
+    guard to >= 0 && to < heads.len else { return; }
+    var c: i64 = heads[to];
+    var zh_n: i64 = 0;
+    var worst: i64 = -1;
+    var worst_s = 1.0e300;
+    while c >= 0 && c < states.len {
+        let cur = states[c];
+        if st.last_en != 0 && cur.last_en != 0 {
+            if st.score > cur.score { states[c] = st; }
+            return;
+        }
+        if st.last_en == 0 && cur.last_en == 0 && cur.word == st.word {
+            if st.score > cur.score { states[c] = st; }
+            return;
+        }
+        if cur.last_en == 0 {
+            zh_n++;
+            if cur.score < worst_s {
+                worst_s = cur.score;
+                worst = c;
+            }
+        }
+        c = next[c];
+    }
+    if st.last_en == 0 && zh_n >= MIXED_BEAM {
+        if worst >= 0 && st.score > states[worst].score { states[worst] = st; }
+        return;
+    }
+    states.push(st);
+    next.push(heads[to]);
+    heads[to] = (states.len - 1) as i32;
+}
+
+// The best mixed sentence, inserted into the menu. True when it became the
+// first candidate, whose word path then replaced the Chinese one.
+fn place_mixed(m: Menu&, w: Words&, input: const u8[:]) -> bool {
+    var english: i64 = 0;
+    for word in w.list { if word.source == ENGLISH { english++; } }
+    guard english > 0 && input.len > 0 && front_score.len == input.len + 1 else { return false; }
+    let begin = skip_separators(input, 0);
+    // The whole input is one English word: place_english owns the spelling,
+    // the case, and where it sits. A mixed split would only break that.
+    var whole_code: u8[>..] = [];
+    typed_span(input, begin, input.len, whole_code);
+    if english::exact(whole_code) >= 0 { return false; }
+    var whole = false;
+    for word in w.list {
+        if word.source != ENGLISH && word.from == begin && (word.to as i64) == input.len { whole = true; }
+    }
+    let use_fit = grammar::on && !whole;
+    let hom = grammar::homophones();
+    var idx: i64[>..] = [];
+    var en_idx: i64[>..] = [];
+    for i in w.list.len {
+        let word = w.list[i];
+        if (word.to as i64) > input.len { continue; }
+        if word.source == ENGLISH { en_idx.push(i); } else { idx.push(i); }
+    }
+    sort(idx) { a, b =>
+        let x = w.list[a];
+        let y = w.list[b];
+        x.from < y.from || (x.from == y.from && (x.to < y.to || (x.to == y.to && x.score > y.score)))
+    };
+    var zh_lo: i32[>..] = [];
+    var zh_hi: i32[>..] = [];
+    for p in input.len + 1 {
+        zh_lo.push(0);
+        zh_hi.push(0);
+    }
+    var i: i64 = 0;
+    while i < idx.len {
+        let from: i64 = w.list[idx[i]].from;
+        var j = i;
+        while j < idx.len && w.list[idx[j]].from == from { j++; }
+        if from >= 0 && from <= input.len {
+            zh_lo[from] = i as i32;
+            zh_hi[from] = j as i32;
+        }
+        i = j;
+    }
+    var states: Mx[>..] = [];
+    var next: i32[>..] = [];
+    var heads: i32[>..] = [];
+    for p in input.len + 1 { heads.push(-1); }
+    for ei in en_idx {
+        let word = w.list[ei];
+        let from: i64 = word.from;
+        let to: i64 = word.to;
+        if to <= from || to > input.len { continue; }
+        if from == begin && to == input.len { continue; }   // a pure English sentence stays with place_english
+        var base = NONE;
+        var saw: u8 = 0;
+        var anchor: i64 = from;
+        if from == begin {
+            base = 0.0;
+        } else if reached_front(from) {
+            base = front_score[from];
+            saw = 1;
+        } else {
+            continue;
+        }
+        var score = base + (word.score as f64);
+        if saw != 0 { score += EN_SWITCH; }
+        var zh_at: i32 = -1;
+        if saw != 0 && front_n[from] > 0 {
+            zh_at = front_ids[(front_at[from] + front_n[from] - 1)];
+        }
+        consider_mx(states, next, heads, to, Mx { prev: -1, word: ei as i32, score: score, last_en: 1, zh_prev: -1,
+                                                   zh_at: zh_at, anchor: anchor as i32, saw_zh: saw });
+    }
+    var text: u8[>..] = [];
+    var ctx: u8[>..] = [];
+    for p in input.len {
+        var here: i32[>..] = [];
+        var c: i64 = heads[p];
+        while c >= 0 && c < states.len {
+            here.push(c as i32);
+            c = next[c];
+        }
+        if here.len == 0 { continue; }
+        for s_i in here {
+            let s = states[s_i];
+            ctx.clear();
+            if s.last_en == 0 && s.word >= 0 {
+                if s.zh_prev >= 0 { word_text(w.list[s.zh_prev], ctx); }
+                word_text(w.list[s.word], ctx);
+            } else if s.last_en != 0 && s.zh_at >= 0 && (s.zh_at as i64) < w.list.len {
+                // One Chinese word of backoff across the English span, so a
+                // sentence-final syllable can still be told apart. The word
+                // before that stays out, and the English text is not context.
+                word_text(w.list[s.zh_at], ctx);
+            } else if s.last_en != 0 {
+                ctx.push(' ');
+            }
+            let ctx_hash = hash(ctx);
+            let lo: i64 = if p < zh_lo.len { zh_lo[p] } else { 0 };
+            let hi: i64 = if p < zh_hi.len { zh_hi[p] } else { 0 };
+            var n_hom: i64 = 0;
+            var prev_to: i64 = -1;
+            var span_best = 0.0;
+            var blank: u8[>..] = [];
+            blank.push(' ');
+            let blank_hash = hash(blank);
+            for k in lo..hi {
+                let wi = idx[k];
+                let word = w.list[wi];
+                let to: i64 = word.to;
+                if to != prev_to {
+                    n_hom = 0;
+                    prev_to = to;
+                    span_best = word.score as f64;
+                }
+                if to <= p || n_hom >= hom { continue; }
+                n_hom++;
+                text.clear();
+                word_text(word, text);
+                var score = s.score + (word.score as f64);
+                if s.last_en != 0 { score += EN_SWITCH; }
+                if use_fit {
+                    let rear = to == input.len;
+                    var g = fit(ctx, ctx_hash, text, hash(text), rear);
+                    // Across English, a collocation may break a near tie
+                    // (吧 against 把) and may not overturn a clearer unigram.
+                    if s.last_en != 0 {
+                        let uni = fit(blank, blank_hash, text, hash(text), rear);
+                        let near = (word.score as f64) + 0.5 >= span_best;
+                        g = uni;
+                        if near && ctx.len > 0 && ctx[0] != ' ' {
+                            let coll = fit(ctx, ctx_hash, text, hash(text), rear);
+                            if coll > g { g = coll; }
+                        }
+                    }
+                    score += fit_weight * g;
+                    if emit_on { score += emit_weight * emission(input, word.from, to, text); }
+                }
+                if s.last_en == 0 { score += mixed_boost(w, s.word, s.zh_prev, wi); }
+                var zp: i32 = -1;
+                if s.last_en == 0 { zp = s.word; }
+                consider_mx(states, next, heads, to, Mx { prev: s_i, word: wi as i32, score: score, last_en: 0,
+                                                          zh_prev: zp, zh_at: -1, anchor: s.anchor, saw_zh: 1 });
+            }
+            for ei in en_idx {
+                let word = w.list[ei];
+                if (word.from as i64) != p { continue; }
+                let to: i64 = word.to;
+                if to <= p || to > input.len { continue; }
+                var score = s.score + (word.score as f64);
+                if s.last_en == 0 { score += EN_SWITCH; }
+                var zh_at: i32 = if s.last_en == 0 { s.word } else { s.zh_at };
+                consider_mx(states, next, heads, to, Mx { prev: s_i, word: ei as i32, score: score, last_en: 1,
+                                                          zh_prev: -1, zh_at: zh_at, anchor: s.anchor, saw_zh: s.saw_zh });
+            }
+        }
+    }
+    var best_i: i64 = -1;
+    var best_s = NONE;
+    var c: i64 = if input.len < heads.len { heads[input.len] } else { -1 };
+    while c >= 0 && c < states.len {
+        if states[c].saw_zh != 0 && states[c].score > best_s {
+            best_s = states[c].score;
+            best_i = c;
+        }
+        c = next[c];
+    }
+    guard best_i >= 0 else { return false; }
+    var chain: i32[>..] = [];
+    var at = best_i;
+    var steps: i64 = 0;
+    while at >= 0 && steps < 64 {
+        chain.push(states[at].word);
+        at = states[at].prev;
+        steps++;
+    }
+    var words: i64[>..] = [];
+    let anchor: i64 = states[best_i].anchor;
+    if anchor > begin && reached_front(anchor) {
+        let a: i64 = front_at[anchor];
+        let n: i64 = front_n[anchor];
+        for k in a..a + n { words.push(front_ids[k]); }
+    }
+    var k = chain.len - 1;
+    while k >= 0 {
+        words.push(chain[k]);
+        k--;
+    }
+    guard words.len > 1 else { return false; }
+    var saw_en = false;
+    var saw_zh = false;
+    for wi in words {
+        if wi < 0 || wi >= w.list.len { return false; }
+        if w.list[wi].source == ENGLISH { saw_en = true; } else { saw_zh = true; }
+    }
+    guard saw_en && saw_zh else { return false; }
+    text.clear();
+    for wi in words { word_text(w.list[wi], text); }
+    guard text.len > 0 && text.len <= 65535 else { return false; }
+    let zh_ok = reached_front(input.len);
+    var short_en = false;
+    for wi in words {
+        let word = w.list[wi];
+        if word.source != ENGLISH { continue; }
+        let n: i64 = (word.end as i64) - (word.from as i64);
+        if n < 5 && !span_capital(word.from, n) { short_en = true; }
+        var shown: u8[>..] = [];
+        english::spelling(word.entry, shown);
+        var letters: i64 = 0;
+        for c in shown {
+            if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') { letters++; }
+        }
+        // An unfinished completion is only a bridge while the word is being
+        // typed. It does not take first place over a Chinese reading.
+        if letters > n { short_en = true; }
+    }
+    var slot: i64 = -1;
+    // A word of four letters or fewer is also a pile of pinyin. It can sit
+    // on the page. It takes first only with a capital, or as part of a longer
+    // English word. A longer word also takes first when Chinese cannot read
+    // the keys (github).
+    if !zh_ok && !short_en {
+        slot = 0;
+    } else {
+        let delta = if zh_ok { best_s - front_score[input.len] } else { 0.0 };
+        if zh_ok && delta >= EN_TOP1 && !short_en { slot = 0; }
+        else if (zh_ok && delta >= EN_PAGE) || (!zh_ok && short_en) { slot = 2; }
+    }
+    var span: u8[>..] = [];
+    typed_span(input, begin, input.len, span);
+    let mixed_chosen = userdb::chosen(span, text);
+    var chinese_chosen: i64 = 0;
+    if m.candidates.len > 0 {
+        let c0 = m.candidates[0];
+        if (c0.to as i64) == input.len {
+            chinese_chosen = userdb::chosen(span, m.pool[c0.text..c0.text + c0.len]);
+        }
+    }
+    if mixed_chosen > 0 && mixed_chosen >= chinese_chosen { slot = 0; }
+    else if chinese_chosen > mixed_chosen && slot == 0 { slot = 2; }
+    else if mixed_chosen > 0 && slot < 0 { slot = 2; }
+    guard slot >= 0 else { return false; }
+    if slot == 0 && m.candidates.len > 0 {
+        let c0 = m.candidates[0];
+        if c0.count == 0 && c0.code_len == 0 { slot = 1; }
+    }
+    var existing: i64 = -1;
+    for ci in m.candidates.len {
+        let c = m.candidates[ci];
+        if c.len == text.len && compare(m.pool[c.text..c.text + c.len], text) == 0 { existing = ci; }
+    }
+    if existing == slot {
+        if slot == 0 { write_path(m, words); }
+        return slot == 0;
+    }
+    if existing >= 0 {
+        remove_at(m.candidates, existing);
+        if existing < slot { slot--; }
+    }
+    if slot > m.candidates.len { slot = m.candidates.len; }
+    if m.candidates.len >= MAX_CANDIDATES { remove_at(m.candidates, m.candidates.len - 1); }
+    guard m.candidates.len < MAX_CANDIDATES else { return false; }
+    let at_pool = m.pool.len;
+    m.pool.append(text);
+    let refs = m.refs.len;
+    for wi in words {
+        let word = w.list[wi];
+        m.refs.push(Ref { source: word.source, entry: word.entry });
+    }
+    let cand = Candidate { to: input.len as u8, text: at_pool as u32, len: text.len as u16, refs: refs as u32,
+                           count: words.len as u16, code: 0, code_len: 0 };
+    var next_c: Candidate[>..] = [];
+    if slot > m.candidates.len { slot = m.candidates.len; }
+    next_c.append(m.candidates[..slot]);
+    next_c.push(cand);
+    next_c.append(m.candidates[slot..]);
+    m.candidates.clear();
+    m.candidates.append(next_c);
+    if slot == 0 { write_path(m, words); }
+    return slot == 0;
+}
+
+fn write_path(m: Menu&, words: i64[>..]&) {
+    m.path.clear();
+    for wi in words { m.path.push(wi as u32); }
+}
+
 fn segments(m: Menu&, w: Words&, g: lattice::Graph&, input: const u8[:], out: Segment[>..]&) {
     out.clear();
     for i in m.path {

@@ -37,16 +37,6 @@ struct Line { category: u8[..31], text: u8[..255], number: i64, syls: u16[..64],
 var keys: spelling::Keys[>..] = [];
 var problems: i64 = 0;
 
-fn ascii_word(text: const u8[:]) -> bool {
-    var letter = false;
-    if text.len == 0 { return false; }
-    for c in text {
-        if c >= 128 { return false; }
-        if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') { letter = true; }
-    }
-    return letter;
-}
-
 fn problem(path: const u8[:], number: i64, text: const u8[:], why: const u8[:]) {
     print("set   ", path, ":", number, "  ", text, "  ", why);
     problems++;
@@ -952,7 +942,7 @@ fn main() {
                     session::input.append(prefix);
                     session::rebuild();
                     halves++;
-                    if session::weak_chinese {
+                    if session::first_has_english() {
                         halves_english++;
                         if halves_sample.len < 400 { format(halves_sample, " ", prefix, "→", l.text); }
                     }
@@ -966,9 +956,8 @@ fn main() {
             for c in code {
                 if !session::room() {
                     session::rebuild();
-                    let before = session::commit.len;
+                    if session::lead_is_english() { english_led = true; }
                     session::make_room();
-                    if ascii_word(session::commit[before..]) { english_led = true; }
                     made_room = true;
                 }
                 session::input.push(c);
@@ -979,7 +968,7 @@ fn main() {
             if session::menu.candidates.len > 0 {
                 let c = session::menu.candidates[0];
                 let text = session::menu.pool[c.text..c.text + c.len];
-                if c.code_len > 0 || ascii_word(text) { english_led = true; }
+                if session::first_has_english() { english_led = true; }
                 got.append(text);
             }
             if english_led { english_first++; }

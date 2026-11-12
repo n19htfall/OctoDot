@@ -401,9 +401,11 @@ fn rebuild() {
     lattice::build(g, input, spelling::live, lexicon::live);
     words.list.clear();
     words.checks.clear();
+    if caps.len == input.len { decoder::set_case(caps[..]); } else { decoder::set_case(""); }
     decoder::search(words, g, lexicon::live, input);
     let reach = decoder::chinese_reach(words, input);
     readable = decoder::assemble(menu, words, lexicon::live, input);
+    decoder::place_mixed(menu, words, input);
     for i in reach..input.len {
         if input[i] >= 'a' && input[i] <= 'z' { letters_unread = true; }
     }
@@ -454,8 +456,64 @@ fn request_rerank() {
 // Reranks the menu being shown: the shortlist from its words, scored, and
 // the best put first. The decoder's sentence stays, second. True if the
 // menu changed.
+fn candidate_mixed(c: decoder::Candidate) -> bool {
+    for r in c.refs..c.refs + c.count {
+        if menu.refs[r].source == decoder::ENGLISH { return true; }
+    }
+    return false;
+}
+
+// The first candidate is a mixed sentence or a standalone English word.
+fn first_has_english() -> bool {
+    guard menu.candidates.len > 0 else { return false; }
+    let c = menu.candidates[0];
+    if c.code_len > 0 { return true; }
+    return candidate_mixed(c);
+}
+
+// The word make_room would commit is an English word.
+fn lead_is_english() -> bool {
+    guard menu.path.len > 0 else { return false; }
+    let i: i64 = menu.path[0];
+    return i >= 0 && i < words.list.len && words.list[i].source == decoder::ENGLISH;
+}
+
 fn rerank_now() -> bool {
     rerank_due = 0;
+    var mixed_at: i64[>..] = [];
+    var mixed_c: decoder::Candidate[>..] = [];
+    for i in menu.candidates.len {
+        if candidate_mixed(menu.candidates[i]) {
+            mixed_at.push(i);
+            mixed_c.push(menu.candidates[i]);
+        }
+    }
+    if mixed_c.len > 0 {
+        var i = menu.candidates.len - 1;
+        while i >= 0 {
+            if candidate_mixed(menu.candidates[i]) { remove_at(menu.candidates, i); }
+            i--;
+        }
+    }
+    let changed = rerank_chinese();
+    if mixed_c.len > 0 {
+        for k in mixed_at.len {
+            var at = mixed_at[k];
+            if at > menu.candidates.len { at = menu.candidates.len; }
+            if at < 0 { at = 0; }
+            var next: decoder::Candidate[>..] = [];
+            next.append(menu.candidates[..at]);
+            next.push(mixed_c[k]);
+            next.append(menu.candidates[at..]);
+            menu.candidates.clear();
+            menu.candidates.append(next);
+        }
+        while menu.candidates.len > decoder::MAX_CANDIDATES { remove_at(menu.candidates, menu.candidates.len - 1); }
+    }
+    return changed;
+}
+
+fn rerank_chinese() -> bool {
     let m = rerank::live.meta[0];
     let n = decoder::shortlist(words, input, readable, m.beam as i64, m.per_state as i64, m.shortlist as i64,
                                shortlist);
@@ -528,6 +586,10 @@ fn fresh_menu() {
 fn take_words(c: decoder::Candidate) -> bool {
     guard picked_ends.len + c.count <= picked_ends.cap else { return false; }
     for r in c.refs..c.refs + c.count {
+        if menu.refs[r].source == decoder::ENGLISH {
+            picked_ends.push(-2);
+            continue;
+        }
         var pairs: lexicon::Pair[>..] = [];
         if word_pairs(menu.refs[r], pairs) && picked_pairs.len + pairs.len <= picked_pairs.cap {
             picked_pairs.append(pairs);
@@ -1053,7 +1115,13 @@ fn learn_composition() {
             }
             let amount = if p.words == 1 { userdb::EXPLICIT } else { userdb::INCIDENTAL };
             for k in w..w + p.words {
-                if ends[k] < 0 { continue; }
+                if ends[k] < 0 {
+                    if ends[k] == -2 {
+                        chain_prev = 0;
+                        chain_ant = 0;
+                    }
+                    continue;
+                }
                 let slice = words[from..ends[k]];
                 if span.len >= 2 { userdb::learn(slice, amount, id); }
                 if slice.len > 0 {
@@ -1092,6 +1160,17 @@ fn unlearn_highlighted() -> bool {
         let code = menu.pool[c.code..c.code + c.code_len];
         let text = menu.pool[c.text..c.text + c.len];
         guard userdb::unlearn_english(code, text) else { return false; }
+        rebuild();
+        move_highlight(h);
+        return true;
+    }
+    var mixed = false;
+    for r in c.refs..c.refs + c.count { if menu.refs[r].source == decoder::ENGLISH { mixed = true; } }
+    if mixed {
+        var span: u8[>..] = [];
+        decoder::typed_span(input, decoder::skip_separators(input, 0), c.to, span);
+        let text = menu.pool[c.text..c.text + c.len];
+        guard userdb::forget_choice(span, text) else { return false; }
         rebuild();
         move_highlight(h);
         return true;

@@ -19,3 +19,5 @@ build/
 
 # Python bytecode
 __pycache__/
+
+doc/

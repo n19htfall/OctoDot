@@ -1634,6 +1634,28 @@ fn latency(s: u64) {
     check_time(short[a * 99 / 100] <= 2000000, "gate: p99 ≤ 2 ms for inputs up to 20 letters");
     check_time(long[b * 99 / 100] <= 5000000, "gate: ≤ 5 ms for long, abbreviation-heavy input (p99; the max is above)");
 
+    // Chinese and English on the same keys: reported beside the gates above.
+    var mixed_ns: i64[>..] = [];
+    var quota_hits: i64 = 0;
+    let crowded = ["jintianxiawuyougemeetingxianzaiqukaimeetingba", "woyonggithubhegitlabxiepythonandjava",
+                   "youmenyoucantheherandfornow", "aimeetingokuitvpccsshtml"];
+    for round in 5 {
+        for text in crowded {
+            press(s, session::KEY_ESCAPE);
+            for i in text.len {
+                let t = clock_ns();
+                typed(s, text[i]);
+                mixed_ns.push(clock_ns() - t);
+                quota_hits += decoder::en_quota;
+            }
+        }
+    }
+    press(s, session::KEY_ESCAPE);
+    sort(mixed_ns);
+    let q = mixed_ns.len - 1;
+    print("latency  mixed spans, ", mixed_ns.len, " keys: p50 ", mixed_ns[q / 2] / 1000, " µs, p99 ",
+          mixed_ns[q * 99 / 100] / 1000, " µs; quota hits ", quota_hits);
+
     // Past a full composition, where each key may first commit a word to make
     // room: real long clauses (zhihu120's longest, in full pinyin) and
     // abbreviations, timed from the 46th letter on.
@@ -1919,6 +1941,91 @@ fn chinese_before(upto: i64) -> bool {
     return true;
 }
 
+fn commit_first(s: u64, input: const u8[:], want: const u8[:]) {
+    press(s, session::KEY_ESCAPE);
+    type_text(s, input);
+    let got = candidate(0);
+    check(compare(got, want) == 0, str(input, " → ", want, " first (got ", got, ")", menu_line()));
+    press(s, session::KEY_SPACE);
+    check(session::commit == want && session::input.len == 0, str("space commits ", want, " (got ", session::commit, ")"));
+}
+
+fn mixed_sentences(s: u64) {
+    check(session::set_scheme("fullpinyin") == 0, "mixed sentences, full pinyin");
+    commit_first(s, "jintianxiawuyougemeeting", "今天下午有个meeting");
+    commit_first(s, "xianzaiqukaimeetingba", "现在去开meeting吧");
+    commit_first(s, "woxiangyongpythonxie", "我想用python写");
+    commit_first(s, "woyonggithub", "我用GitHub");
+    // The pure Chinese reading stays on the first page, one key away.
+    press(s, session::KEY_ESCAPE);
+    type_text(s, "jintianxiawuyougemeeting");
+    var chinese: i64 = -1;
+    for i in session::menu.candidates.len {
+        if i >= session::PAGE_SIZE { break; }
+        let t = candidate(i);
+        if t.len > 0 && t[0] >= 0x80 && find(t, "meeting") < 0 && find(t, "Meeting") < 0 { chinese = i; break; }
+    }
+    check(chinese >= 0 && chinese < session::PAGE_SIZE, str("the Chinese reading of jintianxiawuyougemeeting stays on the first page", menu_line()));
+    press(s, session::KEY_ESCAPE);
+    // English at the start, in the middle of two words, and twice.
+    type_text(s, "meetingkaishile");
+    check(find(candidate(0), "meeting") >= 0 || find(candidate(0), "Meeting") >= 0, str("meetingkaishile leads with meeting", menu_line()));
+    let lead = candidate(0);
+    press(s, session::KEY_SPACE);
+    check(session::commit == lead, str("space commits the leading mixed sentence"));
+    type_text(s, "woyonggithubhegitlab");
+    check(find(candidate(0), "GitHub") >= 0, str("two English spans: GitHub is in the first candidate", menu_line()));
+    press(s, session::KEY_ESCAPE);
+    // A capital is evidence, and a short word on the whitelist can join a sentence.
+    type_text(s, "woxihuanAI");
+    var saw_ai = false;
+    for i in session::PAGE_SIZE { if find(candidate(i), "AI") >= 0 { saw_ai = true; } }
+    check(saw_ai && find(candidate(0), "爱") >= 0, str("woxihuanAI keeps 爱 first and AI on the page", menu_line()));
+    press(s, session::KEY_ESCAPE);
+    type_text(s, "zhegeok");
+    check(rank("这个ok") >= 0 && rank("这个ok") < session::PAGE_SIZE, str("zhegeok offers 这个ok on the first page", menu_line()));
+    press(s, session::KEY_ESCAPE);
+    // The same sentences in 小鹤双拼, typed with its keys.
+    check(session::set_scheme("flypy") == 0, "mixed sentences, 小鹤双拼");
+    commit_first(s, "jbtmxxwuyzgemeeting", "今天下午有个meeting");
+    commit_first(s, "xmzdqukdmeetingba", "现在去开meeting吧");
+    commit_first(s, "woxlyspythonxp", "我想用python写");
+    commit_first(s, "woysgithub", "我用GitHub");
+    check(session::set_scheme("fullpinyin") == 0, "back to full pinyin");
+    // Choosing the mixed sentence remembers it, and does not teach the English word on its own
+    // or a Chinese phrase that runs across it.
+    userdb::reset();
+    userdb::clock_override = 1794000000;
+    check(pick(s, "woyonggithub", "我用GitHub", 0) && session::commit == "我用GitHub", "picking the mixed sentence commits it");
+    check(userdb::english_uses("github", "GitHub") == 0, "a mixed sentence does not count as picking GitHub alone");
+    check(rank_after(s, "woyonggithub", "我用GitHub") == 0, "the choice comes back first");
+    userdb::forget(userdb::EVERYTHING);
+    userdb::clock_override = 0;
+    // Grammar off, and the reranker off, still read the sentence.
+    let gram = session::set_grammar(false);
+    session::set_rerank(false);
+    commit_first(s, "jintianxiawuyougemeeting", "今天下午有个meeting");
+    if gram == 0 { session::set_grammar(true); }
+    session::set_rerank(true);
+    // Enter keeps the keys. A comma commits the mixed sentence and the mark.
+    // Switching English off leaves the Chinese reading.
+    press(s, session::KEY_ESCAPE);
+    type_text(s, "woyonggithub");
+    press(s, session::KEY_RETURN);
+    check(session::commit == "woyonggithub", str("Enter commits the keys (got ", session::commit, ")"));
+    press(s, session::KEY_ESCAPE);
+    type_text(s, "jintianxiawuyougemeeting");
+    typed(s, ',');
+    check(session::commit == "今天下午有个meeting，", str("a comma commits the mixed sentence and the mark (got ", session::commit, ")"));
+    session::set_english(false);
+    press(s, session::KEY_ESCAPE);
+    type_text(s, "jintianxiawuyougemeeting");
+    check(find(candidate(0), "meeting") < 0 && find(candidate(0), "Meeting") < 0,
+          str("English off: no meeting in the first candidate", menu_line()));
+    session::set_english(true);
+    press(s, session::KEY_ESCAPE);
+}
+
 fn english_words(s: u64) {
     check(english::active() && english::live.entries.len > 2000, "the English dictionary is loaded");
     var order: i64[>..] = [];
@@ -2188,6 +2295,8 @@ fn main() {
     long_input(session::new_session());
     userdb::reset();
     english_words(session::new_session());
+    userdb::reset();
+    mixed_sentences(session::new_session());
     userdb::reset();
     reranking(session::new_session());
     userdb::reset();
