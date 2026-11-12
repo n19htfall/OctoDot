@@ -6,7 +6,8 @@ import AppKit
 ///
 /// One page at a time, numbered for the digit keys. The highlighted
 /// candidate, what Space picks, sits in an accent-colored pill that slides
-/// when the highlight moves. Candidates and the page arrows can be clicked.
+/// when the highlight moves. A glyph takes the pill's text color only where
+/// the pill covers it. Candidates and the page arrows can be clicked.
 /// A page turn or the grid changes the window's size and place: that eases
 /// from wherever the window is, including mid-transition. Reduce Motion
 /// moves it at once.
@@ -584,6 +585,13 @@ final class CandidateBar: NSView {
     /// Translations that have finished fading in, so a later layout does not play them again.
     private var resting: [Int: String] = [:]
     private var fadeLink: CADisplayLink?
+    /// The highlight slide. The pill's frame is the frame on screen: text takes the accent
+    /// color only where this frame covers it, so the color moves with the pill.
+    private var highlightLink: CADisplayLink?
+    private var highlightFrom = NSRect.zero
+    private var highlightTo = NSRect.zero
+    private var highlightStart = CFTimeInterval(0)
+    private static let highlightSlide: CFTimeInterval = 0.16
 
     override var isFlipped: Bool { true }
 
@@ -631,19 +639,15 @@ final class CandidateBar: NSView {
             let target = cells[page.highlighted]
             pill.layer?.cornerRadius = target.height / 2
             pill.isHidden = false
-            if sameList && blends.isEmpty && !pill.frame.isEmpty {        // the highlight moved: slide
-                NSAnimationContext.runAnimationGroup { context in
-                    context.duration = 0.16
-                    context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                    context.allowsImplicitAnimation = true
-                    pill.animator().frame = target
-                }
+            if sameList && blends.isEmpty && !pill.frame.isEmpty && displaced(pill.frame, target) {
+                slideHighlight(to: target)
             } else {
-                pill.layer?.removeAllAnimations()
-                pill.frame = target
+                setHighlightFrame(target)
+                stopHighlightSlide()
             }
         } else {
             pill.isHidden = true
+            stopHighlightSlide()
         }
         ink.needsDisplay = true
         return size
@@ -755,7 +759,8 @@ final class CandidateBar: NSView {
 
     func forget() {
         page = nil
-        pill.frame = .zero
+        stopHighlightSlide()
+        setHighlightFrame(.zero)
         endTextFade()
     }
 
@@ -765,6 +770,92 @@ final class CandidateBar: NSView {
         resting.removeAll()
         fadeLink?.invalidate()
         fadeLink = nil
+        stopHighlightSlide()
+    }
+
+    /// Moves the pill from wherever it is. Its frame stays the visible one, and each
+    /// frame redraws the text against that frame.
+    private func slideHighlight(to target: NSRect) {
+        guard window != nil else {
+            setHighlightFrame(target)
+            stopHighlightSlide()
+            return
+        }
+        highlightFrom = pill.frame
+        highlightTo = target
+        highlightStart = CACurrentMediaTime()
+        startHighlightLink()
+    }
+
+    private func setHighlightFrame(_ rect: NSRect) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        pill.layer?.removeAllAnimations()
+        pill.frame = rect
+        CATransaction.commit()
+    }
+
+    private func startHighlightLink() {
+        guard highlightLink == nil, window != nil else { return }
+        let link = displayLink(target: self, selector: #selector(stepHighlight(_:)))
+        link.add(to: .main, forMode: .common)
+        link.isPaused = false
+        highlightLink = link
+    }
+
+    private func stopHighlightSlide() {
+        highlightLink?.invalidate()
+        highlightLink = nil
+    }
+
+    @objc nonisolated private func stepHighlight(_ link: CADisplayLink) {
+        MainActor.assumeIsolated { self.tickHighlight() }
+    }
+
+    private func tickHighlight() {
+        let raw = CGFloat(min(1, max(0, (CACurrentMediaTime() - highlightStart) / Self.highlightSlide)))
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        pill.layer?.removeAllAnimations()
+        pill.frame = Self.mix(highlightFrom, highlightTo, Self.easeOut(raw))
+        ink.needsDisplay = true
+        ink.displayIfNeeded()
+        CATransaction.commit()
+        if raw >= 1 { stopHighlightSlide() }
+    }
+
+    /// `CAMediaTimingFunction.easeOut`: cubic-bezier(0, 0, 0.58, 1).
+    private static func easeOut(_ t: CGFloat) -> CGFloat {
+        if t <= 0 { return 0 }
+        if t >= 1 { return 1 }
+        let x2 = 0.58
+        var u = t
+        for _ in 0..<8 {
+            let x = 3 * (1 - u) * u * u * x2 + u * u * u
+            let dx = 6 * x2 * u + (3 - 9 * x2) * u * u
+            if abs(dx) < 1e-6 { break }
+            u = min(1, max(0, u - (x - t) / dx))
+        }
+        return min(1, max(0, 3 * (1 - u) * u * u + u * u * u))
+    }
+
+    private static func mix(_ a: NSRect, _ b: NSRect, _ t: CGFloat) -> NSRect {
+        func m(_ p: CGFloat, _ q: CGFloat) -> CGFloat { p + (q - p) * t }
+        return NSRect(x: m(a.minX, b.minX), y: m(a.minY, b.minY),
+                      width: m(a.width, b.width), height: m(a.height, b.height))
+    }
+
+    private func displaced(_ a: NSRect, _ b: NSRect) -> Bool {
+        abs(a.minX - b.minX) > 0.5 || abs(a.minY - b.minY) > 0.5
+            || abs(a.width - b.width) > 0.5 || abs(a.height - b.height) > 0.5
+    }
+
+    /// Where the pill is now, in the text view's coordinates.
+    private func highlightCover() -> NSRect? {
+        guard !pill.isHidden else { return nil }
+        let rect = pill.frame
+        guard rect.width > 0.5, rect.height > 0.5 else { return nil }
+        return ink.convert(rect, from: self)
     }
 
     private func commentWidth(_ comment: String?) -> CGFloat {
@@ -1015,17 +1106,47 @@ final class CandidateBar: NSView {
                 NSRect(x: style.inset, y: y, width: max(gridWidth - style.inset, 0), height: 1).fill()
             }
         }
+        drawLabels(page, covered: false)
+        drawCoveredText(page)
+        if !thumb.isEmpty {
+            NSColor.tertiaryLabelColor.setFill()
+            NSBezierPath(roundedRect: thumb, xRadius: thumb.width / 2, yRadius: thumb.width / 2).fill()
+        }
+        if !divider.isEmpty {
+            NSColor.separatorColor.setFill()
+            divider.fill()
+            drawArrow("chevron.left", in: previousArrow, enabled: page.hasPrevious, hovered: hovered == -1)
+            drawArrow("chevron.right", in: nextArrow, enabled: page.hasNext, hovered: hovered == -2)
+        }
+    }
+
+    /// Resting ink, then the same ink again in the accent color, clipped to the pill.
+    /// Clearing first lets the translucent index and comment composite over the pill.
+    private func drawCoveredText(_ page: CandidatePanel.Page) {
+        guard let cover = highlightCover(), let context = NSGraphicsContext.current?.cgContext else { return }
+        NSGraphicsContext.saveGraphicsState()
+        let radius = cover.height / 2
+        NSBezierPath(roundedRect: cover, xRadius: radius, yRadius: radius).addClip()
+        context.setFillColor(NSColor.black.cgColor)
+        context.setBlendMode(.clear)
+        context.fill(cover)
+        context.setBlendMode(.normal)
+        drawLabels(page, covered: true)
+        NSGraphicsContext.restoreGraphicsState()
+    }
+
+    private func drawLabels(_ page: CandidatePanel.Page, covered: Bool) {
         let cols = max(page.columns, 1)
         let numberedRow = page.expanded && page.highlighted >= 0 ? page.highlighted / cols : -1
         for (i, cell) in cells.enumerated() {
-            let highlighted = i == page.highlighted
-            if i == hovered && !highlighted {
+            let selected = i == page.highlighted
+            if !covered && i == hovered && !selected {
                 NSColor.labelColor.withAlphaComponent(0.08).setFill()
                 NSBezierPath(roundedRect: cell, xRadius: cell.height / 2, yRadius: cell.height / 2).fill()
             }
             let blend = blends[i].flatMap { $0.candidate == page.candidates[i] ? $0 : nil }
             let raw = shownText(page, i)
-            let text = attributed(raw, highlighted: highlighted)
+            let text = attributed(raw, highlighted: covered)
             let textSize = text.size()
             let measured = shownWidth(page, i)
             let drawnWidth = blend == nil ? min(textSize.width, measured) : measured
@@ -1034,7 +1155,7 @@ final class CandidateBar: NSView {
             let showNumber = !page.expanded || i / cols == numberedRow
             let index = NSAttributedString(string: "\(number)", attributes: [
                 .font: style.indexFont,
-                .foregroundColor: highlighted ? onAccent : NSColor.secondaryLabelColor,
+                .foregroundColor: covered ? onAccent : NSColor.secondaryLabelColor,
             ])
             let indexSize = index.size()
             var x = cell.minX + style.padding
@@ -1048,9 +1169,9 @@ final class CandidateBar: NSView {
             if let blend {
                 let t = blend.fraction(at: CACurrentMediaTime())
                 let source = blend.outgoing ?? blend.candidate
-                drawWord(source, highlighted: highlighted, x: x, y: textY - t * 2,
+                drawWord(source, highlighted: covered, x: x, y: textY - t * 2,
                          slot: drawnWidth, alpha: 1 - t, softness: t * 1.6)
-                drawWord(blend.translation, highlighted: highlighted, x: x, y: textY + (1 - t) * 3,
+                drawWord(blend.translation, highlighted: covered, x: x, y: textY + (1 - t) * 3,
                          slot: drawnWidth, alpha: t, softness: (1 - t) * 2.2)
             } else if textSize.width > drawnWidth + 0.5 {
                 let paragraph = NSMutableParagraphStyle()
@@ -1066,7 +1187,7 @@ final class CandidateBar: NSView {
             if let comment = page.comments[safe: i], !comment.isEmpty {
                 let small = NSAttributedString(string: comment, attributes: [
                     .font: style.smallFont,
-                    .foregroundColor: highlighted ? onAccent : NSColor.tertiaryLabelColor,
+                    .foregroundColor: covered ? onAccent : NSColor.tertiaryLabelColor,
                 ])
                 let available = max(0, commentWidth(comment) - 4)
                 if available > 0 {
@@ -1081,16 +1202,6 @@ final class CandidateBar: NSView {
                     } else { small.draw(at: origin) }
                 }
             }
-        }
-        if !thumb.isEmpty {
-            NSColor.tertiaryLabelColor.setFill()
-            NSBezierPath(roundedRect: thumb, xRadius: thumb.width / 2, yRadius: thumb.width / 2).fill()
-        }
-        if !divider.isEmpty {
-            NSColor.separatorColor.setFill()
-            divider.fill()
-            drawArrow("chevron.left", in: previousArrow, enabled: page.hasPrevious, hovered: hovered == -1)
-            drawArrow("chevron.right", in: nextArrow, enabled: page.hasNext, hovered: hovered == -2)
         }
     }
 
