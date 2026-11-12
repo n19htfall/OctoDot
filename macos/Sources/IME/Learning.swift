@@ -98,6 +98,7 @@ enum Learning {
 
     /// The remembered choices, applied after the engine opened its images.
     private static func applyPreferences() {
+        AppRules.reload()
         if !Engine.shared.setAuxScheme(auxScheme) {
             _ = Engine.shared.setAuxScheme("none")
             auxScheme = "none"

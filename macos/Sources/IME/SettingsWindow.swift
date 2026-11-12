@@ -31,7 +31,7 @@ enum SettingsWindow {
         ColorPanel.shared.close()
         if let observer { NotificationCenter.default.removeObserver(observer) }
         observer = nil
-        model.onPane = nil
+        model.onTitle = nil
         guard let window else { return }
         window.orderOut(nil)
         window.close()
@@ -75,8 +75,8 @@ enum SettingsWindow {
         // A unified toolbar, even with nothing in it: the sidebar runs up under it.
         window.toolbar = NSToolbar(identifier: "OctoDotSettings")
         window.toolbarStyle = .unified
-        window.title = Pane.input.title
-        model.onPane = { [weak window] pane in window?.title = pane.title }
+        model.onTitle = { [weak window] title in window?.title = title }
+        model.syncTitle()
         window.setContentSize(NSSize(width: 720, height: 520))
         window.contentMinSize = NSSize(width: 640, height: 440)
         window.isReleasedWhenClosed = false
@@ -107,12 +107,23 @@ enum SettingsWindow {
         }
         window.close()
     }
+
+    /// The companion's file panel chose an app, or was cancelled. A choice is
+    /// added (or opened, if it was already there) and the window comes forward.
+    static func acceptPickedApp() {
+        if let choice = AppPick.take() {
+            AppRules.upsert(id: choice.id, name: choice.name)
+            model.pane = .apps
+            model.openApp = choice.id
+        }
+        show()
+    }
 }
 
 /// The window's panes, as System Settings shows its own: a colored tile, a
 /// title, and what the pane is for.
 enum Pane: String, CaseIterable, Identifiable, Sendable {
-    case input, appearance, lexicon, privacy
+    case input, appearance, lexicon, apps, privacy
 
     var id: Self { self }
 
@@ -121,6 +132,7 @@ enum Pane: String, CaseIterable, Identifiable, Sendable {
         case .input: "输入"
         case .appearance: "外观"
         case .lexicon: "词库"
+        case .apps: "应用"
         case .privacy: "隐私"
         }
     }
@@ -130,6 +142,7 @@ enum Pane: String, CaseIterable, Identifiable, Sendable {
         case .input: "keyboard.fill"
         case .appearance: "paintpalette.fill"
         case .lexicon: "books.vertical.fill"
+        case .apps: "square.grid.2x2.fill"
         case .privacy: "hand.raised.fill"
         }
     }
@@ -139,6 +152,7 @@ enum Pane: String, CaseIterable, Identifiable, Sendable {
         case .input: .gray
         case .appearance: .purple
         case .lexicon: .orange
+        case .apps: Color(red: 0.10, green: 0.46, blue: 0.44)
         case .privacy: .blue
         }
     }
@@ -169,6 +183,9 @@ private struct Detail: View {
         case .input: InputPane(model: model)
         case .appearance: AppearancePane(model: model)
         case .lexicon: LexiconPane(model: model)
+        case .apps:
+            if let id = model.openApp { AppPane(model: model, id: id) }
+            else { AppsPane(model: model) }
         case .privacy: PrivacyPane(model: model)
         }
     }
@@ -226,13 +243,34 @@ final class SettingsModel {
     var forgot: String?
     var translationModifier = TranslationModifier.current
     var style = CandidateStyle.current
-    var pane: Pane? = .input {
-        didSet { onPane?(pane ?? .input) }
+    var apps: [AppRules.Entry] = []
+    /// The bundle id of the app whose page is open, or nil for the list.
+    var openApp: String? {
+        didSet { if openApp != oldValue { syncTitle() } }
     }
-    /// Told the pane shown, for the window's title.
-    @ObservationIgnored var onPane: ((Pane) -> Void)?
+    var pane: Pane? = .input {
+        didSet {
+            if pane != .apps { openApp = nil }
+            syncTitle()
+        }
+    }
+    /// The window title: the pane's, or the open app's name.
+    @ObservationIgnored var onTitle: ((String) -> Void)?
+
+    func syncTitle() { onTitle?(chromeTitle) }
+
+    private var chromeTitle: String {
+        if pane == .apps, let openApp, let name = AppRules.entries.first(where: { $0.id == openApp })?.name {
+            return name
+        }
+        return (pane ?? .input).title
+    }
 
     func refresh() {
+        AppRules.reload()
+        apps = AppRules.entries
+        if let openApp, !apps.contains(where: { $0.id == openApp }) { self.openApp = nil }
+        syncTitle()
         translationModifier = TranslationModifier.current
         style = CandidateStyle.current
         incognito = Learning.incognito
@@ -278,6 +316,23 @@ final class SettingsModel {
         guard next != style else { return }
         next.use()
         style = next
+    }
+
+    func addApp() { Companion.open("pick-app") }
+
+    func showApp(_ id: String) { openApp = id }
+
+    func showAppList() { openApp = nil }
+
+    func setAppHalfwidth(_ on: Bool, id: String) {
+        AppRules.setHalfwidth(on, for: id)
+        refresh()
+    }
+
+    func removeApp(_ id: String) {
+        AppRules.remove(id)
+        if openApp == id { openApp = nil }
+        refresh()
     }
 
     func forget(_ scope: Engine.ForgetScope) {
@@ -486,6 +541,83 @@ private struct Swatch: View {
         .help(help)
         .accessibilityLabel(help)
         .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
+private struct AppsPane: View {
+    @Bindable var model: SettingsModel
+
+    var body: some View {
+        Form {
+            PaneHeader(pane: .apps)
+            if !model.apps.isEmpty {
+                Section {
+                    ForEach(model.apps) { app in
+                        Button { model.showApp(app.id) } label: {
+                            HStack(spacing: 10) {
+                                Image(nsImage: AppRules.icon(for: app.id, side: 28))
+                                    .frame(width: 28, height: 28)
+                                Text(app.name)
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(1)
+                                Spacer(minLength: 12)
+                                Text(app.punctuationTitle)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("\(app.name)，\(app.punctuationTitle)")
+                    }
+                }
+            }
+            Section {
+                Button("添加应用…") { model.addApp() }
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+private struct AppPane: View {
+    @Bindable var model: SettingsModel
+    let id: String
+
+    private var entry: AppRules.Entry? { model.apps.first { $0.id == id } }
+
+    var body: some View {
+        Form {
+            Section {
+                VStack(spacing: 8) {
+                    HStack {
+                        Button { model.showAppList() } label: {
+                            Label(Pane.apps.title, systemImage: "chevron.backward")
+                        }
+                        .buttonStyle(.borderless)
+                        Spacer()
+                    }
+                    Image(nsImage: AppRules.icon(for: id, side: 54))
+                        .frame(width: 54, height: 54)
+                    Text(entry?.name ?? id)
+                        .font(.title2.weight(.semibold))
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+            }
+            Section {
+                Picker("标点样式", selection: Binding(get: { entry?.halfwidthPunctuation ?? false },
+                                                     set: { model.setAppHalfwidth($0, id: id) })) {
+                    Text(AppRules.Entry.followDefault).tag(false)
+                    Text(AppRules.Entry.halfwidth).tag(true)
+                }
+            }
+            Section {
+                Button("移除", role: .destructive) { model.removeApp(id) }
+            }
+        }
+        .formStyle(.grouped)
     }
 }
 

@@ -24,6 +24,10 @@ enum IMELink {
     /// on (a new core, loaded by an install, opens it by itself). Not started for it.
     static func grammarReady() { post("grammar.reopen") }
 
+    /// The file panel finished, or was cancelled. The settings window reads
+    /// the pick, if one was written, and comes forward. Not started for it.
+    static func appPicked() { post("app.picked") }
+
     private static func post(_ name: String) {
         DistributedNotificationCenter.default().postNotificationName(
             Notification.Name(Identity.ime + "." + name), object: nil, userInfo: nil, deliverImmediately: true)

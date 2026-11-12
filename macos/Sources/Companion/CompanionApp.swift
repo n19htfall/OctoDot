@@ -75,6 +75,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 await model.refresh()
                 model.screen = .wizard
             }
+        case "pick-app":
+            // The panel is modal. Afterwards the settings window comes forward,
+            // so this app does not take focus back.
+            AppPicker.pick()
+            return
         default: break
         }
         NSApp.activate()

@@ -91,7 +91,7 @@ ENGINE       := $(wildcard ../engine/*.goose) ../engine/gram.h ../engine/rerank.
                 ../engine/octo.build engine/ime.goose
 SHARED_SWIFT := $(wildcard Sources/Shared/*.swift)
 IME_SWIFT    := $(wildcard Sources/IME/*.swift) Sources/Setup/Transfer.swift Sources/Setup/GrammarPin.swift \
-                $(GEN)/Identity.swift
+                Sources/Setup/AppRulesDocument.swift $(GEN)/Identity.swift
 LAUNCHER_SWIFT := $(wildcard Sources/Launcher/*.swift)
 SMOKE_SWIFT  := $(wildcard Sources/Smoke/*.swift)
 SETUP_SWIFT  := $(wildcard Sources/Setup/*.swift) $(GEN)/Identity.swift

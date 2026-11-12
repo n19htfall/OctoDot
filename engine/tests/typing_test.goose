@@ -876,6 +876,141 @@ fn learning_across_fields() {
     userdb::reset();
 }
 
+fn committed_mark(s: u64, c: i64, flags: i64) -> u8[>..] {
+    press(s, session::KEY_ESCAPE);
+    keyed(s, c, flags);
+    var text: u8[>..] = [];
+    text.append(session::commit);
+    return text;
+}
+
+// Half-width punctuation is the key's own character, and only when the key is
+// committed as punctuation. The same flag must not change what a key does.
+fn halfwidth_punctuation(s: u64) {
+    let flag = session::KEYFLAG_HALFWIDTH_PUNCT;
+    press(s, session::KEY_ESCAPE);
+
+    check(compare(committed_mark(s, ',', 0), "，") == 0, ", still commits ，");
+    check(compare(committed_mark(s, '\\', 0), "、") == 0, "\\ still commits 、");
+    check(compare(committed_mark(s, '^', 0), "……") == 0, "^ still commits ……");
+    check(compare(committed_mark(s, '_', 0), "——") == 0, "_ still commits ——");
+    check(compare(committed_mark(s, '$', 0), "￥") == 0, "$ still commits ￥");
+
+    let idle = keyed(s, ',', flag);
+    check((idle & session::HAS_COMMIT) != 0 && session::commit == ",",
+          "halfwidth: , commits , when not composing");
+    check(compare(committed_mark(s, '\\', flag), "\\") == 0, "halfwidth: \\ stays \\");
+    check(compare(committed_mark(s, '^', flag), "^") == 0, "halfwidth: ^ stays ^");
+    check(compare(committed_mark(s, '_', flag), "_") == 0, "halfwidth: _ stays _");
+    check(compare(committed_mark(s, '$', flag), "$") == 0, "halfwidth: $ stays $");
+
+    let open = committed_mark(s, '"', 0);
+    let close = committed_mark(s, '"', 0);
+    check(compare(open, close) != 0, "fullwidth quotes alternate");
+    check(compare(committed_mark(s, '"', flag), "\"") == 0, "halfwidth: \" stays a straight quote");
+    check(compare(committed_mark(s, '"', flag), "\"") == 0, "halfwidth: the next \" stays straight too");
+    check(compare(committed_mark(s, '"', 0), open) == 0, "halfwidth quotes do not advance fullwidth pairing");
+    check(compare(committed_mark(s, '"', 0), close) == 0, "fullwidth pairing resumes");
+    let sopen = committed_mark(s, '\'', 0);
+    let sclose = committed_mark(s, '\'', 0);
+    check(compare(sopen, sclose) != 0, "fullwidth single quotes alternate");
+    check(compare(committed_mark(s, '\'', flag), "'") == 0, "halfwidth: ' stays straight when not composing");
+    check(compare(committed_mark(s, '\'', flag), "'") == 0, "halfwidth: the next ' stays straight too");
+    check(compare(committed_mark(s, '\'', 0), sopen) == 0, "halfwidth single quotes do not advance pairing");
+    check(compare(committed_mark(s, '\'', 0), sclose) == 0, "fullwidth single-quote pairing resumes");
+
+    press(s, session::KEY_ESCAPE);
+    for c in "nihao" { keyed(s, c, flag); }
+    check(compare(candidate(0), "你好") == 0, "halfwidth flags on the letters still offer 你好");
+    let marked = keyed(s, ',', flag);
+    check((marked & session::HAS_COMMIT) != 0 && session::commit == "你好,",
+          "halfwidth: nihao then , commits 你好,");
+    check(userdb::chosen("nihao", "你好") == 1.0, "that commit still learns 你好");
+
+    press(s, session::KEY_ESCAPE);
+    keyed(s, 'x', flag);
+    keyed(s, 'i', flag);
+    keyed(s, '\'', flag);
+    keyed(s, 'a', flag);
+    keyed(s, 'n', flag);
+    check(session::input == "xi'an" && compare(candidate(0), "西安") == 0,
+          "halfwidth: ' still separates syllables");
+    press(s, session::KEY_ESCAPE);
+
+    type_text(s, "shi");
+    keyed(s, '`', flag);
+    check(session::input == "shi`", "halfwidth: ` still starts a shape code");
+    press(s, session::KEY_ESCAPE);
+
+    type_text(s, "zhong");
+    keyed(s, '7', flag);
+    check(session::input == "zhong7", "halfwidth: 7 still marks a tone");
+    press(s, session::KEY_ESCAPE);
+
+    type_text(s, "ni");
+    let picked = keyed(s, '1', flag);
+    check((picked & session::HAS_COMMIT) != 0 && !session::composing(), "halfwidth: 1 still picks a candidate");
+
+    type_text(s, "shi");
+    check(session::menu.candidates.len > session::PAGE_SIZE, "shi fills more than one page");
+    let stayed = keyed(s, '-', flag);
+    check((stayed & session::HAS_COMMIT) == 0 && session::composing() && session::page == 0,
+          "halfwidth: - does not commit a mark");
+    let turned = keyed(s, '=', flag);
+    check((turned & session::HAS_COMMIT) == 0 && session::page == 1, "halfwidth: = turns the page");
+    press(s, session::KEY_ESCAPE);
+
+    check(keyed(s, '3', flag) == 0 && keyed(s, '.', flag) == 0 && keyed(s, '1', flag) == 0 && keyed(s, '4', flag) == 0,
+          "halfwidth: 3.14 still passes through");
+    check(keyed(s, '1', flag) == 0 && keyed(s, '2', flag) == 0 && keyed(s, ':', flag) == 0,
+          "halfwidth: a colon after digits still passes through");
+
+    type_text(s, "nihao");
+    let cmd = session::key(s, session::KeyEvent { key: session::KEY_OTHER as u16, flags: flag as u16,
+                                                  modifiers: session::MOD_COMMAND, codepoint: 's' as u32, time_ms: 0 });
+    check((cmd & session::HANDLED) == 0 && (cmd & session::HAS_COMMIT) != 0 && !session::composing(),
+          "halfwidth: Command still commits the reading and lets the shortcut through");
+
+    userdb::reset();
+    press(s, session::KEY_ESCAPE);
+    for c in "nihao" { keyed(s, c, flag); }
+    session::set_pick_text(s, "Hello");
+    session::key(s, session::KeyEvent { key: 0, flags: (session::KEYFLAG_PICK | flag) as u16, modifiers: 0,
+                                        codepoint: 0, time_ms: 0 });
+    check(session::commit == "Hello" && userdb::lex.entries.len == 0,
+          "halfwidth does not rewrite a translation committed in place of a candidate");
+
+    userdb::reset();
+    press(s, session::KEY_ESCAPE);
+    for c in "nihao" { keyed(s, c, session::KEYFLAG_NO_LEARN | flag); }
+    let quiet = keyed(s, ',', session::KEYFLAG_NO_LEARN | flag);
+    check((quiet & session::HAS_COMMIT) != 0 && session::commit == "你好," && userdb::lex.entries.len == 0,
+          "halfwidth punctuation with no-learn commits 你好, and teaches nothing");
+
+    userdb::reset();
+    check(pick(s, "xian", "西安", 0) && userdb::chosen("xian", "西安") == 1.0, "xian learns 西安");
+    check((keyed(s, ',', flag) & session::HAS_COMMIT) != 0 && session::commit == ",",
+          "halfwidth: a following comma commits ,");
+    press(s, session::KEY_BACKSPACE);
+    press(s, session::KEY_BACKSPACE);
+    press(s, session::KEY_BACKSPACE);
+    check(pick(s, "xian", "先", 0) && userdb::lex.entries.len == 1,
+          "deleting the comma and 西安, then picking 先, takes 西安 back");
+
+    userdb::reset();
+    check(pick(s, "xian", "西安", 0), "the first field learns 西安");
+    keyed(s, ',', flag);
+    let other = session::new_session();
+    press(other, session::KEY_BACKSPACE);
+    press(other, session::KEY_BACKSPACE);
+    press(other, session::KEY_BACKSPACE);
+    check(pick(other, "xian", "先", 0) && userdb::chosen("xian", "西安") == 1.0 && userdb::lex.entries.len == 2,
+          "backspacing in another field after a halfwidth comma keeps 西安");
+    session::free_session(other);
+    userdb::reset();
+    press(s, session::KEY_ESCAPE);
+}
+
 fn stored_syllables() -> i64 {
     var n: i64 = 0;
     for e in userdb::lex.entries { n += e.len as i64; }
@@ -1700,6 +1835,8 @@ fn main() {
     reranking(session::new_session());
     userdb::reset();
     fuzzy_pinyin(session::new_session());
+    userdb::reset();
+    halfwidth_punctuation(session::new_session());
     userdb::reset();
     latency(session::new_session());
     print(soft_misses, " ranking hopes missed");

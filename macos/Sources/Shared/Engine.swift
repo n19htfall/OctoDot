@@ -39,6 +39,8 @@ final class Engine {
         static let noLearn = KeyFlags(rawValue: 1)
         /// `codepoint` is a candidate index to commit (a click in the window).
         static let pick = KeyFlags(rawValue: 2)
+        /// Punctuation is committed as the key's own character.
+        static let halfwidthPunctuation = KeyFlags(rawValue: 4)
     }
 
     /// What octo_forget takes back.

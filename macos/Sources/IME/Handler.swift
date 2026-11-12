@@ -156,9 +156,14 @@ final class Handler: NSObject, OctoDotHandlerV2 {
             }
         }
         defer { syncTranslationChords(session) }
+        // The client of this key, not the frontmost app. No bundle id: default punctuation.
+        let reported = client.bundleIdentifier() ?? ""
+        if !reported.isEmpty { clientApp = reported }
         let app = clientApp
         let (result, snapshot) = MainActor.assumeIsolated {
-            let outcome = Engine.shared.process(session, key, flags: Learning.flags(forApp: app).union(extra))
+            var flags = Learning.flags(forApp: app).union(extra)
+            if AppRules.halfwidthPunctuation(for: reported) { flags.insert(.halfwidthPunctuation) }
+            let outcome = Engine.shared.process(session, key, flags: flags)
             Learning.noteActivity()
             return outcome
         }

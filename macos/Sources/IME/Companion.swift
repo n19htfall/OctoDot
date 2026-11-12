@@ -29,7 +29,7 @@ enum Companion {
     static func start() {
         let observer = SettingsObserver()
         let center = DistributedNotificationCenter.default()
-        var names = ["showSettings", "charset.full", "charset.daily", "grammar.reopen"]
+        var names = ["showSettings", "charset.full", "charset.daily", "grammar.reopen", "app.picked"]
         names += Engine.shared.schemes().map { "scheme." + $0.id }
         for name in names {
             center.addObserver(observer, selector: #selector(SettingsObserver.request(_:)),
@@ -48,6 +48,7 @@ enum Companion {
         case "charset.full": Learning.useFullCharset(true)
         case "charset.daily": Learning.useFullCharset(false)
         case "grammar.reopen": Learning.reopenGrammar()
+        case "app.picked": SettingsWindow.acceptPickedApp()
         default:
             if request.hasPrefix("scheme.") { Learning.useScheme(String(request.dropFirst("scheme.".count))) }
         }

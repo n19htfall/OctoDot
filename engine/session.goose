@@ -48,6 +48,7 @@ let KEY_END = 12;
 // not teach the user dictionary (a secure field, a no-learn app, incognito).
 let KEYFLAG_NO_LEARN = 1;
 let KEYFLAG_PICK = 2;       // codepoint is a candidate index to commit (a click in the window)
+let KEYFLAG_HALFWIDTH_PUNCT = 4; // punctuation is committed as the key's own character
 
 // KeyEvent.modifiers
 let MOD_SHIFT = 1;
@@ -1166,30 +1167,34 @@ fn turn_page(delta: i64) -> bool {
     return true;
 }
 
-// Chinese punctuation for a key, or "" if it has none.
-fn punctuation(c: u32) -> const u8[:] {
-    if c == ',' { return "，"; }
-    if c == '.' { return "。"; }
-    if c == '?' { return "？"; }
-    if c == '!' { return "！"; }
-    if c == ';' { return "；"; }
-    if c == ':' { return "："; }
-    if c == '\\' { return "、"; }
-    if c == '(' { return "（"; }
-    if c == ')' { return "）"; }
-    if c == '[' { return "【"; }
-    if c == ']' { return "】"; }
-    if c == '<' { return "《"; }
-    if c == '>' { return "》"; }
-    if c == '~' { return "～"; }
-    if c == '^' { return "……"; }
-    if c == '_' { return "——"; }
-    if c == '$' { return "￥"; }
+// Chinese punctuation for a key, or the key's own character when this app
+// commits punctuation at half width, or "" if it has none. Half width does
+// not move the fullwidth quote pairing.
+fn punctuation(c: u32, halfwidth: bool) -> const u8[:] {
+    if c == ',' { return if halfwidth { "," } else { "，" }; }
+    if c == '.' { return if halfwidth { "." } else { "。" }; }
+    if c == '?' { return if halfwidth { "?" } else { "？" }; }
+    if c == '!' { return if halfwidth { "!" } else { "！" }; }
+    if c == ';' { return if halfwidth { ";" } else { "；" }; }
+    if c == ':' { return if halfwidth { ":" } else { "：" }; }
+    if c == '\\' { return if halfwidth { "\\" } else { "、" }; }
+    if c == '(' { return if halfwidth { "(" } else { "（" }; }
+    if c == ')' { return if halfwidth { ")" } else { "）" }; }
+    if c == '[' { return if halfwidth { "[" } else { "【" }; }
+    if c == ']' { return if halfwidth { "]" } else { "】" }; }
+    if c == '<' { return if halfwidth { "<" } else { "《" }; }
+    if c == '>' { return if halfwidth { ">" } else { "》" }; }
+    if c == '~' { return if halfwidth { "~" } else { "～" }; }
+    if c == '^' { return if halfwidth { "^" } else { "……" }; }
+    if c == '_' { return if halfwidth { "_" } else { "——" }; }
+    if c == '$' { return if halfwidth { "$" } else { "￥" }; }
     if c == '"' {
+        if halfwidth { return "\""; }
         double_open = !double_open;
         return if double_open { "“" } else { "”" };
     }
     if c == '\'' {
+        if halfwidth { return "'"; }
         single_open = !single_open;
         return if single_open { "‘" } else { "’" };
     }
@@ -1383,6 +1388,7 @@ fn key(handle: u64, ev: KeyEvent) -> u32 {
 fn handle_key(handle: u64, ev: KeyEvent) -> u32 {
     commit.clear();
     learning_allowed = (ev.flags & KEYFLAG_NO_LEARN) == 0;
+    let halfwidth_punct = (ev.flags & KEYFLAG_HALFWIDTH_PUNCT) != 0;
     guard ready && index(handle) >= 0 else { return 0; }
     if active != handle {
         clear_client_context();
@@ -1446,7 +1452,7 @@ fn handle_key(handle: u64, ev: KeyEvent) -> u32 {
             if ev.key != KEY_ESCAPE { recent.clear(); }
             return 0;
         }
-        let mark = punctuation(c);
+        let mark = punctuation(c, halfwidth_punct);
         if mark.len == 0 {
             recent.clear();
             return 0;
@@ -1538,7 +1544,7 @@ fn handle_key(handle: u64, ev: KeyEvent) -> u32 {
         return HANDLED | DIRTY;
     }
     if ev.key == KEY_OTHER {
-        let mark = punctuation(c);
+        let mark = punctuation(c, halfwidth_punct);
         if mark.len > 0 {                          // the best reading, then the mark
             fresh_menu();
             var whole = -1;

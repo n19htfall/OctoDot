@@ -12,7 +12,7 @@ export fn octo_abi_version() -> u32 { ABI_VERSION }
 // 1 lexicon.img unreadable, 2 invalid; 3 spellings unreadable, 4 invalid.
 export fn octo_open(directory: const u8[:]) -> i32 { session::open(directory) }
 
-// client_app is the client's bundle identifier, for per-app rules later.
+// client_app is unused. Per-app behavior arrives as a flag on each key.
 export fn octo_session_new(client_app: const u8[:]) -> u64 { session::new_session() }
 
 export fn octo_session_free(handle: u64) { session::free_session(handle); }
@@ -23,7 +23,8 @@ export fn octo_reset(handle: u64) { session::reset(handle); }
 // A key: session::KEY_* (0 when the codepoint alone describes it),
 // session::MOD_* bits, the character it types, and session::KEYFLAG_* bits
 // from the host's privacy policy (KEYFLAG_NO_LEARN: a secure field, a
-// no-learn app, incognito). Plain scalars, so no generated struct name
+// no-learn app, incognito; KEYFLAG_HALFWIDTH_PUNCT: this client's
+// punctuation is committed as the key's own character). Plain scalars, so no generated struct name
 // becomes part of the ABI. The result's bits: 1 handled, 2 dirty (call
 // octo_snapshot), 4 the snapshot holds a commit, 8 pending (the reranker may
 // change the menu: call octo_refine before showing the candidates).
