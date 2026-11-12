@@ -676,6 +676,18 @@ fn word_text(word: Word, out: u8[>..]&) {
     lexicon::text(source_lexicon(word.source), word.entry, out);
 }
 
+// Two English words in a row are separate tokens: research proposal. A
+// Chinese word stays flush against the English word beside it.
+fn append_words(w: Words&, words: const i64[:], text: u8[>..]&) {
+    var prev_en = false;
+    for i in words {
+        let word = w.list[i];
+        if prev_en && word.source == ENGLISH { text.push(' '); }
+        word_text(word, text);
+        prev_en = word.source == ENGLISH;
+    }
+}
+
 // The text before the input, which the first word of a sentence follows:
 // what was chosen earlier in the composition (the session sets it). Empty,
 // the first word scores the model's non-collocation penalty, as in librime.
@@ -1129,7 +1141,7 @@ fn prune(w: Words&, input: const u8[:], end: i64, delta: f64, kept: bool[>..]&) 
 fn offer(m: Menu&, seen: dictionary<const u8[:], bool>&, w: Words&, words: const i64[:], to: i64) {
     guard m.candidates.len < MAX_CANDIDATES && words.len > 0 else { return; }
     var text: u8[>..] = [];
-    for i in words { word_text(w.list[i], text); }
+    append_words(w, words, text);
     let len = text.len;
     if len == 0 || len > 65535 || seen.contains(text) { return; }
     let at = m.pool.len;
@@ -1747,7 +1759,7 @@ fn place_mixed(m: Menu&, w: Words&, input: const u8[:]) -> bool {
     }
     guard saw_en && saw_zh else { return false; }
     text.clear();
-    for wi in words { word_text(w.list[wi], text); }
+    append_words(w, words, text);
     guard text.len > 0 && text.len <= 65535 else { return false; }
     let zh_ok = reached_front(input.len);
     var short_en = false;
