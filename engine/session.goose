@@ -227,16 +227,21 @@ fn free_session(handle: u64) {
     sessions.items[i].live = false;
     sessions.free(i);
     if active == handle {
-        clear_composition();
+        clear_client_context();
         active = 0;
     }
 }
 
 fn reset(handle: u64) {
-    if handle == active {
-        clear_composition();
-        recent.clear();                 // the text around the caret is not what we committed
-    }
+    if handle == active { clear_client_context(); }
+}
+
+// A different caret cannot refer to the previous field's commits or text.
+fn clear_client_context() {
+    clear_composition();
+    recent.clear();
+    userdb::set_carry(0, 0);
+    last_was_digit = false;
 }
 
 fn chars_in(text: const u8[:]) -> i64 {
@@ -1380,7 +1385,7 @@ fn handle_key(handle: u64, ev: KeyEvent) -> u32 {
     learning_allowed = (ev.flags & KEYFLAG_NO_LEARN) == 0;
     guard ready && index(handle) >= 0 else { return 0; }
     if active != handle {
-        clear_composition();
+        clear_client_context();
         active = handle;
     }
     if (ev.flags & KEYFLAG_PICK) != 0 {

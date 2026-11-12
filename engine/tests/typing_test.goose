@@ -852,6 +852,30 @@ fn learning(s: u64) {
     userdb::clock_override = 0;
 }
 
+fn learning_across_fields() {
+    for free_first in [true, false] {
+        userdb::reset();
+        let first = session::new_session();
+        check(pick(first, "xian", "西安", 0) && userdb::chosen("xian", "西安") == 1.0,
+              "first field learns 西安");
+        if free_first { session::free_session(first); }
+
+        let second = session::new_session();
+        press(second, session::KEY_BACKSPACE);
+        press(second, session::KEY_BACKSPACE);
+        let separate_context = userdb::carry_prev == 0 && userdb::carry_ant == 0;
+        let picked = pick(second, "xian", "先", 0);
+        check(separate_context && picked && userdb::chosen("xian", "西安") == 1.0 &&
+              userdb::chosen("xian", "先") == 1.0 && userdb::lex.entries.len == 2,
+              if free_first { "backspacing in a new field preserves learning from the closed field" }
+              else { "backspacing in another live field preserves learning from the first field" });
+
+        session::free_session(second);
+        if !free_first { session::free_session(first); }
+    }
+    userdb::reset();
+}
+
 fn stored_syllables() -> i64 {
     var n: i64 = 0;
     for e in userdb::lex.entries { n += e.len as i64; }
@@ -1660,6 +1684,7 @@ fn main() {
     userdb::reset();
     charsets(session::new_session());
     learning(session::new_session());
+    learning_across_fields();
     storage(session::new_session());
     learning_at_capacity();
     shuangpin(session::new_session());
