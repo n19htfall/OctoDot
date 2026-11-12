@@ -1952,7 +1952,7 @@ fn commit_first(s: u64, input: const u8[:], want: const u8[:]) {
 
 fn mx(word: i32, score: f64, en: u8, zh_at: i32, zh_prev: i32) -> decoder::Mx {
     return decoder::Mx { prev: -1, word: word, score: score, last_en: en, zh_prev: zh_prev, zh_at: zh_at,
-                         anchor: 0, saw_zh: 1, tail: -1 };
+                         anchor: 0, saw_zh: 1, tail: -1, tail_head: -1 };
 }
 
 fn alive(next: i32[>..]&, heads: i32[>..]&, to: i64) -> i64 {

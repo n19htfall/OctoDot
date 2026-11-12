@@ -1265,7 +1265,7 @@ struct Segment { from: u8, to: u8, edge: u32, word: u32, depth: u8 }
 // ("ke zd wo xb", or for shuangpin each syllable's pinyin). Each word of
 // the best sentence is matched again against the graph's edges; only those
 // few words, so the search itself carries nothing extra.
-struct Mx { prev: i32, word: i32, score: f64, last_en: u8, zh_prev: i32, zh_at: i32, anchor: i32, saw_zh: u8, tail: i32 }
+struct Mx { prev: i32, word: i32, score: f64, last_en: u8, zh_prev: i32, zh_at: i32, anchor: i32, saw_zh: u8, tail: i32, tail_head: i32 }
 
 // How much better the next Chinese word reads after a Chinese sense of the
 // English word just taken, than after the context already scored. 0 when
@@ -1308,68 +1308,120 @@ fn sense_follow(code: const u8[:], head: const u8[:]) -> f64 {
     return best;
 }
 
-// The Chinese word that ends where this English word starts was chosen without
-// seeing the English word. If another reading of that same span fits a sense
-// of the English word, use it instead and return how much the score moves.
-fn prefix_tail(w: Words&, input: const u8[:], en: Word, from: i64) -> i32, f64 {
-    guard semantic::active() else { return -1, 0.0; }
+fn keep_best(w: Words&, picks: i64[>..]&, i: i64, cap: i64) {
+    if picks.len < cap {
+        picks.push(i);
+        return;
+    }
+    var worst: i64 = 0;
+    for t in 1..picks.len {
+        if w.list[picks[t]].score < w.list[picks[worst]].score { worst = t; }
+    }
+    if w.list[i].score > w.list[picks[worst]].score { picks[worst] = i; }
+}
+
+// The syllable ending where the English word starts was chosen before that
+// word was known. A longer word such as 你和 hides it. Re-read only that
+// syllable by how well it precedes a sense: 喝咖啡, not how common 你和 is.
+fn prefix_tail(w: Words&, input: const u8[:], en: Word, from: i64) -> i32, i32, f64 {
+    guard semantic::active() else { return -1, -1, 0.0; }
     let ef: i64 = en.from;
     let ee: i64 = en.end;
-    guard ee > ef && ee <= input.len && from < front_n.len && front_n[from] > 0 else { return -1, 0.0; }
-    if span_capital(ef, ee - ef) { return -1, 0.0; }
+    guard ee > ef && ee <= input.len && from < front_n.len && front_n[from] > 0 else { return -1, -1, 0.0; }
+    if span_capital(ef, ee - ef) { return -1, -1, 0.0; }
     let code = input[ef..ee];
-    guard semantic::count(code) > 0 else { return -1, 0.0; }
+    guard semantic::count(code) > 0 else { return -1, -1, 0.0; }
     let last: i64 = front_ids[front_at[from] + front_n[from] - 1];
-    guard last >= 0 && last < w.list.len else { return -1, 0.0; }
+    guard last >= 0 && last < w.list.len else { return -1, -1, 0.0; }
     let lw = w.list[last];
-    if lw.source == ENGLISH || (lw.to as i64) != from { return -1, 0.0; }
-    var left: u8[>..] = [];
-    if front_n[from] >= 2 {
-        let prev: i64 = front_ids[front_at[from] + front_n[from] - 2];
-        if prev >= 0 && prev < w.list.len { word_text(w.list[prev], left); }
-    } else if preceding.len > 0 {
-        left.append(preceding);
+    if lw.source == ENGLISH || (lw.to as i64) != from { return -1, -1, 0.0; }
+    var mark: u8[>..] = [];
+    word_text(lw, mark);
+    var start: i64 = 0;
+    var at: i64 = 0;
+    while at < mark.len {
+        start = at;
+        let c = mark[at];
+        if c < 0x80 { at += 1; }
+        else if c < 0xE0 { at += 2; }
+        else if c < 0xF0 { at += 3; }
+        else { at += 4; }
+    }
+    var syl: i64 = lw.from;
+    if start < mark.len {
+        let last_char = mark[start..];
+        for i in w.list.len {
+            let word = w.list[i];
+            if word.source == ENGLISH || (word.to as i64) != from { continue; }
+            var one: u8[>..] = [];
+            word_text(word, one);
+            if one == last_char { syl = word.from; break; }
+        }
     }
     var picks: i64[>..] = [];
     let cap = grammar::homophones();
+    var orig: i64 = if (lw.from as i64) == syl { last } else { -1 };
     for i in w.list.len {
         let word = w.list[i];
-        if word.source == ENGLISH || word.from != lw.from || word.to != lw.to { continue; }
-        if picks.len < cap {
-            picks.push(i);
-            continue;
-        }
-        var worst: i64 = 0;
-        for t in 1..picks.len {
-            if w.list[picks[t]].score < w.list[picks[worst]].score { worst = t; }
-        }
-        if word.score > w.list[picks[worst]].score { picks[worst] = i; }
+        if word.source == ENGLISH || (word.from as i64) != syl || (word.to as i64) != from { continue; }
+        keep_best(w, picks, i, cap);
     }
-    var have = false;
-    for p in picks { if p == last { have = true; } }
-    if !have { picks.push(last); }
-    var orig: u8[>..] = [];
-    word_text(lw, orig);
-    let orig_left = fit(left, hash(left), orig, hash(orig), false);
-    let orig_right = sense_follow(code, orig);
+    if orig >= 0 {
+        var listed = false;
+        for p in picks { if p == orig { listed = true; } }
+        if !listed { picks.push(orig); }
+    } else {
+        var mark: u8[>..] = [];
+        word_text(lw, mark);
+        var start: i64 = 0;
+        var at: i64 = 0;
+        while at < mark.len {
+            start = at;
+            let c = mark[at];
+            if c < 0x80 { at += 1; }
+            else if c < 0xE0 { at += 2; }
+            else if c < 0xF0 { at += 3; }
+            else { at += 4; }
+        }
+        var oi: i64 = 0;
+        while oi < picks.len {
+            var one: u8[>..] = [];
+            word_text(w.list[picks[oi]], one);
+            if start < mark.len && one == mark[start..] { orig = picks[oi]; }
+            oi++;
+        }
+    }
+    guard orig >= 0 else { return -1, -1, 0.0; }
+    var orig_text: u8[>..] = [];
+    word_text(w.list[orig], orig_text);
+    let orig_right = sense_follow(code, orig_text);
     var best_i: i32 = -1;
     var best_d = 0.0;
-    var head: u8[>..] = [];
+    var one: u8[>..] = [];
     for pick in picks {
-        head.clear();
-        word_text(w.list[pick], head);
-        let gl = fit(left, hash(left), head, hash(head), false);
-        let gr = sense_follow(code, head);
-        // The frequency gap between two readings of the same span is already
-        // in the word scores. The sense is allowed to spend all of it.
-        let d = (w.list[pick].score as f64) - (lw.score as f64) + (gl - orig_left) + (gr - orig_right);
+        one.clear();
+        word_text(w.list[pick], one);
+        let gr = sense_follow(code, one);
+        let d = (w.list[pick].score as f64) - (w.list[orig].score as f64) + (gr - orig_right);
         if d > best_d {
             best_d = d;
             best_i = pick as i32;
         }
     }
-    guard best_i >= 0 && (best_i as i64) != last else { return -1, 0.0; }
-    return best_i, best_d;
+    guard best_i >= 0 && (best_i as i64) != orig else { return -1, -1, 0.0; }
+    if (lw.from as i64) == syl { return best_i, -1, best_d; }
+    var head: i64 = -1;
+    var head_s = -1.0e30;
+    for i in w.list.len {
+        let word = w.list[i];
+        if word.source == ENGLISH || (word.from as i64) != (lw.from as i64) || (word.to as i64) != syl { continue; }
+        if (word.score as f64) > head_s {
+            head_s = word.score as f64;
+            head = i;
+        }
+    }
+    guard head >= 0 else { return best_i, -1, best_d; }
+    return best_i, head as i32, best_d;
 }
 
 fn mixed_boost(w: Words&, prev: i64, ant: i64, current: i64) -> f64 {
@@ -1531,13 +1583,17 @@ fn place_mixed(m: Menu&, w: Words&, input: const u8[:]) -> bool {
             zh_at = front_ids[(front_at[from] + front_n[from] - 1)];
         }
         var tail: i32 = -1;
+        var tail_head: i32 = -1;
         if saw != 0 {
-            let swapped, bump = prefix_tail(w, input, word, from);
+            let swapped, head, bump = prefix_tail(w, input, word, from);
             tail = swapped;
+            tail_head = head;
+            if swapped >= 0 { zh_at = swapped; }
             score += bump;
         }
         consider_mx(states, next, heads, to, Mx { prev: -1, word: ei as i32, score: score, last_en: 1, zh_prev: -1,
-                                                   zh_at: zh_at, anchor: anchor as i32, saw_zh: saw, tail: tail });
+                                                   zh_at: zh_at, anchor: anchor as i32, saw_zh: saw, tail: tail,
+                                                   tail_head: tail_head });
     }
     var text: u8[>..] = [];
     var ctx: u8[>..] = [];
@@ -1626,7 +1682,8 @@ fn place_mixed(m: Menu&, w: Words&, input: const u8[:]) -> bool {
                 var zp: i32 = -1;
                 if s.last_en == 0 { zp = s.word; }
                 consider_mx(states, next, heads, to, Mx { prev: s_i, word: wi as i32, score: score, last_en: 0,
-                                                          zh_prev: zp, zh_at: -1, anchor: s.anchor, saw_zh: 1, tail: s.tail });
+                                                          zh_prev: zp, zh_at: -1, anchor: s.anchor, saw_zh: 1, tail: s.tail,
+                                                          tail_head: s.tail_head });
             }
             for ei in en_idx {
                 let word = w.list[ei];
@@ -1638,7 +1695,7 @@ fn place_mixed(m: Menu&, w: Words&, input: const u8[:]) -> bool {
                 var zh_at: i32 = if s.last_en == 0 { s.word } else { s.zh_at };
                 consider_mx(states, next, heads, to, Mx { prev: s_i, word: ei as i32, score: score, last_en: 1,
                                                           zh_prev: -1, zh_at: zh_at, anchor: s.anchor, saw_zh: s.saw_zh,
-                                                          tail: s.tail });
+                                                          tail: s.tail, tail_head: s.tail_head });
             }
         }
     }
@@ -1667,8 +1724,10 @@ fn place_mixed(m: Menu&, w: Words&, input: const u8[:]) -> bool {
         let a: i64 = front_at[anchor];
         let n: i64 = front_n[anchor];
         let tail = states[best_i].tail;
+        let tail_head = states[best_i].tail_head;
         if tail >= 0 && n > 0 {
             for k in a..a + n - 1 { words.push(front_ids[k]); }
+            if tail_head >= 0 { words.push(tail_head); }
             words.push(tail);
         } else {
             for k in a..a + n { words.push(front_ids[k]); }
