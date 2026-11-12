@@ -22,6 +22,7 @@ import phrases;
 import grammar;
 import english;
 import spelling;
+import semantic;
 
 namespace decoder;
 
@@ -80,6 +81,7 @@ let EN_BIAS = -10.0;
 let EN_SWITCH = -5.0;        // once per ZH↔EN boundary, not between two English words
 let EN_PREFIX_PENALTY = 12.0;
 let EN_TOP1 = 18.0;          // mixed score − Chinese score, to take the first place
+let SEM_LIFT = 8.0;          // most a Chinese sense of an English word may add over the score it already has
 let EN_PAGE = 2.0;           // ...to stay on the first page, behind the Chinese
 let EN_THREE = 100;          // a lowercase 3-letter word must be at least this common
 let MAX_EN_EDGES = 48;
@@ -1249,7 +1251,112 @@ struct Segment { from: u8, to: u8, edge: u32, word: u32, depth: u8 }
 // ("ke zd wo xb", or for shuangpin each syllable's pinyin). Each word of
 // the best sentence is matched again against the graph's edges; only those
 // few words, so the search itself carries nothing extra.
-struct Mx { prev: i32, word: i32, score: f64, last_en: u8, zh_prev: i32, zh_at: i32, anchor: i32, saw_zh: u8 }
+struct Mx { prev: i32, word: i32, score: f64, last_en: u8, zh_prev: i32, zh_at: i32, anchor: i32, saw_zh: u8, tail: i32 }
+
+// How much better the next Chinese word reads after a Chinese sense of the
+// English word just taken, than after the context already scored. 0 when
+// the table has no sense, or the sense is no help. A typed capital is left
+// alone: Python and Apple keep their names.
+fn shadow_lift(input: const u8[:], en: Word, left: const u8[:], word: const u8[:], rear: bool) -> f64 {
+    guard semantic::active() else { return -1.0e30; }
+    let from: i64 = en.from;
+    let end: i64 = en.end;
+    guard end > from && end <= input.len else { return -1.0e30; }
+    if span_capital(from, end - from) { return -1.0e30; }
+    let code = input[from..end];
+    let n = semantic::count(code);
+    guard n > 0 else { return -1.0e30; }
+    var best = -1.0e30;
+    var sense: u8[>..] = [];
+    var shadow: u8[>..] = [];
+    for i in n {
+        semantic::copy(code, i, sense);
+        shadow.clear();
+        if left.len > 0 && !(left.len == 1 && left[0] == ' ') { shadow.append(left); }
+        shadow.append(sense);
+        let g = fit(shadow, hash(shadow), word, hash(word), rear) + 0.15 * semantic::prior(code, i);
+        if g > best { best = g; }
+    }
+    guard best > -1.0e20 else { return 0.0; }
+    return best;
+}
+
+// How well `head` is followed by a Chinese sense of `code`.
+fn sense_follow(code: const u8[:], head: const u8[:]) -> f64 {
+    var best = -1.0e30;
+    var sense: u8[>..] = [];
+    let n = semantic::count(code);
+    for i in n {
+        semantic::copy(code, i, sense);
+        let g = fit(head, hash(head), sense, hash(sense), false) + 0.15 * semantic::prior(code, i);
+        if g > best { best = g; }
+    }
+    return best;
+}
+
+// The Chinese word that ends where this English word starts was chosen without
+// seeing the English word. If another reading of that same span fits a sense
+// of the English word, use it instead and return how much the score moves.
+fn prefix_tail(w: Words&, input: const u8[:], en: Word, from: i64) -> i32, f64 {
+    guard semantic::active() else { return -1, 0.0; }
+    let ef: i64 = en.from;
+    let ee: i64 = en.end;
+    guard ee > ef && ee <= input.len && from < front_n.len && front_n[from] > 0 else { return -1, 0.0; }
+    if span_capital(ef, ee - ef) { return -1, 0.0; }
+    let code = input[ef..ee];
+    guard semantic::count(code) > 0 else { return -1, 0.0; }
+    let last: i64 = front_ids[front_at[from] + front_n[from] - 1];
+    guard last >= 0 && last < w.list.len else { return -1, 0.0; }
+    let lw = w.list[last];
+    if lw.source == ENGLISH || (lw.to as i64) != from { return -1, 0.0; }
+    var left: u8[>..] = [];
+    if front_n[from] >= 2 {
+        let prev: i64 = front_ids[front_at[from] + front_n[from] - 2];
+        if prev >= 0 && prev < w.list.len { word_text(w.list[prev], left); }
+    } else if preceding.len > 0 {
+        left.append(preceding);
+    }
+    var picks: i64[>..] = [];
+    let cap = grammar::homophones();
+    for i in w.list.len {
+        let word = w.list[i];
+        if word.source == ENGLISH || word.from != lw.from || word.to != lw.to { continue; }
+        if picks.len < cap {
+            picks.push(i);
+            continue;
+        }
+        var worst: i64 = 0;
+        for t in 1..picks.len {
+            if w.list[picks[t]].score < w.list[picks[worst]].score { worst = t; }
+        }
+        if word.score > w.list[picks[worst]].score { picks[worst] = i; }
+    }
+    var have = false;
+    for p in picks { if p == last { have = true; } }
+    if !have { picks.push(last); }
+    var orig: u8[>..] = [];
+    word_text(lw, orig);
+    let orig_left = fit(left, hash(left), orig, hash(orig), false);
+    let orig_right = sense_follow(code, orig);
+    var best_i: i32 = -1;
+    var best_d = 0.0;
+    var head: u8[>..] = [];
+    for pick in picks {
+        head.clear();
+        word_text(w.list[pick], head);
+        let gl = fit(left, hash(left), head, hash(head), false);
+        let gr = sense_follow(code, head);
+        // The frequency gap between two readings of the same span is already
+        // in the word scores. The sense is allowed to spend all of it.
+        let d = (w.list[pick].score as f64) - (lw.score as f64) + (gl - orig_left) + (gr - orig_right);
+        if d > best_d {
+            best_d = d;
+            best_i = pick as i32;
+        }
+    }
+    guard best_i >= 0 && (best_i as i64) != last else { return -1, 0.0; }
+    return best_i, best_d;
+}
 
 fn mixed_boost(w: Words&, prev: i64, ant: i64, current: i64) -> f64 {
     guard prev >= 0 && current >= 0 else { return 0.0; }
@@ -1374,8 +1481,14 @@ fn place_mixed(m: Menu&, w: Words&, input: const u8[:]) -> bool {
         if saw != 0 && front_n[from] > 0 {
             zh_at = front_ids[(front_at[from] + front_n[from] - 1)];
         }
+        var tail: i32 = -1;
+        if saw != 0 {
+            let swapped, bump = prefix_tail(w, input, word, from);
+            tail = swapped;
+            score += bump;
+        }
         consider_mx(states, next, heads, to, Mx { prev: -1, word: ei as i32, score: score, last_en: 1, zh_prev: -1,
-                                                   zh_at: zh_at, anchor: anchor as i32, saw_zh: saw });
+                                                   zh_at: zh_at, anchor: anchor as i32, saw_zh: saw, tail: tail });
     }
     var text: u8[>..] = [];
     var ctx: u8[>..] = [];
@@ -1440,13 +1553,27 @@ fn place_mixed(m: Menu&, w: Words&, input: const u8[:]) -> bool {
                         }
                     }
                     score += fit_weight * g;
+                    if s.last_en != 0 && (s.word as i64) >= 0 && (s.word as i64) < w.list.len &&
+                       w.list[s.word].source == ENGLISH {
+                        let alt = shadow_lift(input, w.list[s.word], ctx, text, rear);
+                        if alt > -1.0e20 {
+                            var lift = alt - g;
+                            if lift > SEM_LIFT { lift = SEM_LIFT; }
+                            if lift > 0.0 { score += lift; }
+                        }
+                        // 吧 closing the input, after a word that has a Chinese sense,
+                        // is the sentence-final particle. Bounded, and only at the end.
+                        if rear && text == "吧" && semantic::count(input[w.list[s.word].from..w.list[s.word].end]) > 0 {
+                            score += 12.0;
+                        }
+                    }
                     if emit_on { score += emit_weight * emission(input, word.from, to, text); }
                 }
                 if s.last_en == 0 { score += mixed_boost(w, s.word, s.zh_prev, wi); }
                 var zp: i32 = -1;
                 if s.last_en == 0 { zp = s.word; }
                 consider_mx(states, next, heads, to, Mx { prev: s_i, word: wi as i32, score: score, last_en: 0,
-                                                          zh_prev: zp, zh_at: -1, anchor: s.anchor, saw_zh: 1 });
+                                                          zh_prev: zp, zh_at: -1, anchor: s.anchor, saw_zh: 1, tail: s.tail });
             }
             for ei in en_idx {
                 let word = w.list[ei];
@@ -1457,7 +1584,8 @@ fn place_mixed(m: Menu&, w: Words&, input: const u8[:]) -> bool {
                 if s.last_en == 0 { score += EN_SWITCH; }
                 var zh_at: i32 = if s.last_en == 0 { s.word } else { s.zh_at };
                 consider_mx(states, next, heads, to, Mx { prev: s_i, word: ei as i32, score: score, last_en: 1,
-                                                          zh_prev: -1, zh_at: zh_at, anchor: s.anchor, saw_zh: s.saw_zh });
+                                                          zh_prev: -1, zh_at: zh_at, anchor: s.anchor, saw_zh: s.saw_zh,
+                                                          tail: s.tail });
             }
         }
     }
@@ -1485,7 +1613,13 @@ fn place_mixed(m: Menu&, w: Words&, input: const u8[:]) -> bool {
     if anchor > begin && reached_front(anchor) {
         let a: i64 = front_at[anchor];
         let n: i64 = front_n[anchor];
-        for k in a..a + n { words.push(front_ids[k]); }
+        let tail = states[best_i].tail;
+        if tail >= 0 && n > 0 {
+            for k in a..a + n - 1 { words.push(front_ids[k]); }
+            words.push(tail);
+        } else {
+            for k in a..a + n { words.push(front_ids[k]); }
+        }
     }
     var k = chain.len - 1;
     while k >= 0 {

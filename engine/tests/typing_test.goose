@@ -1956,6 +1956,8 @@ fn mixed_sentences(s: u64) {
     commit_first(s, "xianzaiqukaimeetingba", "现在去开meeting吧");
     commit_first(s, "woxiangyongpythonxie", "我想用python写");
     commit_first(s, "woyonggithub", "我用GitHub");
+    commit_first(s, "zhegezhendehencrazyba", "这个真的很crazy吧");
+    commit_first(s, "nideconditionbawodejihuadoudaluanle", "你的condition把我的计划都打乱了");
     // The pure Chinese reading stays on the first page, one key away.
     press(s, session::KEY_ESCAPE);
     type_text(s, "jintianxiawuyougemeeting");
@@ -1991,6 +1993,8 @@ fn mixed_sentences(s: u64) {
     commit_first(s, "xmzdqukdmeetingba", "现在去开meeting吧");
     commit_first(s, "woxlyspythonxp", "我想用python写");
     commit_first(s, "woysgithub", "我用GitHub");
+    commit_first(s, "vegevfdehfcrazyba", "这个真的很crazy吧");
+    commit_first(s, "nideconditionbawodejihxdzdalrle", "你的condition把我的计划都打乱了");
     check(session::set_scheme("fullpinyin") == 0, "back to full pinyin");
     // Choosing the mixed sentence remembers it, and does not teach the English word on its own
     // or a Chinese phrase that runs across it.

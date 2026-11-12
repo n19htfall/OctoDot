@@ -10,5 +10,6 @@ import phrases;
 import lattice;
 import grammar;
 import decoder;
+import semantic;
 import rerank;
 import session;

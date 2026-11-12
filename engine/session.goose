@@ -18,6 +18,7 @@ import userdb;
 import sets;
 import phrases;
 import english;
+import semantic;
 import rerank;
 
 namespace session;
@@ -197,6 +198,7 @@ fn open(directory: const u8[:]) -> i32 {
         var img: u8[>..] = [];
         if !read_file(str(directory, "/english.img"), img) || !english::load(img) { english::clear_live(); }
     }
+    if !semantic::load(str(directory, "/semantic.tsv")) { semantic::clear(); }
     rerank::open(directory);        // no model in the images: the reranker stays off
     decoder::forget_fits();
     userdb::reset();                // now bound to this lexicon's syllables

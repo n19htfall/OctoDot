@@ -137,7 +137,12 @@ test-prep: fetch
 test-images: images $(BIN)/images-test
 	$(BIN)/images-test $(PREPARED) $(IMAGES)
 
-test-typing: images $(BIN)/typing-test
+# Chinese senses of English words already in the dictionary. Missing file:
+# the mixed decoder keeps its previous scores.
+$(IMAGES)/semantic.tsv: tools/compile-semantic.py data/glossary_clean.tsv $(PREPARED)/english.tsv $(PREPARED)/lexicon.tsv
+	python3 tools/compile-semantic.py data/glossary_clean.tsv $(PREPARED)/english.tsv $(PREPARED)/lexicon.tsv $@
+
+test-typing: images $(IMAGES)/semantic.tsv $(BIN)/typing-test
 	$(BIN)/typing-test $(IMAGES)
 
 # The same three checks as a debug build. Full pinyin accuracy is several
@@ -158,7 +163,7 @@ $(ACCURACY)/words.tsv: $(OCTO_PREP) data/accuracy.lock $(PREPARED)/report.json |
 
 # M1's accuracy gate, in both schemes: 95% of the common words and idioms first; names, places and
 # sentences are metrics. The summaries only (make accuracy lists the misses).
-test-accuracy: images $(BIN)/accuracy $(ACCURACY)/words.tsv
+test-accuracy: images $(IMAGES)/semantic.tsv $(BIN)/accuracy $(ACCURACY)/words.tsv
 	@for scheme in fullpinyin flypy; do \
 	    $(BIN)/accuracy $(IMAGES) $(ACCURACY) $$scheme >build/accuracy.$$scheme.txt; status=$$?; \
 	    grep -v '^miss' build/accuracy.$$scheme.txt; \
