@@ -99,7 +99,7 @@ $(IMAGES)/lexicon.img: $(BIN)/octo-compile $(PREPARED)/report.json data/rerank.l
 
 images: prep $(IMAGES)/lexicon.img
 
-app: images
+app: images $(IMAGES)/semantic.tsv
 	$(MAKE) -C macos all
 
 # Distribution (docs/distribution-and-onboarding.md): a development-signed disk

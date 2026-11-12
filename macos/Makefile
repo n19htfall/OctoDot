@@ -120,7 +120,7 @@ GLOSSARY_STAMP  := build/glossary.inputs
 # core filename identifies both code and data, so a data-only update reloads.
 CORE_DATA    := $(sort $(wildcard $(IMAGES)/lexicon*.img $(IMAGES)/spellings.*.img $(IMAGES)/aux.*.img \
                 $(IMAGES)/grammar.img $(IMAGES)/english.img $(IMAGES)/syllables.tsv \
-                $(IMAGES)/rerank.img $(IMAGES)/rerank.weights) $(GLOSSARY_INDEX))
+                $(IMAGES)/rerank.img $(IMAGES)/rerank.weights) $(GLOSSARY_INDEX) $(IMAGES)/semantic.tsv)
 CORE_ID      := build/core.identity
 
 .PHONY: all test install enable uninstall clean dmg test-dmg release audit check-identity release-key appcast \
@@ -229,7 +229,7 @@ $(IME_APP): $(CORE_INPUTS) $(CORE_DATA) $(CORE_ID) $(IMAGES)/$(GRAMMAR_NAME) scr
 	    sed 's/@BUNDLE_ID@/$(IME_ID)/g' InfoPlist.strings.in > $@.partial/Contents/Resources/$$lang.lproj/InfoPlist.strings; \
 	done
 	cp $(IMAGES)/lexicon*.img $(IMAGES)/spellings.*.img $(IMAGES)/aux.*.img $(IMAGES)/grammar.img \
-	    $(IMAGES)/english.img \
+	    $(IMAGES)/english.img $(IMAGES)/semantic.tsv \
 	    $(IMAGES)/syllables.tsv $@.partial/Contents/Resources/data/
 	cp $(GLOSSARY_INDEX) $@.partial/Contents/Resources/data/glossary.sqlite3
 	printf '%s %s %s\n' $(GRAMMAR_SHA) $$(stat -f %z $(IMAGES)/$(GRAMMAR_NAME)) $(GRAMMAR_NAME) \
