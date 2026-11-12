@@ -9,6 +9,11 @@ enum AppRulesDocument {
         record["punctuation"] as? String == halfwidthPunctuation
     }
 
+    /// Missing, or anything other than true, leaves learning on.
+    static func isNoLearn(_ record: [String: Any]) -> Bool {
+        record["noLearn"] as? Bool == true
+    }
+
     /// A bundle id: letters, digits, dots and hyphens, with a dot. Anything else is refused.
     static func bundleID(_ raw: String) -> String? {
         let id = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -62,6 +67,15 @@ enum AppRulesDocument {
         guard let index = rows.firstIndex(where: { $0["id"] as? String == id }) else { return rows }
         if on { rows[index]["punctuation"] = halfwidthPunctuation }
         else { rows[index].removeValue(forKey: "punctuation") }
+        return rows
+    }
+
+    static func setNoLearn(_ rows: [[String: Any]], id: String, on: Bool) -> [[String: Any]] {
+        guard let id = bundleID(id) else { return normalized(rows) }
+        var rows = normalized(rows)
+        guard let index = rows.firstIndex(where: { $0["id"] as? String == id }) else { return rows }
+        if on { rows[index]["noLearn"] = true }
+        else { rows[index].removeValue(forKey: "noLearn") }
         return rows
     }
 

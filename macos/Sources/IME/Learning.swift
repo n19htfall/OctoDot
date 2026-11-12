@@ -124,9 +124,12 @@ enum Learning {
     }
 
     /// The flags for a key typed into `app`: no learning in a secure field
-    /// (a password box anywhere), in a no-learn app, or in incognito.
-    static func flags(forApp app: String) -> Engine.KeyFlags {
-        if incognito || IsSecureEventInputEnabled() || noLearnApps.contains(app) { return .noLearn }
+    /// (a password box anywhere), in a no-learn app, in incognito, or when
+    /// `reported` (this key's client) has its own switch on.
+    static func flags(forApp app: String, reported: String) -> Engine.KeyFlags {
+        if incognito || IsSecureEventInputEnabled() || noLearnApps.contains(app) || AppRules.noLearn(for: reported) {
+            return .noLearn
+        }
         return []
     }
 

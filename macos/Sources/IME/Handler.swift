@@ -161,7 +161,7 @@ final class Handler: NSObject, OctoDotHandlerV2 {
         if !reported.isEmpty { clientApp = reported }
         let app = clientApp
         let (result, snapshot) = MainActor.assumeIsolated {
-            var flags = Learning.flags(forApp: app).union(extra)
+            var flags = Learning.flags(forApp: app, reported: reported).union(extra)
             if AppRules.halfwidthPunctuation(for: reported) { flags.insert(.halfwidthPunctuation) }
             let outcome = Engine.shared.process(session, key, flags: flags)
             Learning.noteActivity()

@@ -1011,6 +1011,82 @@ fn halfwidth_punctuation(s: u64) {
     press(s, session::KEY_ESCAPE);
 }
 
+fn key_with(s: u64, key: i64, c: i64, flags: i64) -> u32 {
+    session::key(s, session::KeyEvent { key: key as u16, flags: flags as u16, modifiers: 0,
+                                        codepoint: c as u32, time_ms: 0 })
+}
+
+// KEYFLAG_NO_LEARN commits and does not teach, on every way a composition ends.
+fn no_learn_policy(s: u64) {
+    let quiet = session::KEYFLAG_NO_LEARN;
+    userdb::reset();
+    check(pick(s, "nihao", "你好", 0) && userdb::chosen("nihao", "你好") == 1 && userdb::lex.entries.len == 1,
+          "nihao learns 你好 once");
+    check(pick(s, "nihao", "你好", 0) && userdb::chosen("nihao", "你好") == 2,
+          "a second pick of 你好 counts again");
+    let learned = userdb::lex.entries.len;
+    check(pick(s, "nihao", "你好", quiet) && session::commit == "你好" && userdb::chosen("nihao", "你好") == 2 &&
+          userdb::lex.entries.len == learned,
+          "no-learn: picking 你好 again commits it and does not count");
+    check(pick(s, "nihao", "你好", 0) && userdb::chosen("nihao", "你好") == 3,
+          "the next pick, without the flag, counts again");
+
+    userdb::reset();
+    press(s, session::KEY_ESCAPE);
+    type_text(s, "nihao");
+    let spaced = key_with(s, session::KEY_SPACE, 0, quiet);
+    check((spaced & session::HAS_COMMIT) != 0 && session::commit == "你好" && userdb::chosen("nihao", "你好") == 0 &&
+          userdb::lex.entries.len == 0,
+          "no-learn: space commits 你好 and teaches nothing");
+    press(s, session::KEY_ESCAPE);
+    type_text(s, "nihao");
+    let clicked = key_with(s, 0, 0, session::KEYFLAG_PICK | quiet);
+    check((clicked & session::HAS_COMMIT) != 0 && session::commit == "你好" && userdb::lex.entries.len == 0,
+          "no-learn: a click on 你好 commits it and teaches nothing");
+    press(s, session::KEY_ESCAPE);
+    type_text(s, "nihao");
+    let marked = keyed(s, ',', quiet);
+    check((marked & session::HAS_COMMIT) != 0 && session::commit == "你好，" && userdb::chosen("nihao", "你好") == 0 &&
+          userdb::lex.entries.len == 0,
+          "no-learn: nihao then , commits 你好， and teaches nothing");
+    press(s, session::KEY_ESCAPE);
+    type_text(s, "nihao");
+    let narrow = keyed(s, ',', session::KEYFLAG_HALFWIDTH_PUNCT | quiet);
+    check((narrow & session::HAS_COMMIT) != 0 && session::commit == "你好," && userdb::chosen("nihao", "你好") == 0 &&
+          userdb::lex.entries.len == 0,
+          "no-learn and halfwidth: nihao then , commits 你好, and teaches nothing");
+
+    userdb::reset();
+    check(pick(s, "ok", "OK", 0) && userdb::english_uses("ok", "OK") == 1, "ok learns OK once");
+    check(pick(s, "ok", "OK", 0) && userdb::english_uses("ok", "OK") == 2, "a second pick of OK counts again");
+    check(pick(s, "ok", "OK", quiet) && session::commit == "OK" && userdb::english_uses("ok", "OK") == 2,
+          "no-learn: picking OK again commits it and does not count");
+    check(pick(s, "ok", "OK", 0) && userdb::english_uses("ok", "OK") == 3, "the next English pick counts again");
+
+    userdb::reset();
+    check(pick(s, "xian", "西安", 0) && userdb::carry_prev != 0, "西安 is carried as context");
+    let links = userdb::pom.len;
+    check(pick(s, "zhongguo", "中国", 0) && userdb::pom.len > links, "中国 after 西安 records a context link");
+    userdb::reset();
+    check(pick(s, "xian", "西安", 0), "西安 is learned before a no-learn word");
+    let held = userdb::pom.len;
+    let carried = userdb::carry_prev;
+    let words = userdb::lex.entries.len;
+    check(pick(s, "zhongguo", "中国", quiet) && session::commit == "中国" && userdb::pom.len == held &&
+          userdb::carry_prev == carried && userdb::chosen("zhongguo", "中国") == 0 && userdb::lex.entries.len == words,
+          "no-learn: 中国 commits and adds no word, count, or context link");
+
+    userdb::reset();
+    check(pick(s, "xian", "西安", 0) && userdb::chosen("xian", "西安") == 1, "xian learns 西安");
+    press(s, session::KEY_BACKSPACE);
+    press(s, session::KEY_BACKSPACE);
+    check(pick(s, "xian", "先", quiet) && session::commit == "先" && userdb::chosen("xian", "西安") == 1 &&
+          userdb::chosen("xian", "先") == 0 && userdb::lex.entries.len == 1,
+          "no-learn: deleting 西安 and picking 先 commits 先 and leaves 西安 learned");
+    userdb::reset();
+    press(s, session::KEY_ESCAPE);
+}
+
 fn stored_syllables() -> i64 {
     var n: i64 = 0;
     for e in userdb::lex.entries { n += e.len as i64; }
@@ -1820,6 +1896,9 @@ fn main() {
     charsets(session::new_session());
     learning(session::new_session());
     learning_across_fields();
+    userdb::reset();
+    no_learn_policy(session::new_session());
+    userdb::reset();
     storage(session::new_session());
     learning_at_capacity();
     shuangpin(session::new_session());

@@ -329,6 +329,11 @@ final class SettingsModel {
         refresh()
     }
 
+    func setAppNoLearn(_ on: Bool, id: String) {
+        AppRules.setNoLearn(on, for: id)
+        refresh()
+    }
+
     func removeApp(_ id: String) {
         AppRules.remove(id)
         if openApp == id { openApp = nil }
@@ -561,14 +566,15 @@ private struct AppsPane: View {
                                     .foregroundStyle(.primary)
                                     .lineLimit(1)
                                 Spacer(minLength: 12)
-                                Text(app.punctuationTitle)
+                                Text(app.statusTitle)
                                     .foregroundStyle(.secondary)
                                     .lineLimit(1)
+                                    .layoutPriority(1)
                             }
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel("\(app.name)，\(app.punctuationTitle)")
+                        .accessibilityLabel("\(app.name)，\(app.statusTitle)")
                     }
                 }
             }
@@ -612,6 +618,12 @@ private struct AppPane: View {
                     Text(AppRules.Entry.followDefault).tag(false)
                     Text(AppRules.Entry.halfwidth).tag(true)
                 }
+            }
+            Section {
+                Toggle("不学习用户输入行为", isOn: Binding(get: { entry?.noLearn ?? false },
+                                                   set: { model.setAppNoLearn($0, id: id) }))
+            } footer: {
+                Note("开启后，OctoDot 不会从你在此应用中的输入和选词学习。已学词条仍可使用。")
             }
             Section {
                 Button("移除", role: .destructive) { model.removeApp(id) }

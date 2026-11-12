@@ -168,16 +168,30 @@ check((try? JSONDecoder().decode(Transfer.self, from: JSONEncoder().encode(trans
 // MARK: Per-app rules
 
 let bare = AppRulesDocument.upsert([], id: "com.example.A", name: "甲")
-check(bare.count == 1 && !AppRulesDocument.isHalfwidth(bare[0]) && bare[0]["punctuation"] == nil,
-      "a new app follows the default punctuation")
+check(bare.count == 1 && !AppRulesDocument.isHalfwidth(bare[0]) && bare[0]["punctuation"] == nil &&
+      !AppRulesDocument.isNoLearn(bare[0]) && bare[0]["noLearn"] == nil,
+      "a new app follows the default punctuation and still learns")
 var kept = AppRulesDocument.setHalfwidth(bare, id: "com.example.A", on: true)
 kept[0]["tone"] = "3"
 let again = AppRulesDocument.upsert(kept, id: "com.example.A", name: "乙")
 check(again.count == 1 && (again[0]["name"] as? String) == "乙" && AppRulesDocument.isHalfwidth(again[0]) &&
-      (again[0]["tone"] as? String) == "3",
+      (again[0]["tone"] as? String) == "3" && !AppRulesDocument.isNoLearn(again[0]),
       "adding an app again keeps one entry, its punctuation and any later option")
+let quiet = AppRulesDocument.setNoLearn(again, id: "com.example.A", on: true)
+check(quiet.count == 1 && AppRulesDocument.isNoLearn(quiet[0]) && AppRulesDocument.isHalfwidth(quiet[0]) &&
+      (quiet[0]["tone"] as? String) == "3",
+      "the no-learn switch keeps punctuation and any later option")
+let named = AppRulesDocument.upsert(quiet, id: "com.example.A", name: "丙")
+check(named.count == 1 && (named[0]["name"] as? String) == "丙" && AppRulesDocument.isNoLearn(named[0]) &&
+      AppRulesDocument.isHalfwidth(named[0]),
+      "adding an app again keeps its no-learn switch")
+let learning = AppRulesDocument.setNoLearn(named, id: "com.example.A", on: false)
+check(learning[0]["noLearn"] == nil && AppRulesDocument.isHalfwidth(learning[0]) &&
+      (learning[0]["tone"] as? String) == "3",
+      "turning the switch off omits it and keeps the other options")
 let followed = AppRulesDocument.setHalfwidth(again, id: "com.example.A", on: false)
-check(followed[0]["punctuation"] == nil && (followed[0]["tone"] as? String) == "3",
+check(followed[0]["punctuation"] == nil && (followed[0]["tone"] as? String) == "3" &&
+      !AppRulesDocument.isNoLearn(followed[0]),
       "follow default omits punctuation and keeps the other option")
 check(AppRulesDocument.remove(followed, id: "com.example.A").isEmpty, "removing the entry leaves none")
 check(AppRulesDocument.upsert([], id: "../no", name: "x").isEmpty, "a bundle id with a slash is refused")
@@ -189,16 +203,18 @@ let first = AppRulesDocument.normalized(repeated)
 check(first.count == 1 && AppRulesDocument.isHalfwidth(first[0]), "a repeated bundle id keeps the first record")
 
 let rulesKey = "appRules-test"
-if let data = AppRulesDocument.encode(again) {
+if let data = AppRulesDocument.encode(quiet) {
     UserDefaults.standard.set(data, forKey: rulesKey)
     let loaded = UserDefaults.standard.data(forKey: rulesKey).map(AppRulesDocument.decode) ?? []
-    check(loaded.count == 1 && AppRulesDocument.isHalfwidth(loaded[0]) && (loaded[0]["name"] as? String) == "乙" &&
-          (loaded[0]["tone"] as? String) == "3",
+    check(loaded.count == 1 && AppRulesDocument.isHalfwidth(loaded[0]) && AppRulesDocument.isNoLearn(loaded[0]) &&
+          (loaded[0]["name"] as? String) == "乙" && (loaded[0]["tone"] as? String) == "3",
           "app rules survive being stored")
     UserDefaults.standard.removeObject(forKey: rulesKey)
 } else {
     check(false, "app rules survive being stored")
 }
+check(!AppRulesDocument.isNoLearn(["id": "com.example.A", "noLearn": "yes"]),
+      "a no-learn value that is not true stays off")
 let picked = AppPick.encode(id: "com.apple.TextEdit", name: "文本编辑\n")
 let choice = picked.flatMap(AppPick.decode)
 check(choice?.id == "com.apple.TextEdit" && choice?.name == "文本编辑",

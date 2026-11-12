@@ -1,7 +1,7 @@
 import AppKit
 
-/// The apps the user added, and whether each one commits punctuation at half width.
-/// Typing reads `halfwidthIDs` only: no disk, and no look-up of installed apps.
+/// The apps the user added, and the input rules for each.
+/// Typing reads the in-memory sets only: no disk, and no look-up of installed apps.
 @MainActor
 enum AppRules {
     struct Entry: Identifiable, Equatable {
@@ -11,22 +11,30 @@ enum AppRules {
         var id: String
         var name: String
         var halfwidthPunctuation: Bool
+        var noLearn: Bool
 
         var punctuationTitle: String { halfwidthPunctuation ? Self.halfwidth : Self.followDefault }
+        var statusTitle: String { noLearn ? "\(punctuationTitle), 不学习" : punctuationTitle }
     }
 
     private static let storageKey = "appRules"
     private static var rows: [[String: Any]] = []
     private static var halfwidthIDs = Set<String>()
+    private static var noLearnIDs = Set<String>()
 
     static func halfwidthPunctuation(for bundleID: String) -> Bool {
         !bundleID.isEmpty && halfwidthIDs.contains(bundleID)
     }
 
+    static func noLearn(for bundleID: String) -> Bool {
+        !bundleID.isEmpty && noLearnIDs.contains(bundleID)
+    }
+
     static var entries: [Entry] {
         rows.compactMap { row in
             guard let id = row["id"] as? String else { return nil }
-            return Entry(id: id, name: row["name"] as? String ?? id, halfwidthPunctuation: halfwidthIDs.contains(id))
+            return Entry(id: id, name: row["name"] as? String ?? id,
+                         halfwidthPunctuation: halfwidthIDs.contains(id), noLearn: noLearnIDs.contains(id))
         }
     }
 
@@ -34,6 +42,7 @@ enum AppRules {
         guard let data = UserDefaults.standard.data(forKey: storageKey) else {
             rows = []
             halfwidthIDs = []
+            noLearnIDs = []
             return
         }
         rows = AppRulesDocument.decode(data)
@@ -47,6 +56,11 @@ enum AppRules {
 
     static func setHalfwidth(_ on: Bool, for id: String) {
         rows = AppRulesDocument.setHalfwidth(rows, id: id, on: on)
+        store()
+    }
+
+    static func setNoLearn(_ on: Bool, for id: String) {
+        rows = AppRulesDocument.setNoLearn(rows, id: id, on: on)
         store()
     }
 
@@ -75,8 +89,11 @@ enum AppRules {
 
     private static func rebuild() {
         halfwidthIDs = []
+        noLearnIDs = []
         for row in rows {
-            if let id = row["id"] as? String, AppRulesDocument.isHalfwidth(row) { halfwidthIDs.insert(id) }
+            guard let id = row["id"] as? String else { continue }
+            if AppRulesDocument.isHalfwidth(row) { halfwidthIDs.insert(id) }
+            if AppRulesDocument.isNoLearn(row) { noLearnIDs.insert(id) }
         }
     }
 }
