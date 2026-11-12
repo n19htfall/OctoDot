@@ -371,6 +371,7 @@ fn clear_composition() {
     grid_row = 0;
     lead_to = 0;
     lead_text.clear();
+    rerank::cache_clear();
 }
 
 // Rebuilds the menu for the letters still to convert.
@@ -388,6 +389,7 @@ fn rebuild() {
     lead_text.clear();
     if input.len == 0 {
         expanded = false;
+        rerank::cache_clear();
         return;
     }
     let day = userdb::today();
@@ -462,9 +464,9 @@ fn rerank_now() -> bool {
     for k in n {
         if !rerank::add(job, decoder::shortlist_text(shortlist, k)) { break; }
     }
-    var bits: f64[>..] = [];
-    guard rerank::count(job) >= 2 && rerank::score(job, bits) else { return false; }
-    let k = rerank::best(shortlist.scores[..bits.len], bits[..]);
+    let scored = rerank::count(job);
+    guard scored >= 2 && shortlist.scores.len >= scored else { return false; }
+    let k = rerank::choose(job, shortlist.scores[..scored]);
     guard k >= 0 && menu.candidates.len > 0 else { return false; }
     let text = decoder::shortlist_text(shortlist, k);
     let first = menu.candidates[0];
@@ -1687,6 +1689,7 @@ fn trim() {
     snap.clear();
     userdb::expire_journal();
     userdb::reclaim();
+    rerank::cache_free();
     trim_memory();
 }
 

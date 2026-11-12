@@ -1242,12 +1242,24 @@ fn storage(s: u64) {
     press(s, session::KEY_ESCAPE);
     check(session::words.list.len == 0, "ending a composition releases its search data");
 
+    if session::rerank_state() == 1 {
+        session::rerank_sync = true;
+        type_text(s, "yijiasankouhoubuchepiao");
+        check(rerank::octo_rerank_cache_bytes() > 0, "scoring leaves a rerank cache");
+        press(s, session::KEY_ESCAPE);
+        session::rerank_sync = false;
+    }
     type_text(s, "yijiasankouhoubuchepiao");
     let pending = session::reranking();
+    let resident = rerank::octo_rerank_cache_bytes();
     session::trim();
+    let released = rerank::octo_rerank_cache_bytes() == 0;
     let refined = session::refine(s);
-    check(pending && (refined & session::DIRTY) != 0 && candidate(0) == "一家三口候补车票",
-          "memory pressure preserves a pending rerank and its search data");
+    check(pending && (refined & session::DIRTY) != 0 && candidate(0) == "一家三口候补车票" &&
+          released && resident > 0 && rerank::octo_rerank_cache_last_hits() == 0 &&
+          rerank::octo_rerank_cache_last_forward() == rerank::octo_rerank_cache_last_nodes() &&
+          rerank::octo_rerank_cache_last_forward() > 0,
+          "memory pressure releases a warm cache and the pending menu still reranks");
     press(s, session::KEY_ESCAPE);
 
     userdb::reset();
@@ -1294,6 +1306,261 @@ fn learning_at_capacity() {
     }
     userdb::reset();
     userdb::clock_override = 0;
+}
+
+fn step_key(s: u64, key: i64, code: i64, trace: u8[>..]&) {
+    let result = session::key(s, key_event(key, code, 0));
+    if (result & session::PENDING) != 0 { session::refine(s); }
+    format(trace, candidate(0), "\n");
+}
+
+fn trace_phrase(s: u64, keys: const u8[:], trace: u8[>..]&) {
+    userdb::forget(userdb::RECENT);
+    press(s, session::KEY_ESCAPE);
+    var i: i64 = 0;
+    let mid = keys.len / 2;
+    for c in keys {
+        step_key(s, session::KEY_OTHER, c, trace);
+        if i == mid {
+            step_key(s, session::KEY_OTHER, 'z', trace);
+            step_key(s, session::KEY_BACKSPACE, 0, trace);
+        }
+        i++;
+    }
+    step_key(s, session::KEY_SPACE, 0, trace);
+    format(trace, "commit ", session::commit, "\n");
+}
+
+fn trace_toggle(s: u64, keys: const u8[:], trace: u8[>..]&) {
+    userdb::forget(userdb::RECENT);
+    press(s, session::KEY_ESCAPE);
+    session::set_rerank(false);
+    for c in keys { step_key(s, session::KEY_OTHER, c, trace); }
+    session::set_rerank(true);
+    press(s, session::KEY_ESCAPE);
+    for c in keys { step_key(s, session::KEY_OTHER, c, trace); }
+    step_key(s, session::KEY_SPACE, 0, trace);
+    format(trace, "commit ", session::commit, "\n");
+}
+
+fn trace_client(s: u64, keys: const u8[:], trace: u8[>..]&) {
+    userdb::forget(userdb::RECENT);
+    press(s, session::KEY_ESCAPE);
+    for c in keys { step_key(s, session::KEY_OTHER, c, trace); }
+    let s2 = session::new_session();
+    for c in keys { step_key(s2, session::KEY_OTHER, c, trace); }
+    session::reset(s2);
+    for c in keys { step_key(s2, session::KEY_OTHER, c, trace); }
+    session::free_session(s2);
+    press(s, session::KEY_ESCAPE);
+}
+
+fn cache_modes(s: u64) {
+    guard session::rerank_state() >= 0 else {
+        print("skip  rerank cache: the images have no reranker");
+        return;
+    }
+    let keys = "yijiasankouhoubuchepiao";
+    let fly = "yijxsjkzhzbuiepn";
+    session::set_scheme("fullpinyin");
+    session::set_rerank(true);
+    rerank::cache_on = false;
+    session::rerank_sync = false;
+    var cold_pending: u8[>..] = [];
+    trace_phrase(s, keys, cold_pending);
+    session::rerank_sync = true;
+    var cold_sync: u8[>..] = [];
+    trace_phrase(s, keys, cold_sync);
+    session::rerank_sync = false;
+    var cold_toggle: u8[>..] = [];
+    trace_toggle(s, keys, cold_toggle);
+    var cold_client: u8[>..] = [];
+    trace_client(s, keys, cold_client);
+    session::set_scheme("flypy");
+    var cold_fly: u8[>..] = [];
+    trace_phrase(s, fly, cold_fly);
+
+    rerank::cache_on = true;
+    session::set_scheme("fullpinyin");
+    session::rerank_sync = false;
+    var warm_pending: u8[>..] = [];
+    trace_phrase(s, keys, warm_pending);
+    session::rerank_sync = true;
+    var warm_sync: u8[>..] = [];
+    trace_phrase(s, keys, warm_sync);
+    session::rerank_sync = false;
+    var warm_toggle: u8[>..] = [];
+    trace_toggle(s, keys, warm_toggle);
+    var warm_client: u8[>..] = [];
+    trace_client(s, keys, warm_client);
+    session::set_scheme("flypy");
+    var warm_fly: u8[>..] = [];
+    trace_phrase(s, fly, warm_fly);
+    session::set_scheme("fullpinyin");
+    session::rerank_sync = false;
+    session::set_rerank(true);
+
+    check(compare(cold_pending[..], warm_pending[..]) == 0, "cache off and on: the same pending menus and commit");
+    check(compare(cold_sync[..], warm_sync[..]) == 0, "cache off and on: rerank_sync agrees, including backspace");
+    check(compare(cold_toggle[..], warm_toggle[..]) == 0, "cache off and on: turning the model off and on agrees");
+    check(compare(cold_client[..], warm_client[..]) == 0, "cache off and on: a client switch and reset agree");
+    check(compare(cold_fly[..], warm_fly[..]) == 0, "cache off and on: 小鹤双拼 agrees");
+
+    rerank::cache_on = true;
+    rerank::reset_stats();
+    session::rerank_sync = true;
+    press(s, session::KEY_ESCAPE);
+    userdb::forget(userdb::RECENT);
+    var first = true;
+    for c in keys {
+        let calls = rerank::score_calls;
+        typed(s, c);
+        if first && rerank::score_calls > calls {
+            check(rerank::octo_rerank_cache_last_hits() == 0 && rerank::octo_rerank_cache_last_nodes() > 0 &&
+                  rerank::octo_rerank_cache_last_forward() == rerank::octo_rerank_cache_last_nodes() &&
+                  rerank::octo_rerank_cache_last_vocab() == rerank::octo_rerank_cache_last_forward(),
+                  "the first score of a new composition is a cold start");
+            first = false;
+        }
+    }
+    check(!first && rerank::octo_rerank_cache_cum_hits() > 0, "a later key of that composition reuses a prefix");
+    press(s, session::KEY_ESCAPE);
+    session::rerank_sync = false;
+    userdb::forget(userdb::RECENT);
+}
+
+fn bench_text(flypy: bool, i: i64) -> const u8[:] {
+    if flypy {
+        if i == 0 { return "yijxsjkzhzbuiepn"; }
+        if i == 1 { return "jbtmtmqibucowomfquiuquwjba"; }
+        if i == 2 { return "wouiyigevsgorf"; }
+        return "xmzdkduiuurufaceui";
+    }
+    if i == 0 { return "yijiasankouhoubuchepiao"; }
+    if i == 1 { return "jintiantianqibucuowomenquchuqiwanba"; }
+    if i == 2 { return "woshiyigezhongguoren"; }
+    return "xianzaikaishishurufaceshi";
+}
+
+fn timed_key(s: u64, key: i64, code: i64, keys: i64[>..]&, shown: i64[>..]&, scores: i64[>..]&) {
+    let before = rerank::score_ns;
+    let t = clock_ns();
+    let result = session::key(s, key_event(key, code, 0));
+    let after_key = clock_ns();
+    keys.push(after_key - t);
+    if (result & session::PENDING) != 0 { session::refine(s); }
+    shown.push(clock_ns() - t);
+    let spent = rerank::score_ns - before;
+    if spent > 0 { scores.push(spent); }
+}
+
+fn report_band(label: const u8[:], samples: i64[>..]&) -> u8[>..] {
+    var out: u8[>..] = [];
+    if samples.len == 0 {
+        format(out, label, " n=0");
+        return out;
+    }
+    sort(samples) { a, b => a < b };
+    let n = samples.len - 1;
+    format(out, label, " p50 ", samples[n / 2] / 1000, " µs p99 ", samples[n * 99 / 100] / 1000, " µs");
+    return out;
+}
+
+fn time_sentences(s: u64, flypy: bool, cache: bool, rounds: i64, keys: i64[>..]&, shown: i64[>..]&, scores: i64[>..]&) {
+    if !cache { rerank::cache_free(); }
+    rerank::cache_on = cache;
+    rerank::reset_stats();
+    session::rerank_sync = false;
+    for round in rounds {
+        for i in 4 {
+            press(s, session::KEY_ESCAPE);
+            let text = bench_text(flypy, i);
+            var n: i64 = 0;
+            let mid = text.len / 2;
+            for c in text {
+                timed_key(s, session::KEY_OTHER, c, keys, shown, scores);
+                if n == mid {
+                    timed_key(s, session::KEY_OTHER, 'z', keys, shown, scores);
+                    timed_key(s, session::KEY_BACKSPACE, 0, keys, shown, scores);
+                }
+                n++;
+            }
+        }
+    }
+    press(s, session::KEY_ESCAPE);
+}
+
+fn print_rerank_stats(label: const u8[:]) {
+    let nodes = rerank::octo_rerank_cache_cum_nodes();
+    let hits = rerank::octo_rerank_cache_cum_hits();
+    let forward = rerank::octo_rerank_cache_cum_forward();
+    let vocab = rerank::octo_rerank_cache_cum_vocab();
+    let rate = if nodes > 0 { hits * 100 / nodes } else { 0 };
+    print("latency  ", label, " hit ", rate, "% (", hits, "/", nodes, "), forward ", forward, ", vocab rows ", vocab,
+          ", full rescores ", rerank::full_rescores, ", cache peak ", rerank::octo_rerank_cache_peak() / 1024, " KiB, resident ",
+          rerank::octo_rerank_cache_bytes() / 1024, " KiB");
+}
+
+fn incremental_bench(s: u64) {
+    guard session::rerank_state() >= 0 else { return; }
+    session::set_rerank(true);
+    session::rerank_sync = false;
+    userdb::forget(userdb::RECENT);
+    for scheme in 2 {
+        let flypy = scheme == 1;
+        let name = if flypy { "小鹤双拼" } else { "全拼" };
+        check(session::set_scheme(if flypy { "flypy" } else { "fullpinyin" }) == 0, str("bench scheme ", name));
+        var warm_keys: i64[>..] = [];
+        var warm_shown: i64[>..] = [];
+        var warm_scores: i64[>..] = [];
+        time_sentences(s, flypy, true, 3, warm_keys, warm_shown, warm_scores);
+        print("latency  ", name, " incremental ", report_band("key", warm_keys), "; ",
+              report_band("key → refine", warm_shown), "; ", report_band("score", warm_scores));
+        print_rerank_stats(str(name, " incremental"));
+        let nodes = rerank::octo_rerank_cache_cum_nodes();
+        let hits = rerank::octo_rerank_cache_cum_hits();
+        let forward = rerank::octo_rerank_cache_cum_forward();
+        let vocab = rerank::octo_rerank_cache_cum_vocab();
+        check(nodes > 0 && hits > 0 && forward < nodes && hits + forward == nodes && vocab == forward,
+              str(name, " incremental scoring reuses prefix rows (", hits, "/", nodes, ")"));
+        var cold_keys: i64[>..] = [];
+        var cold_shown: i64[>..] = [];
+        var cold_scores: i64[>..] = [];
+        time_sentences(s, flypy, false, 3, cold_keys, cold_shown, cold_scores);
+        print("latency  ", name, " cold ", report_band("key", cold_keys), "; ", report_band("key → refine", cold_shown),
+              "; ", report_band("score", cold_scores));
+        print_rerank_stats(str(name, " cold"));
+    }
+    session::set_scheme("fullpinyin");
+    let long = "lingyifangmiantamenyejiangchangshirangyixiedaxingqixietongguosheshuidefangshidaodaqianfang";
+    rerank::cache_on = true;
+    rerank::reset_stats();
+    var long_keys: i64[>..] = [];
+    var long_shown: i64[>..] = [];
+    var long_scores: i64[>..] = [];
+    press(s, session::KEY_ESCAPE);
+    var n: i64 = 0;
+    let mid = long.len / 2;
+    var cold_score: i64 = 0;
+    for c in long {
+        let calls = rerank::score_calls;
+        timed_key(s, session::KEY_OTHER, c, long_keys, long_shown, long_scores);
+        if rerank::score_calls > calls && cold_score == 0 { cold_score = rerank::last_score_ns; }
+        if n == mid {
+            timed_key(s, session::KEY_OTHER, 'z', long_keys, long_shown, long_scores);
+            timed_key(s, session::KEY_BACKSPACE, 0, long_keys, long_shown, long_scores);
+        }
+        n++;
+    }
+    press(s, session::KEY_ESCAPE);
+    print("latency  全拼 long incremental ", report_band("key", long_keys), "; ", report_band("key → refine", long_shown),
+          "; ", report_band("score", long_scores), "; first score ", cold_score / 1000, " µs");
+    print_rerank_stats("全拼 long incremental");
+    rerank::cache_on = true;
+    session::rerank_sync = false;
+    session::set_rerank(true);
+    session::set_scheme("fullpinyin");
+    userdb::forget(userdb::RECENT);
 }
 
 fn latency(s: u64) {
@@ -1575,7 +1842,8 @@ fn reranking(s: u64) {
           compare(candidate(1), decoded) == 0 && session::refine(s) == 0,
           str("refine puts ", candidate(0), " first, the decoder's sentence second, and then has nothing left"));
     press(s, session::KEY_SPACE);
-    check(compare(session::commit, reranked) == 0, str("Space commits the reranked sentence: ", session::commit));
+    check(compare(session::commit, reranked) == 0 && rerank::octo_rerank_cache_live() == 0,
+          str("Space commits the reranked sentence: ", session::commit));
     check(userdb::forget(userdb::RECENT) >= 1, "  and learns it like any choice (forgotten again here)");
 
     // A newer key replaces the menu waiting to be reranked; a menu the user
@@ -1588,8 +1856,18 @@ fn reranking(s: u64) {
     press(s, session::KEY_ESCAPE);
     type_text(s, keys);
     press(s, session::KEY_RIGHT);
-    check(session::refine(s) == 0 && compare(candidate(0), decoded) == 0,
+    let held = rerank::octo_rerank_cache_cum_nodes();
+    check(session::refine(s) == 0 && compare(candidate(0), decoded) == 0 &&
+          rerank::octo_rerank_cache_cum_nodes() == held,
           str("once the highlight moved, refine leaves the menu as it is: ", candidate(0)));
+    press(s, session::KEY_ESCAPE);
+    type_text(s, keys);
+    press(s, session::KEY_PAGE_DOWN);
+    if session::page != 0 {
+        let held_page = rerank::octo_rerank_cache_cum_nodes();
+        check(session::refine(s) == 0 && rerank::octo_rerank_cache_cum_nodes() == held_page,
+              "once the page moved, refine leaves the menu and does not score");
+    }
     press(s, session::KEY_ESCAPE);
 
     // The user's own choice stands: picking the decoder's sentence keeps it
@@ -1913,11 +2191,14 @@ fn main() {
     userdb::reset();
     reranking(session::new_session());
     userdb::reset();
+    cache_modes(session::new_session());
+    userdb::reset();
     fuzzy_pinyin(session::new_session());
     userdb::reset();
     halfwidth_punctuation(session::new_session());
     userdb::reset();
     latency(session::new_session());
+    incremental_bench(session::new_session());
     print(soft_misses, " ranking hopes missed");
     if failures > 0 { exit(1); }
 }

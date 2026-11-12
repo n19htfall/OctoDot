@@ -316,6 +316,47 @@ export fn octo_fuzz_rerank_weights(data: const u8[:]) -> i32 {
         let starts: i32[3] = [0, 4, 9];
         var bits: f64[2] = [0.0, 0.0];
         assert(rerank::octo_rerank_score(ids[..], starts[..], bits[..]) == 0);
+        // The same mapping, several cached calls: a shared prefix, then a
+        // branch that leaves it, then ids and offsets the C must reject.
+        let a_ids: i32[8] = [1, 3, 4, 2, 1, 3, 5, 2];
+        let a_starts: i32[3] = [0, 4, 8];
+        var abits: f64[2] = [0.0, 0.0];
+        let ra = rerank::octo_rerank_cache_score(a_ids[..], a_starts[..], abits[..]);
+        assert(ra == 0 || ra == 2);
+        let b_ids: i32[9] = [1, 3, 4, 6, 2, 1, 3, 7, 2];
+        let b_starts: i32[3] = [0, 5, 9];
+        var bbits: f64[2] = [0.0, 0.0];
+        let rb = rerank::octo_rerank_cache_score(b_ids[..], b_starts[..], bbits[..]);
+        assert(rb == 0 || rb == 2);
+        let bad_ids: i32[4] = [99, -1, 1, 2];
+        let bad_starts: i32[3] = [0, 3, 2];
+        var bad_bits: f64[2] = [0.0, 0.0];
+        assert(rerank::octo_rerank_cache_score(bad_ids[..], bad_starts[..], bad_bits[..]) == 1);
+        assert(rerank::octo_rerank_score(bad_ids[..], bad_starts[..], bad_bits[..]) == 1);
+        let back_ids: i32[4] = [1, 3, 4, 2];
+        let back_starts: i32[3] = [0, 5, 4];
+        assert(rerank::octo_rerank_cache_score(back_ids[..], back_starts[..], bad_bits[..]) == 1);
+        rerank::octo_rerank_cache_clear();
+        let rclear = rerank::octo_rerank_cache_score(a_ids[..], a_starts[..], abits[..]);
+        assert(rclear == 0 || rclear == 2);
+        if rclear == 0 { assert(rerank::octo_rerank_cache_last_hits() == 0); }
+        // Closing drops the trie. The same shape, opened again, must not
+        // reuse the previous model's nodes on its first job.
+        rerank::octo_rerank_close();
+        if rerank::octo_rerank_open("fuzz-rerank.weights", data.len as u64, FUZZ_DIMS as i32, 1, 2, FUZZ_VOCAB as i32,
+                                    FUZZ_POSITIONS as i32) == 0 {
+            assert(rerank::octo_rerank_cache_live() == 0);
+            let reopened = rerank::octo_rerank_cache_score(a_ids[..], a_starts[..], abits[..]);
+            assert(reopened == 0 || reopened == 2);
+            assert(rerank::octo_rerank_cache_last_hits() == 0);
+            if reopened == 0 && rerank::octo_rerank_cache_last_fallback() == 0 {
+                let again = rerank::octo_rerank_cache_score(a_ids[..], a_starts[..], abits[..]);
+                if again == 0 {
+                    assert(rerank::octo_rerank_cache_last_hits() == rerank::octo_rerank_cache_last_nodes());
+                    assert(rerank::octo_rerank_cache_last_forward() == 0);
+                }
+            }
+        }
         // Ids and lengths cut from the bytes: any values, which the C must
         // check (an id outside the vocabulary, a sequence too long or short).
         var cut: i32[..32] = [];
@@ -330,7 +371,10 @@ export fn octo_fuzz_rerank_weights(data: const u8[:]) -> i32 {
             var two: f64[2] = [0.0, 0.0];
             let r = rerank::octo_rerank_score(cut[..], parts[..], two[..]);
             assert(r == 0 || r == 1);
+            let rc = rerank::octo_rerank_cache_score(cut[..], parts[..], two[..]);
+            assert(rc == 0 || rc == 1 || rc == 2);
         }
+        rerank::octo_rerank_cache_free();
     }
     rerank::octo_rerank_close();
     return 1;

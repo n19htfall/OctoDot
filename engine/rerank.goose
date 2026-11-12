@@ -43,15 +43,60 @@ root struct Model {
 var live = Model {};
 var mapped = false;             // rerank.weights is mapped and matches live
 var on = true;                  // octo_set_rerank: the user's choice
+var cache_on = true;            // tests and benchmarks: the same job, scored cold
 var ids = dictionary<u32, i32> {};
+var full_rescores: i64 = 0;     // a near tie, or an incremental score that was not usable
+var score_ns: i64 = 0;
+var score_calls: i64 = 0;
+var last_score_ns: i64 = 0;
 
 extern fn octo_rerank_open(path: const u8[:], size: u64, dims: i32, layers: i32, heads: i32, vocab: i32,
                            positions: i32) -> i32;
 extern fn octo_rerank_close();
 extern fn octo_rerank_score(ids: const i32[:], starts: const i32[:], bits: f64[:]) -> i32;
+extern fn octo_rerank_cache_score(ids: const i32[:], starts: const i32[:], bits: f64[:]) -> i32;
+extern fn octo_rerank_cache_clear();
+extern fn octo_rerank_cache_free();
+extern fn octo_rerank_cache_set_max_slots(n: i32);
+extern fn octo_rerank_cache_fail_alloc(point: i32);
+extern fn octo_rerank_cache_last_nodes() -> i32;
+extern fn octo_rerank_cache_last_hits() -> i32;
+extern fn octo_rerank_cache_last_forward() -> i32;
+extern fn octo_rerank_cache_last_vocab() -> i32;
+extern fn octo_rerank_cache_last_used() -> i32;
+extern fn octo_rerank_cache_last_fallback() -> i32;
+extern fn octo_rerank_cache_live() -> i32;
+extern fn octo_rerank_cache_cum_hits() -> i64;
+extern fn octo_rerank_cache_cum_nodes() -> i64;
+extern fn octo_rerank_cache_cum_forward() -> i64;
+extern fn octo_rerank_cache_cum_vocab() -> i64;
+extern fn octo_rerank_cache_bytes() -> i64;
+extern fn octo_rerank_cache_peak() -> i64;
+extern fn octo_rerank_cache_reset_stats();
 
 fn active() -> bool { on && mapped }
-fn set_on(v: bool) { on = v; }
+
+fn set_on(v: bool) {
+    if !v { octo_rerank_cache_free(); }
+    on = v;
+}
+
+fn cache_clear() { octo_rerank_cache_clear(); }
+fn cache_free() { octo_rerank_cache_free(); }
+
+fn reset_stats() {
+    full_rescores = 0;
+    score_ns = 0;
+    score_calls = 0;
+    last_score_ns = 0;
+    octo_rerank_cache_reset_stats();
+}
+
+fn note_score(spent: i64) {
+    last_score_ns = spent;
+    score_ns += spent;
+    score_calls += 1;
+}
 
 // The size rerank.weights must have: the header and every tensor, as the
 // released model lays them out and rerank.h reads them.
@@ -163,15 +208,24 @@ fn add(job: Job&, text: const u8[:]) -> bool {
 fn count(job: Job&) -> i64 { job.starts.len - 1 }
 
 // log2 P of each of `job`'s sequences, in order, into `bits`; false if the
-// model is not mapped or cannot read the job.
+// model is not mapped or cannot read the job. No trie is kept.
 fn score(job: Job&, bits: f64[>..]&) -> bool {
     bits.clear();
     for _ in count(job) { bits.push(0.0); }
     return mapped && count(job) > 0 && octo_rerank_score(job.ids[..], job.starts[..], bits[..]) == 0;
 }
 
+fn usable(bits: const f64[:]) -> bool {
+    if bits.len == 0 { return false; }
+    for b in bits {
+        if !(b == b) || b > 0.0 || b < -100000.0 { return false; }
+    }
+    return true;
+}
+
 // The candidate to put first: the best by search score + weight × model
 // score, or -1 if the scores are not usable (a damaged model gives NaN).
+// A tie keeps the earlier candidate.
 fn best(scores: const f64[:], bits: const f64[:]) -> i64 {
     guard bits.len == scores.len && scores.len > 0 else { return -1; }
     let weight = live.meta[0].weight as f64;
@@ -184,6 +238,85 @@ fn best(scores: const f64[:], bits: const f64[:]) -> i64 {
         if top < 0 || s > top_score { top = i; top_score = s; }
     }
     return top;
+}
+
+// How far the best weighted total leads the next, by the same rule as best.
+// -1 when the scores are not usable. One candidate leaves a gap no tie crosses.
+fn margin(scores: const f64[:], bits: const f64[:]) -> f64 {
+    guard bits.len == scores.len && scores.len > 0 && live.meta.len == 1 else { return -1.0; }
+    let weight = live.meta[0].weight as f64;
+    var top: i64 = -1;
+    var top_score = 0.0;
+    var second = 0.0;
+    var have_second = false;
+    for i in scores.len {
+        let b = bits[i];
+        if !(b == b) || b > 0.0 || b < -100000.0 { return -1.0; }
+        let s = scores[i] + weight * b;
+        if top < 0 || s > top_score {
+            if top >= 0 { second = top_score; have_second = true; }
+            top = i;
+            top_score = s;
+        } else if !have_second || s > second {
+            second = s;
+            have_second = true;
+        }
+    }
+    if !have_second { return 1.0e9; }
+    return top_score - second;
+}
+
+fn abs_f(v: f64) -> f64 {
+    if v < 0.0 { return -v; }
+    return v;
+}
+
+// The candidate to put first for the session. An incremental score publishes
+// its trie when the bits are usable. A lead of at most 2 × |weight| × 0.001,
+// or an incremental score that is not usable, is decided again by score().
+fn choose(job: Job&, scores: const f64[:]) -> i64 {
+    guard mapped && live.meta.len == 1 else { return -1; }
+    let n = count(job);
+    guard n > 0 && scores.len >= n else { return -1; }
+    let search = scores[..n];
+    var bits: f64[>..] = [];
+    var spent: i64 = 0;
+    var need_cold = true;
+    var count_rescore = false;
+    if cache_on {
+        bits.clear();
+        for _ in n { bits.push(0.0); }
+        let t0 = clock_ns();
+        let code = octo_rerank_cache_score(job.ids[..], job.starts[..], bits[..]);
+        spent += clock_ns() - t0;
+        if code == 1 {
+            note_score(spent);
+            return -1;
+        }
+        if code == 0 && usable(bits[..]) {
+            let limit = 2.0 * abs_f(live.meta[0].weight as f64) * 0.001;
+            if octo_rerank_cache_last_used() == 0 {
+                need_cold = false;
+            } else {
+                let gap = margin(search, bits[..]);
+                if gap >= 0.0 && gap > limit { need_cold = false; }
+                else { count_rescore = true; }
+            }
+        } else {
+            count_rescore = true;
+        }
+    }
+    if need_cold {
+        let t1 = clock_ns();
+        if !score(job, bits) {
+            note_score(spent + clock_ns() - t1);
+            return -1;
+        }
+        spent += clock_ns() - t1;
+        if count_rescore { full_rescores += 1; }
+    }
+    note_score(spent);
+    return best(search, bits[..]);
 }
 
 // ---- rerank.tsv -------------------------------------------------------------------

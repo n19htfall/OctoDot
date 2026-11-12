@@ -336,6 +336,7 @@ fn the_reranker_scores_as_trained(images: const u8[:]) {
     }
     check(want.len >= 8 && ok && worst < 0.01,
           str("the forward pass scores ", want.len, " sentences as MLX did, within ", worst, " bits (", texts, ")"));
+    the_reranker_reuses_prefixes(job, want);
     // Damage: a truncated image, and weights of another size, are refused,
     // and leave nothing mapped.
     var model = rerank::Model {};
@@ -347,10 +348,312 @@ fn the_reranker_scores_as_trained(images: const u8[:]) {
     for _ in 1000 { weights.push(0); }
     check(write_file_atomic(str(elsewhere, "/rerank.img"), img) &&
           write_file_atomic(str(elsewhere, "/rerank.weights"), weights) && rerank::open(elsewhere) == 3 &&
-          !rerank::mapped, "rerank.weights of another size is refused, and nothing is left mapped");
+          !rerank::mapped && rerank::octo_rerank_cache_bytes() == 0,
+          "rerank.weights of another size is refused, and nothing is left mapped");
     delete_file(str(elsewhere, "/rerank.img"));
     delete_file(str(elsewhere, "/rerank.weights"));
     rerank::close();
+}
+
+fn fill_bits(n: i64, bits: f64[>..]&) {
+    bits.clear();
+    for _ in n { bits.push(0.0); }
+}
+
+fn worst_delta(a: const f64[:], b: const f64[:]) -> f64 {
+    var worst = 0.0;
+    let n = if a.len < b.len { a.len } else { b.len };
+    for i in n {
+        let d = a[i] - b[i];
+        let ad = if d < 0.0 { -d } else { d };
+        if ad > worst { worst = ad; }
+    }
+    return worst;
+}
+
+fn same_winner(a: const f64[:], b: const f64[:]) -> bool {
+    guard a.len == b.len && a.len > 0 else { return false; }
+    var s: f64[>..] = [];
+    for _ in a.len { s.push(0.0); }
+    let x = rerank::best(s[..], a);
+    return x >= 0 && x == rerank::best(s[..], b);
+}
+
+fn slot_bytes() -> i64 {
+    let x = rerank::live.meta[0];
+    let stride = 2 * (x.layers as i64) * (x.dims as i64) + (x.dims as i64) + 1;
+    return 4 * stride + 16;
+}
+
+fn cache_stats(what: const u8[:]) -> u8[>..] {
+    var o: u8[>..] = [];
+    format(o, what, " (nodes ", rerank::octo_rerank_cache_last_nodes(), ", hits ", rerank::octo_rerank_cache_last_hits(),
+           ", forward ", rerank::octo_rerank_cache_last_forward(), ", vocab ", rerank::octo_rerank_cache_last_vocab(),
+           ", live ", rerank::octo_rerank_cache_live(), ")");
+    return o;
+}
+
+// Scores `ids` cold and through the cache. 0 when both accept the input.
+fn cold_and_cached(ids: const i32[:], starts: const i32[:], cold: f64[>..]&, warm: f64[>..]&) -> i32 {
+    let n = starts.len - 1;
+    fill_bits(n, cold);
+    fill_bits(n, warm);
+    let c = rerank::octo_rerank_score(ids, starts, cold[..]);
+    let w = rerank::octo_rerank_cache_score(ids, starts, warm[..]);
+    if c != 0 || w != 0 { return 1; }
+    return 0;
+}
+
+fn within_tolerance(cold: const f64[:], warm: const f64[:]) -> bool {
+    return cold.len == warm.len && worst_delta(cold, warm) <= 0.001 && same_winner(cold, warm);
+}
+
+// Consecutive jobs share prefixes. The cache's own counters have to move:
+// a score that ignored the trie would still land inside the tolerance.
+fn the_reranker_reuses_prefixes(trained: rerank::Job&, trained_bits: const f64[:]) {
+    rerank::octo_rerank_cache_free();
+    rerank::octo_rerank_cache_set_max_slots(0);
+    rerank::octo_rerank_cache_fail_alloc(0);
+    rerank::full_rescores = 0;
+    let per = slot_bytes();
+    var cold: f64[>..] = [];
+    var warm: f64[>..] = [];
+
+    let a_ids: i32[8] = [1, 3, 4, 2, 1, 3, 5, 2];
+    let a_starts: i32[3] = [0, 4, 8];
+    check(cold_and_cached(a_ids[..], a_starts[..], cold, warm) == 0 && within_tolerance(cold[..], warm[..]) &&
+          rerank::octo_rerank_cache_last_nodes() == 4 && rerank::octo_rerank_cache_last_hits() == 0 &&
+          rerank::octo_rerank_cache_last_forward() == 4 && rerank::octo_rerank_cache_last_vocab() == 4 &&
+          rerank::octo_rerank_cache_bytes() == 4 * per && rerank::octo_rerank_cache_bytes() <= 8 * 1024 * 1024,
+          cache_stats(str("A cold start: 4 nodes, ", worst_delta(cold[..], warm[..]), " bits from the cold score")));
+
+    let b_ids: i32[9] = [1, 3, 4, 6, 2, 1, 3, 7, 2];
+    let b_starts: i32[3] = [0, 5, 9];
+    check(cold_and_cached(b_ids[..], b_starts[..], cold, warm) == 0 && within_tolerance(cold[..], warm[..]) &&
+          rerank::octo_rerank_cache_last_nodes() == 5 && rerank::octo_rerank_cache_last_hits() == 3 &&
+          rerank::octo_rerank_cache_last_forward() == 2 && rerank::octo_rerank_cache_last_vocab() == 2 &&
+          rerank::octo_rerank_cache_bytes() == 5 * per,
+          cache_stats(str("B reuses [1,3,4] and scores 6 from its cached state, ", worst_delta(cold[..], warm[..]), " bits off")));
+
+    check(cold_and_cached(b_ids[..], b_starts[..], cold, warm) == 0 && within_tolerance(cold[..], warm[..]) &&
+          rerank::octo_rerank_cache_last_hits() == 5 && rerank::octo_rerank_cache_last_forward() == 0 &&
+          rerank::octo_rerank_cache_last_vocab() == 0,
+          cache_stats("B again is all hits and skips the forward and the vocabulary"));
+
+    check(cold_and_cached(a_ids[..], a_starts[..], cold, warm) == 0 && within_tolerance(cold[..], warm[..]) &&
+          rerank::octo_rerank_cache_last_nodes() == 4 && rerank::octo_rerank_cache_last_hits() == 3 &&
+          rerank::octo_rerank_cache_last_forward() == 1 && rerank::octo_rerank_cache_last_vocab() == 1,
+          cache_stats("back on A, the dropped branch 5 is computed again"));
+
+    let rev_ids: i32[9] = [1, 3, 7, 2, 1, 3, 4, 6, 2];
+    let rev_starts: i32[3] = [0, 4, 9];
+    check(cold_and_cached(b_ids[..], b_starts[..], cold, warm) == 0 && within_tolerance(cold[..], warm[..]) &&
+          rerank::octo_rerank_cache_last_hits() == 3 && rerank::octo_rerank_cache_last_forward() == 2,
+          cache_stats("B after A hits the shared prefix and recomputes 6 and 7"));
+    check(cold_and_cached(rev_ids[..], rev_starts[..], cold, warm) == 0 && within_tolerance(cold[..], warm[..]) &&
+          rerank::octo_rerank_cache_last_nodes() == 5 && rerank::octo_rerank_cache_last_hits() == 5 &&
+          rerank::octo_rerank_cache_last_forward() == 0,
+          cache_stats("the same candidates in the other order still hit every node"));
+
+    let mix_ids: i32[8] = [1, 3, 9, 2, 1, 3, 4, 2];
+    let mix_starts: i32[3] = [0, 4, 8];
+    check(cold_and_cached(a_ids[..], a_starts[..], cold, warm) == 0, "A is cached before a new branch is listed first");
+    check(cold_and_cached(mix_ids[..], mix_starts[..], cold, warm) == 0 && within_tolerance(cold[..], warm[..]) &&
+          rerank::octo_rerank_cache_last_hits() == 3 && rerank::octo_rerank_cache_last_forward() == 1 &&
+          rerank::octo_rerank_cache_last_nodes() == 4,
+          cache_stats("a new branch listed first does not overwrite the later hit on 4"));
+
+    let one: i32[4] = [1, 3, 4, 2];
+    let one_at: i32[2] = [0, 4];
+    let other: i32[4] = [1, 8, 4, 2];
+    let other_at: i32[2] = [0, 4];
+    rerank::octo_rerank_cache_free();
+    check(cold_and_cached(one[..], one_at[..], cold, warm) == 0 && rerank::octo_rerank_cache_last_hits() == 0, "one branch");
+    check(cold_and_cached(other[..], other_at[..], cold, warm) == 0 && within_tolerance(cold[..], warm[..]) &&
+          rerank::octo_rerank_cache_last_nodes() == 3 && rerank::octo_rerank_cache_last_hits() == 1 &&
+          rerank::octo_rerank_cache_last_forward() == 2,
+          cache_stats("token 4 under a different parent is a different node"));
+
+    let unk_ids: i32[8] = [1, 0, 4, 2, 1, 0, 5, 2];
+    let unk_at: i32[3] = [0, 4, 8];
+    let unk_other: i32[4] = [1, 3, 0, 2];
+    rerank::octo_rerank_cache_free();
+    check(cold_and_cached(unk_ids[..], unk_at[..], cold, warm) == 0 && rerank::octo_rerank_cache_last_nodes() == 4 &&
+          rerank::octo_rerank_cache_last_hits() == 0, "unk is a token id, cold");
+    check(cold_and_cached(unk_ids[..], unk_at[..], cold, warm) == 0 && rerank::octo_rerank_cache_last_hits() == 4 &&
+          within_tolerance(cold[..], warm[..]), "the shared unk node hits");
+    check(cold_and_cached(unk_other[..], one_at[..], cold, warm) == 0 && within_tolerance(cold[..], warm[..]) &&
+          rerank::octo_rerank_cache_last_hits() == 1 && rerank::octo_rerank_cache_last_forward() == 2,
+          cache_stats("unk under another parent does not reuse the cached unk"));
+
+    let positions = rerank::live.meta[0].positions as i64;
+    let n = positions + 1;
+    var long_ids: i32[>..] = [];
+    for i in n {
+        if i == 0 { long_ids.push(1); }
+        else if i == n - 1 { long_ids.push(2); }
+        else { long_ids.push(3); }
+    }
+    var long_at: i32[>..] = [];
+    long_at.push(0);
+    long_at.push(n as i32);
+    rerank::octo_rerank_cache_free();
+    check(cold_and_cached(long_ids[..], long_at[..], cold, warm) == 0 && within_tolerance(cold[..], warm[..]) &&
+          rerank::octo_rerank_cache_last_nodes() == positions && rerank::octo_rerank_cache_last_hits() == 0 &&
+          rerank::octo_rerank_cache_last_forward() == positions,
+          cache_stats("a sequence at the position limit"));
+    check(cold_and_cached(long_ids[..], long_at[..], cold, warm) == 0 &&
+          rerank::octo_rerank_cache_last_hits() == positions && rerank::octo_rerank_cache_last_forward() == 0,
+          cache_stats("that sequence hits on the next call"));
+    var too: i32[>..] = [];
+    too.append(long_ids);
+    too.push(2);
+    var too_at: i32[>..] = [];
+    too_at.push(0);
+    too_at.push(too.len as i32);
+    fill_bits(1, warm);
+    let refused = rerank::octo_rerank_cache_score(too[..], too_at[..], warm[..]);
+    check(refused == 1 && rerank::octo_rerank_cache_live() == 1, "one token past the limit is refused and the trie stays");
+    check(cold_and_cached(long_ids[..], long_at[..], cold, warm) == 0 &&
+          rerank::octo_rerank_cache_last_hits() == positions && rerank::octo_rerank_cache_last_forward() == 0,
+          "the refused call did not drop the cached sequence");
+
+    let bad_ids: i32[4] = [1, 3, 4, 2];
+    let bad_at: i32[3] = [0, 3, 2];
+    fill_bits(2, warm);
+    check(rerank::octo_rerank_cache_score(bad_ids[..], bad_at[..], warm[..]) == 1 && rerank::octo_rerank_cache_live() == 1,
+          "a start that runs backwards is refused without dropping the trie");
+    let foreign: i32[6] = [3, 4, 2, 3, 5, 2];
+    let foreign_at: i32[3] = [0, 3, 6];
+    fill_bits(2, cold);
+    fill_bits(2, warm);
+    let cold_foreign = rerank::octo_rerank_score(foreign[..], foreign_at[..], cold[..]);
+    let warm_foreign = rerank::octo_rerank_cache_score(foreign[..], foreign_at[..], warm[..]);
+    check(cold_foreign == 0 && warm_foreign == 0 && within_tolerance(cold[..], warm[..]) &&
+          rerank::octo_rerank_cache_live() == 1 && rerank::octo_rerank_cache_last_hits() == 0,
+          "a request that does not start at BOS is scored cold and leaves the trie");
+    check(cold_and_cached(long_ids[..], long_at[..], cold, warm) == 0 &&
+          rerank::octo_rerank_cache_last_hits() == positions,
+          "the BOS trie is still there after that request");
+
+    rerank::octo_rerank_cache_set_max_slots(2);
+    fill_bits(2, warm);
+    let over = rerank::octo_rerank_cache_score(a_ids[..], a_starts[..], warm[..]);
+    check(over == 2 && rerank::octo_rerank_cache_live() == 0 && rerank::octo_rerank_cache_last_fallback() == 1,
+          "a trie past the test budget is not published");
+    rerank::octo_rerank_cache_set_max_slots(0);
+    check(cold_and_cached(one[..], one_at[..], cold, warm) == 0 && rerank::octo_rerank_cache_last_hits() == 0 &&
+          rerank::octo_rerank_cache_last_forward() == 3 && within_tolerance(cold[..], warm[..]),
+          cache_stats("the next small job starts a new trie"));
+
+    check(cold_and_cached(a_ids[..], a_starts[..], cold, warm) == 0 && rerank::octo_rerank_cache_bytes() > 0,
+          "A is cached, so the next trie of the same size does not grow the block");
+    let mix_ids: i32[8] = [1, 3, 9, 2, 1, 3, 4, 2];
+    let mix_starts: i32[3] = [0, 4, 8];
+    fill_bits(2, cold);
+    check(rerank::octo_rerank_score(mix_ids[..], mix_starts[..], cold[..]) == 0 && rerank::octo_rerank_cache_bytes() > 0,
+          "the reference score leaves the warm cache in place");
+    rerank::octo_rerank_cache_fail_alloc(2);
+    fill_bits(2, warm);
+    let failed_work = rerank::octo_rerank_cache_score(mix_ids[..], mix_starts[..], warm[..]);
+    rerank::octo_rerank_cache_fail_alloc(0);
+    var again: f64[>..] = [];
+    fill_bits(2, again);
+    check(failed_work == 2 && rerank::octo_rerank_cache_bytes() == 0 &&
+          rerank::octo_rerank_score(mix_ids[..], mix_starts[..], again[..]) == 0 && same_winner(cold[..], again[..]),
+          "a forward-workspace failure drops the cache block and the cold score keeps the winner");
+    check(cold_and_cached(mix_ids[..], mix_starts[..], cold, warm) == 0 && rerank::octo_rerank_cache_last_hits() == 0 &&
+          rerank::octo_rerank_cache_last_forward() > 0 && rerank::octo_rerank_cache_bytes() > 0 &&
+          within_tolerance(cold[..], warm[..]),
+          cache_stats("the next request after that failure starts a new cache from zero hits"));
+
+    check(trained.starts.len >= 3 && trained_bits.len >= 2, "the trained sentences are there to rescore");
+    if trained.starts.len >= 3 && trained_bits.len >= 2 {
+        var job = rerank::Job { ids: [], starts: [] };
+        job.ids.clear();
+        job.starts.clear();
+        for t in trained.ids.len { job.ids.push(trained.ids[t]); }
+        for t in trained.starts.len { job.starts.push(trained.starts[t]); }
+        let n = job.starts.len - 1;
+        fill_bits(n, cold);
+        check(rerank::octo_rerank_score(job.ids[..], job.starts[..], cold[..]) == 0, "the trained job scores cold");
+        rerank::octo_rerank_cache_free();
+        fill_bits(n, warm);
+        check(rerank::octo_rerank_cache_score(job.ids[..], job.starts[..], warm[..]) == 0 &&
+              rerank::octo_rerank_cache_last_hits() == 0 && rerank::octo_rerank_cache_last_forward() > 0 &&
+              within_tolerance(cold[..], warm[..]) && worst_delta(warm[..], trained_bits) <= 0.001,
+              str("the trained sentences, cold start, within ", worst_delta(warm[..], trained_bits), " bits of MLX"));
+        fill_bits(n, warm);
+        check(rerank::octo_rerank_cache_score(job.ids[..], job.starts[..], warm[..]) == 0 &&
+              rerank::octo_rerank_cache_last_hits() == rerank::octo_rerank_cache_last_nodes() &&
+              rerank::octo_rerank_cache_last_forward() == 0 && rerank::octo_rerank_cache_last_vocab() == 0 &&
+              within_tolerance(cold[..], warm[..]),
+              cache_stats(str("the trained sentences hit entirely, ", worst_delta(cold[..], warm[..]), " bits from cold")));
+    }
+
+    var pair = rerank::Job { ids: [], starts: [] };
+    rerank::clear_job(pair);
+    let paired = rerank::add(pair, "我是中国人") && rerank::add(pair, "今天天气不错");
+    check(paired, "two trained sentences make a job");
+    if paired {
+        fill_bits(2, cold);
+        check(rerank::octo_rerank_score(pair.ids[..], pair.starts[..], cold[..]) == 0, "the pair scores cold");
+        rerank::octo_rerank_cache_free();
+        fill_bits(2, warm);
+        check(rerank::octo_rerank_cache_score(pair.ids[..], pair.starts[..], warm[..]) == 0, "the pair is cached");
+        let weight = rerank::live.meta[0].weight as f64;
+        var tie: f64[>..] = [];
+        tie.push(0.0);
+        tie.push(weight * (cold[0] - cold[1]));
+        check(rerank::best(tie[..], cold[..]) == 0, "equal weighted totals keep the earlier candidate");
+        var ahead: f64[>..] = [];
+        ahead.push(0.0);
+        ahead.push(tie[1] + 10.0);
+        check(rerank::best(ahead[..], cold[..]) == 1, "a higher weighted total wins");
+        let bad_bits: f64[1] = [1.0];
+        let zero: f64[1] = [0.0];
+        let low_bits: f64[1] = [-100000.1];
+        check(rerank::best(zero[..], bad_bits[..]) == -1 && rerank::best(zero[..], low_bits[..]) == -1,
+              "a positive score or one below -100000 is not usable");
+
+        let before_far = rerank::full_rescores;
+        let far = rerank::choose(pair, ahead[..]);
+        check(far == 1 && rerank::full_rescores == before_far, "a wide lead is not scored again");
+        let before_tie = rerank::full_rescores;
+        let again = rerank::choose(pair, tie[..]);
+        check(again == 0 && rerank::full_rescores == before_tie + 1,
+              "a tie, within the tolerance, is scored cold and the earlier candidate stays first");
+        var close: f64[>..] = [];
+        close.push(0.0);
+        close.push(tie[1] + 0.0001);
+        let before_close = rerank::full_rescores;
+        let nudged = rerank::choose(pair, close[..]);
+        check(nudged == rerank::best(close[..], cold[..]) && nudged == 1 && rerank::full_rescores == before_close + 1,
+              "a lead inside the tolerance is decided by the cold score");
+
+        rerank::octo_rerank_cache_free();
+        var tiny = rerank::Job { ids: [], starts: [] };
+        rerank::clear_job(tiny);
+        fill_bits(1, warm);
+        check(rerank::add(tiny, "的") && rerank::octo_rerank_cache_score(tiny.ids[..], tiny.starts[..], warm[..]) == 0 &&
+              rerank::octo_rerank_cache_bytes() > 0,
+              "a short sentence warms the cache before a larger job has to grow it");
+        rerank::octo_rerank_cache_fail_alloc(1);
+        let before_fail = rerank::full_rescores;
+        let rescued = rerank::choose(pair, ahead[..]);
+        rerank::octo_rerank_cache_fail_alloc(0);
+        check(rescued == rerank::best(ahead[..], cold[..]) && rerank::full_rescores == before_fail + 1 &&
+              rerank::octo_rerank_cache_bytes() == 0,
+              "a cache-growth failure drops the block and choose keeps the cold winner");
+        fill_bits(2, warm);
+        check(rerank::octo_rerank_cache_score(pair.ids[..], pair.starts[..], warm[..]) == 0 &&
+              rerank::octo_rerank_cache_last_hits() == 0 && rerank::octo_rerank_cache_last_forward() > 0 &&
+              rerank::octo_rerank_cache_bytes() > 0,
+              "the next request after the growth failure starts a new cache from zero hits");
+    }
+    rerank::octo_rerank_cache_set_max_slots(0);
+    rerank::octo_rerank_cache_fail_alloc(0);
+    rerank::octo_rerank_cache_free();
 }
 
 fn every_english_word(prepared: const u8[:], images: const u8[:]) {
