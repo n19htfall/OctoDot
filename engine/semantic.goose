@@ -107,6 +107,8 @@ fn ordered() -> bool {
     return true;
 }
 
+// The row holding `code`'s senses, or -1 for a word the table does not have:
+// what count, sense and prior take.
 fn find_row(code: const u8[:]) -> i64 {
     guard live && code.len > 0 else { return -1; }
     var a: i64 = 0;
@@ -114,8 +116,7 @@ fn find_row(code: const u8[:]) -> i64 {
     while a < b {
         let m = a + (b - a) / 2;
         let row = rows[m];
-        let have = code_pool[row.code_at..row.code_at + row.code_len];
-        let cmp = compare(have, code);
+        let cmp = compare(code_pool[row.code_at..row.code_at + row.code_len], code);
         if cmp < 0 { a = m + 1; }
         else if cmp > 0 { b = m; }
         else { return m; }
@@ -123,27 +124,18 @@ fn find_row(code: const u8[:]) -> i64 {
     return -1;
 }
 
-fn count(code: const u8[:]) -> i64 {
-    let row = find_row(code);
-    guard row >= 0 else { return 0; }
-    return rows[row].count;
+fn count(row: i64) -> i64 { if row < 0 { 0 } else { rows[row].count } }
+
+// Sense i of a row, heaviest first.
+fn sense(row: i64, i: i64) -> const u8[:] {
+    let s = senses[rows[row].sense_at + i];
+    return text_pool[s.text_at..s.text_at + s.text_len];
 }
 
-fn copy(code: const u8[:], i: i64, out: u8[>..]&) {
-    out.clear();
-    let row = find_row(code);
-    guard row >= 0 && i >= 0 && i < rows[row].count else { return; }
-    let sense = senses[rows[row].sense_at + i];
-    out.append(text_pool[sense.text_at..sense.text_at + sense.text_len]);
-}
-
-// log2(weight) minus the heaviest sense of this word. ordered() has checked
-// that the first sense holds that weight, so the top sense is 0.
-fn prior(code: const u8[:], i: i64) -> f64 {
-    let row = find_row(code);
-    guard row >= 0 && i >= 0 && i < rows[row].count else { return 0.0; }
+// log2 of sense i's weight over the row's heaviest, which ordered() has
+// checked comes first: 0 for the top sense, less for the others.
+fn prior(row: i64, i: i64) -> f64 {
     let best = senses[rows[row].sense_at].weight;
     let mine = senses[rows[row].sense_at + i].weight;
-    guard best > 0 && mine > 0 else { return 0.0; }
     return log2(mine as f64) - log2(best as f64);
 }
