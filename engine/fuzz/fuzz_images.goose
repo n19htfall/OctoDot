@@ -121,14 +121,14 @@ export fn octo_fuzz_spellings(data: const u8[:]) -> i32 {
 
 export fn octo_fuzz_english(data: const u8[:]) -> i32 {
     if !english::load(data) {
-        assert(english::live.entries.len == 0 && english::live.forms.len == 0);
+        assert(english::entry_count() == 0 && english::live.forms.len == 0);
         return 0;
     }
-    let n = english::live.entries.len;
+    let n = english::entry_count();
     let step = if n > 64 { n / 64 } else { 1 };
     var i: i64 = 0;
     while i < n {
-        assert(english::exact(english::live.entries[i].code) == i);
+        assert(english::exact(english::entry_at(i).code) == i);
         var form: u8[>..] = [];
         english::top_form(i, form);
         assert(form.len > 0);

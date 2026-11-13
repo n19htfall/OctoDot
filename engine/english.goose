@@ -11,7 +11,8 @@ import image;
 
 namespace english;
 
-let LAYOUT = 1;
+let LAYOUT = 2;
+let LEGACY_LAYOUT = 1;
 let SECTIONS = 4;
 let MAX_CODE = 32;
 let MAX_FORMS = 4;
@@ -41,7 +42,8 @@ let COMPLETION_SCAN = 1024;     // codes examined for one prefix
 let COMPLETION_WEIGHT = 32;
 
 struct Form { text: u32, len: u16 }
-struct Entry { code: u8[..32], score: f32, weight: u32, form: u32, count: u16 }
+struct Entry { score: f32, weight: u32, form: u32, count: u16, code: u8[u8] }
+struct LegacyEntry { code: u8[..32], score: f32, weight: u32, form: u32, count: u16 }
 struct Meta { entries: u32, forms: u32 }
 
 root struct Dict {
@@ -52,7 +54,15 @@ root struct Dict {
 }
 
 var live = Dict {};
+// Entries are packed end to end. These four-byte links restore random access
+// in code order and are rebuilt after loading the serialized entries.
+var indexed: (const Entry&<u32 in live.entries>)[>..] = [];
 var on = true;                  // octo_set_english: candidates and mixed sentences
+
+// Ranges by the first two letters. Within each first letter, a one-letter
+// code sorts before all 26 two-letter prefixes.
+let PREFIX_BUCKETS = 26 * 27;
+var prefix_at: u32[PREFIX_BUCKETS + 1] = [0; PREFIX_BUCKETS + 1];
 
 // Which 3-letter prefixes exist, so a key pays a lookup only when one does.
 var head3: u8[17576] = [0; 17576];
@@ -66,7 +76,10 @@ var spell_pool: u8[>..] = [];
 var spell_at: u32[>..] = [];
 var spell_len: u16[>..] = [];
 
-fn active() -> bool { on && live.entries.len > 0 }
+fn entry_count() -> i64 { indexed.len }
+inline fn entry_at(i: i64) -> const Entry& { indexed[i] }
+
+fn active() -> bool { on && entry_count() > 0 }
 fn set_on(v: bool) { on = v; }
 
 fn head_index(a: u8, b: u8, c: u8) -> i64 {
@@ -75,15 +88,21 @@ fn head_index(a: u8, b: u8, c: u8) -> i64 {
 }
 
 fn reindex() {
+    for i in PREFIX_BUCKETS + 1 { prefix_at[i] = 0; }
     for i in 17576 { head3[i] = 0; }
     var total = 0.0;
-    for e in live.entries { total += e.weight as f64; }
-    total_bits = if total > 0.0 { log2(total) } else { 0.0 };
     for e in live.entries {
+        indexed.push(e);
+        total += e.weight;
+        let first: i64 = e.code[0] - 'a';
+        let second: i64 = if e.code.len > 1 { e.code[1] - 'a' + 1 } else { 0 };
+        prefix_at[first * 27 + second + 1]++;
         if e.code.len < 3 { continue; }
         let i = head_index(e.code[0], e.code[1], e.code[2]);
         if i >= 0 { head3[i] = 1; }
     }
+    for i in 1..PREFIX_BUCKETS + 1 { prefix_at[i] += prefix_at[i - 1]; }
+    total_bits = if total > 0.0 { log2(total) } else { 0.0 };
 }
 
 fn head_has(a: u8, b: u8, c: u8) -> bool {
@@ -111,6 +130,7 @@ fn clear(d: Dict&) {
 }
 
 fn clear_live() {
+    indexed.clear();
     clear(live);
     reindex();
 }
@@ -120,15 +140,16 @@ fn valid(d: Dict&) -> bool {
     guard d.meta.len == 1 && d.meta[0].entries == n && d.meta[0].forms == d.forms.len else { return false; }
     guard n <= MAX_ENTRIES && d.forms.len <= MAX_ENTRIES * MAX_FORMS && d.pool.len <= 8000000 else { return false; }
     var next: i64 = 0;
-    for i in n {
-        let e = d.entries[i];
+    var previous: const u8[:] = "";
+    for e in d.entries {
         if !is_code(e.code) || !(e.score >= 0.0) || e.weight == 0 { return false; }
         if e.count == 0 || e.count > MAX_FORMS { return false; }
         if (e.form as i64) != next { return false; }
         // The rows are read below. A count past the array is refused here.
         if next + e.count > d.forms.len { return false; }
         next += e.count;
-        if i > 0 && compare(d.entries[i - 1].code, e.code) >= 0 { return false; }
+        if compare(previous, e.code) >= 0 { return false; }
+        previous = e.code;
         for k in e.count {
             let f = d.forms[e.form + k];
             if (f.text as i64) + f.len > d.pool.len || !is_form(d.pool[f.text..f.text + f.len]) { return false; }
@@ -138,20 +159,34 @@ fn valid(d: Dict&) -> bool {
 }
 
 fn load_into(d: Dict&, img: const u8[:]) -> bool {
-    let s, opened = image::open(img, image::KIND_ENGLISH, LAYOUT);
     clear(d);
+    var s, opened = image::open(img, image::KIND_ENGLISH, LAYOUT);
+    let legacy = !opened;
+    if legacy { s, opened = image::open(img, image::KIND_ENGLISH, LEGACY_LAYOUT); }
     guard opened && s.count == SECTIONS else { return false; }
-    var ok0 = false; var ok1 = false; var ok2 = false; var ok3 = false;
-    d.entries, ok0 = from_bytes<Entry[>..]>(image::section(img, s, 0));
+    let entries = image::section(img, s, 0);
+    if legacy {
+        var old, ok = from_bytes<LegacyEntry[>..]>(entries);
+        guard ok && old.len <= MAX_ENTRIES else { return false; }
+        for e in old {
+            d.entries.push(Entry { score: e.score, weight: e.weight, form: e.form, count: e.count, code: e.code });
+        }
+    } else {
+        var ok = false;
+        d.entries, ok = from_bytes<Entry[>..]>(entries);
+        guard ok else { return false; }
+    }
+    var ok1 = false; var ok2 = false; var ok3 = false;
     d.forms, ok1 = from_bytes<Form[>..]>(image::section(img, s, 1));
     d.pool, ok2 = from_bytes<u8[>..]>(image::section(img, s, 2));
     d.meta, ok3 = from_bytes<Meta[>..]>(image::section(img, s, 3));
-    let good = ok0 && ok1 && ok2 && ok3 && valid(d);
+    let good = ok1 && ok2 && ok3 && valid(d);
     if !good { clear(d); }
     return good;
 }
 
 fn load(img: const u8[:]) -> bool {
+    indexed.clear();
     let good = load_into(live, img);
     reindex();
     return good;
@@ -169,10 +204,21 @@ fn write(d: Dict&, out: u8[>..]&) {
 // The first entry whose code is >= `code`.
 fn lower_bound(code: const u8[:]) -> i64 {
     var a: i64 = 0;
-    var b = live.entries.len;
+    var b = entry_count();
+    if code.len > 0 && code[0] >= 'a' && code[0] <= 'z' {
+        let letter: i64 = code[0] - 'a';
+        let base = letter * 27;
+        a = prefix_at[base];
+        b = prefix_at[base + 27];
+        if code.len > 1 && code[1] >= 'a' && code[1] <= 'z' {
+            let second: i64 = code[1] - 'a' + 1;
+            a = prefix_at[base + second];
+            b = prefix_at[base + second + 1];
+        }
+    }
     while a < b {
         let m = a + (b - a) / 2;
-        if compare(live.entries[m].code, code) < 0 { a = m + 1; } else { b = m; }
+        if compare(entry_at(m).code, code) < 0 { a = m + 1; } else { b = m; }
     }
     return a;
 }
@@ -183,21 +229,21 @@ fn has_prefix(code: const u8[:], prefix: const u8[:]) -> bool {
 
 // The entry for exactly `code`, or -1.
 fn exact(code: const u8[:]) -> i64 {
-    guard is_code(code) && live.entries.len > 0 else { return -1; }
+    guard is_code(code) && entry_count() > 0 else { return -1; }
     let a = lower_bound(code);
-    guard a < live.entries.len && compare(live.entries[a].code, code) == 0 else { return -1; }
+    guard a < entry_count() && compare(entry_at(a).code, code) == 0 else { return -1; }
     return a;
 }
 
-fn score_of(i: i64) -> f64 { live.entries[i].score as f64 }
+fn score_of(i: i64) -> f64 { entry_at(i).score }
 
 // log2 of entry i's probability among the English words (≤ 0).
-fn bits(i: i64) -> f64 { live.entries[i].score as f64 - total_bits }
+fn bits(i: i64) -> f64 { score_of(i) - total_bits }
 
 fn copy_form(i: i64, k: i64, out: u8[>..]&) {
     out.clear();
-    guard i >= 0 && i < live.entries.len else { return; }
-    let e = live.entries[i];
+    guard i >= 0 && i < entry_count() else { return; }
+    let e .= entry_at(i);
     guard k >= 0 && k < e.count else { return; }
     let f = live.forms[e.form + k];
     out.append(live.pool[f.text..f.text + f.len]);
@@ -206,12 +252,12 @@ fn copy_form(i: i64, k: i64, out: u8[>..]&) {
 fn top_form(i: i64, out: u8[>..]&) { copy_form(i, 0, out); }
 
 fn form_count(i: i64) -> i64 {
-    guard i >= 0 && i < live.entries.len else { return 0; }
-    return live.entries[i].count;
+    guard i >= 0 && i < entry_count() else { return 0; }
+    return entry_at(i).count;
 }
 
 fn common(i: i64) -> bool {
-    i >= 0 && i < live.entries.len && live.entries[i].weight >= COMMON_WEIGHT
+    i >= 0 && i < entry_count() && entry_at(i).weight >= COMMON_WEIGHT
 }
 
 // 1: `form`'s letters are `typed` in the same case. 0: the same letters,
@@ -283,22 +329,24 @@ fn prefer(i: i64, typed: const u8[:], out: u8[>..]&) {
 
 // `a` should be offered before `b`: higher score, then the shorter code.
 fn better(a: i64, b: i64) -> bool {
-    let sa = live.entries[a].score;
-    let sb = live.entries[b].score;
-    if sa != sb { return sa > sb; }
-    if live.entries[a].code.len != live.entries[b].code.len { return live.entries[a].code.len < live.entries[b].code.len; }
-    return compare(live.entries[a].code, live.entries[b].code) < 0;
+    let first .= entry_at(a);
+    let second .= entry_at(b);
+    if first.score != second.score { return first.score > second.score; }
+    if first.code.len != second.code.len { return first.code.len < second.code.len; }
+    return compare(first.code, second.code) < 0;
 }
 
 // The n best codes that start with `prefix`, exact match excluded, best first.
 fn completions(prefix: const u8[:], n: i64, out: i64[>..]&) {
     out.clear();
-    guard n > 0 && prefix.len > 0 && prefix.len <= MAX_CODE && live.entries.len > 0 else { return; }
+    guard n > 0 && prefix.len > 0 && prefix.len <= MAX_CODE && entry_count() > 0 else { return; }
     var a = lower_bound(prefix);
     var seen: i64 = 0;
-    while a < live.entries.len && seen < COMPLETION_SCAN && has_prefix(live.entries[a].code, prefix) {
+    while a < entry_count() && seen < COMPLETION_SCAN {
+        let e .= entry_at(a);
+        if !has_prefix(e.code, prefix) { break; }
         seen++;
-        if compare(live.entries[a].code, prefix) != 0 && live.entries[a].weight >= COMPLETION_WEIGHT {
+        if compare(e.code, prefix) != 0 && e.weight >= COMPLETION_WEIGHT {
             var at = 0;
             while at < out.len && !better(a, out[at]) { at++; }
             if at < n {
@@ -345,6 +393,7 @@ fn compile(d: Dict&, tsv: const u8[:], limit: i64, err: u8[>..]&) -> bool {
     clear(d);
     var pos: i64 = 0;
     var row: i64 = 0;
+    var previous = tsv[..0];
     while pos < tsv.len {
         let line = next_line(tsv, pos);
         row++;
@@ -357,7 +406,7 @@ fn compile(d: Dict&, tsv: const u8[:], limit: i64, err: u8[>..]&) -> bool {
             format(err, "english.tsv:", row, ": expected a code of letters, a weight, and its forms\n");
             return false;
         }
-        if d.entries.len > 0 && compare(d.entries[d.entries.len - 1].code, code) >= 0 {
+        if compare(previous, code) >= 0 {
             format(err, "english.tsv:", row, ": codes are not in order\n");
             return false;
         }
@@ -393,8 +442,9 @@ fn compile(d: Dict&, tsv: const u8[:], limit: i64, err: u8[>..]&) -> bool {
             from = end + 1;
         }
         let score = log2(weight as f64);
-        d.entries.push(Entry { code: code, score: score as f32, weight: weight as u32, form: form_at as u32,
-                               count: (d.forms.len - form_at) as u16 });
+        d.entries.push(Entry { score: score as f32, weight: weight as u32, form: form_at as u32,
+                               count: (d.forms.len - form_at) as u16, code: code });
+        previous = code;
     }
     guard d.entries.len > 0 else {
         format(err, "english.tsv: no words\n");

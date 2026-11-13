@@ -672,12 +672,33 @@ fn every_english_word(prepared: const u8[:], images: const u8[:]) {
         english::copy_form(i, 3, form);
         check(loaded && english::form_count(i) == 4 && second && compare(form, "PyThOn") == 0,
               "long English forms survive round trip, up to four variants");
+
+        var legacy: u8[>..] = [];
+        var writer = image::begin(legacy, image::KIND_ENGLISH, english::LEGACY_LAYOUT, 0, english::SECTIONS);
+        var entries: english::LegacyEntry[>..] = [
+            english::LegacyEntry { code: "python", score: 3.321928 as f32, weight: 10, form: 0, count: 4 }
+        ];
+        image::add(legacy, writer, entries);
+        image::add(legacy, writer, fixture.forms);
+        image::add(legacy, writer, fixture.pool);
+        image::add(legacy, writer, fixture.meta);
+        image::finish(legacy, writer);
+        let loaded_legacy = english::load(legacy);
+        english::copy_form(english::exact("python"), 3, form);
+        check(loaded_legacy && english::entry_count() == 1 && english::exact("python") == 0 && compare(form, "PyThOn") == 0,
+              "a layout 1 English image rebuilds the index and preserves forms");
+
+        // Four fixed fields take 14 bytes before the packed code's length.
+        fixture_img[element_at(fixture_img, 0, 0, 0) + 14] = 255;
+        image::restamp(fixture_img);
+        check(!english::load(fixture_img) && english::entry_count() == 0 && english::exact("python") == -1,
+              "an invalid packed English code length clears the lookup index");
     }
     var tsv: u8[>..] = [];
     var img: u8[>..] = [];
     read(prepared, "english.tsv", tsv);
     read(images, "english.img", img);
-    check(english::load(img) && english::live.entries.len > 0, "english.img loads and validates");
+    check(english::load(img) && english::entry_count() > 0, "english.img loads and validates");
     var missing: i64 = 0;
     var rows: i64 = 0;
     var pos: i64 = 0;
@@ -689,7 +710,7 @@ fn every_english_word(prepared: const u8[:], images: const u8[:]) {
         let weight_text, rest, ok2 = split_once(rest1, '\t');
         let weight, ok3 = parse_int(weight_text);
         let i = english::exact(code);
-        if !(ok1 && ok2 && ok3) || i < 0 || english::live.entries[i].weight != weight { missing++; continue; }
+        if !(ok1 && ok2 && ok3) || i != rows - 1 || english::entry_at(i).weight != weight { missing++; continue; }
         let score = english::score_of(i);
         if score < log2(weight as f64) - 0.01 || score > log2(weight as f64) + 0.01 { missing++; continue; }
         var form: u8[>..] = [];
@@ -709,11 +730,12 @@ fn every_english_word(prepared: const u8[:], images: const u8[:]) {
         }
         if mismatch || count != english::form_count(i) { missing++; }
     }
-    check(missing == 0 && rows == english::live.entries.len,
+    check(missing == 0 && rows == english::entry_count(),
           str("all ", rows, " English codes come back with their weight, score and forms (", missing, " missing)"));
     var truncated: u8[>..] = [];
     truncated.append(img[..32]);
-    check(!english::load(truncated) && english::live.entries.len == 0, "a truncated English image is refused, and nothing is left loaded");
+    check(!english::load(truncated) && english::entry_count() == 0 && english::exact("python") == -1,
+          "a truncated English image is refused, and nothing is left loaded");
     check(english::load(img), "the English image loads again afterwards");
 }
 

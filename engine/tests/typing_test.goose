@@ -1758,7 +1758,7 @@ fn english_list(s: u64, order: const i64[:], from: i64, to: i64, what: const u8[
     var sample: u8[>..] = [];
     for n in from..to {
         let i = order[n];
-        let code = english::live.entries[i].code;
+        let code = english::entry_at(i).code;
         let form = top_form(i);
         show_code(s, code);
         let r = rank(form);
@@ -1770,7 +1770,7 @@ fn english_list(s: u64, order: const i64[:], from: i64, to: i64, what: const u8[
             if session::weak_chinese { over_weak++; }
         } else if session::chinese_full {
             if r != behind_chinese() { second_bad++; }
-        } else if english::live.entries[i].weight >= english::COMMON_WEIGHT && r != 1 {
+        } else if english::entry_at(i).weight >= english::COMMON_WEIGHT && r != 1 {
             second_bad++;
         }
         press(s, session::KEY_ESCAPE);
@@ -2105,13 +2105,13 @@ fn mixed_sentences(s: u64) {
 }
 
 fn english_words(s: u64) {
-    check(english::active() && english::live.entries.len > 2000, "the English dictionary is loaded");
+    check(english::active() && english::entry_count() > 2000, "the English dictionary is loaded");
     var order: i64[>..] = [];
-    for i in english::live.entries.len { order.push(i); }
+    for i in english::entry_count() { order.push(i); }
     sort(order) { a, b =>
-        let wa = english::live.entries[a].weight;
-        let wb = english::live.entries[b].weight;
-        wa > wb || (wa == wb && compare(english::live.entries[a].code, english::live.entries[b].code) < 0)
+        let first .= english::entry_at(a);
+        let second .= english::entry_at(b);
+        first.weight > second.weight || (first.weight == second.weight && compare(first.code, second.code) < 0)
     };
     var terms: i64[>..] = [];
     for i in order {

@@ -260,9 +260,9 @@ fn admit_english(input: const u8[:], from: i64, len: i64, dict: i64, cut: bool) 
     let capital = span_capital(from, len);
     if cut && len < 4 && !capital { return false; }
     if len >= 4 { return true; }
-    if len == 3 { return capital || english::live.entries[dict].weight >= EN_THREE; }
+    if len == 3 { return capital || english::entry_at(dict).weight >= EN_THREE; }
     if capital || isolated_span(input, from, from + len) { return true; }
-    return short_listed(english::live.entries[dict].code);
+    return short_listed(english::entry_at(dict).code);
 }
 
 fn push_english(input: const u8[:], from: i64, len: i64, dict: i64, prefix: bool, out: EnCand[>..]&) {
