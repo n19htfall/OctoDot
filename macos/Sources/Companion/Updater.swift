@@ -52,9 +52,17 @@ final class Updater {
     }
 
     private func checkIfDue() {
-        guard automatic, phase == .idle || phase == .upToDate, !UpdateNotice.shared.isVisible else { return }
-        let last = UserDefaults.standard.double(forKey: "lastUpdateCheck")
-        if Date().timeIntervalSince1970 - last > 86_400 { Task { await check() } }
+        guard automatic, !UpdateNotice.shared.isVisible else { return }
+        switch phase {
+        case .failed:
+            break // Retry on the next timer tick, even after a recent successful check.
+        case .idle, .upToDate:
+            let last = UserDefaults.standard.double(forKey: "lastUpdateCheck")
+            guard Date().timeIntervalSince1970 - last >= 86_400 else { return }
+        case .checking, .available, .downloading, .verifying, .installing:
+            return
+        }
+        Task { await check() }
     }
 
     /// `interactive` is a click on "检查更新…": the update window opens and
@@ -82,7 +90,6 @@ final class Updater {
         let session = URLSession(configuration: configuration)
         do {
             let (data, response) = try await session.data(from: url)
-            UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "lastUpdateCheck")
             guard (response as? HTTPURLResponse)?.statusCode == 200 else {
                 phase = .failed("更新服务器返回 \((response as? HTTPURLResponse)?.statusCode ?? 0)。")
                 return
@@ -94,6 +101,7 @@ final class Updater {
             } catch UpdateError.notNewer {
                 phase = .upToDate
             }
+            UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "lastUpdateCheck")
         } catch {
             phase = .failed("\(error)")
         }
