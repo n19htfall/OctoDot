@@ -77,8 +77,13 @@ enum SettingsWindow {
         window.toolbarStyle = .unified
         model.onTitle = { [weak window] title in window?.title = title }
         model.syncTitle()
-        window.setContentSize(NSSize(width: 720, height: 520))
         window.contentMinSize = NSSize(width: 640, height: 440)
+        // Fit the full Input pane on a tall display while keeping the window on screen.
+        let preferredHeight: CGFloat = 780
+        let availableHeight = (window.screen ?? NSScreen.main).map {
+            window.contentRect(forFrameRect: $0.visibleFrame).height
+        } ?? preferredHeight
+        window.setContentSize(NSSize(width: 720, height: min(preferredHeight, availableHeight)))
         window.isReleasedWhenClosed = false
         window.center()
         // Back from the text editor (custom phrases), or another app: show what changed.
