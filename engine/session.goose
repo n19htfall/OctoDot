@@ -604,7 +604,7 @@ fn take_words(c: decoder::Candidate) -> bool {
 }
 
 // The input as the preedit shows it: the keys typed, split into the best
-// reading's syllables, in every scheme: "zhong guo", "z g r" in full
+// reading's syllables and English words: "zhong guo", "z g r" in full
 // pinyin, "wo ui vs go rf" in 小鹤双拼 (the keys pressed, which is what the
 // user reads back, not each syllable's pinyin spelled out). A tone or a
 // shape code stays with its syllable; what the best reading does not cover
@@ -612,7 +612,7 @@ fn take_words(c: decoder::Candidate) -> bool {
 fn show_input(w: decoder::Words&, g: lattice::Graph&) {
     shown.clear();
     var segs: decoder::Segment[>..] = [];
-    decoder::segments(menu, w, g, input, segs);
+    decoder::segments(menu, w, g, input, true, segs);
     var full = segs.len > 0;
     var at: i64 = 0;
     for seg in segs {
@@ -620,10 +620,8 @@ fn show_input(w: decoder::Words&, g: lattice::Graph&) {
         let to: i64 = seg.to;
         if from < at { continue; }
         for p in at..from { if input[p] != '\'' { full = false; } }        // a key no syllable read
-        if g.edges[seg.edge].kind > spelling::FUZZY { full = false; }       // an abbreviation or half a syllable
-        // Keys between two syllables that no syllable reads: an English word
-        // of the best sentence. They show as typed, one group of their own
-        // (ni ys github zo ua), and are not dropped.
+        if w.list[seg.word].source == decoder::ENGLISH || g.edges[seg.edge].kind > spelling::FUZZY { full = false; }
+        // Keys outside the best reading stay as typed.
         var g0 = at;
         while g0 < from && input[g0] == '\'' { g0++; }
         if g0 < from {
@@ -633,7 +631,7 @@ fn show_input(w: decoder::Words&, g: lattice::Graph&) {
             typed_part(g0, g1);
             at = g1;
         }
-        if shown.len > 0 {          // between syllables: the ' typed there, or a space
+        if shown.len > 0 {          // between spans: the ' typed there, or a space
             shown.push(if find(input[at..from], "'") >= 0 { '\'' } else { ' ' });
         }
         typed_part(from, to);

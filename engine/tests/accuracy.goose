@@ -474,7 +474,7 @@ fn export_segments(l: Line, code: const u8[:], out: u8[>..]&) {
         k--;
     }
     var segs: decoder::Segment[>..] = [];
-    decoder::segments(m, w, g, code, segs);
+    decoder::segments(m, w, g, code, false, segs);
     if segs.len == 0 { return; }
     var tokens: u8[>..] = [];
     var bounds: i64[>..] = [];

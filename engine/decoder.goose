@@ -1269,14 +1269,11 @@ fn assemble(m: Menu&, w: Words&, lex: lexicon::Lexicon&, input: const u8[:]) -> 
     return end;
 }
 
-// A syllable of the best reading: input[from..to] read through edges[edge]
-// as syllable `depth` of the word `word` (an index into Words.list).
+// A span of the best reading. For Chinese, input[from..to] reads through
+// edges[edge] as syllable `depth` of the word `word` (an index into Words.list).
+// For English, the span is the whole word and `edge` and `depth` are unused.
 struct Segment { from: u8, to: u8, edge: u32, word: u32, depth: u8 }
 
-// The best reading's syllables, in order, for showing the input split up
-// ("ke zd wo xb", or for shuangpin each syllable's pinyin). Each word of
-// the best sentence is matched again against the graph's edges; only those
-// few words, so the search itself carries nothing extra.
 struct Mx { prev: i32, word: i32, score: f64, last_en: u8, zh_prev: i32, zh_at: i32, anchor: i32, saw_zh: u8, tail: i32, tail_head: i32 }
 
 // How much better the next Chinese word reads after a Chinese sense of the
@@ -1849,11 +1846,18 @@ fn write_path(m: Menu&, words: i64[>..]&) {
     for wi in words { m.path.push(wi as u32); }
 }
 
-fn segments(m: Menu&, w: Words&, g: lattice::Graph&, input: const u8[:], out: Segment[>..]&) {
+// Recover the best reading's spans in order. Only its Chinese words need
+// to be matched against the graph again.
+fn segments(m: Menu&, w: Words&, g: lattice::Graph&, input: const u8[:], include_english: bool, out: Segment[>..]&) {
     out.clear();
     for i in m.path {
         let word = w.list[i];
-        if word.source == ENGLISH { continue; }
+        if word.source == ENGLISH {
+            if include_english {
+                out.push(Segment { from: word.from, to: word.end, edge: 0, word: i, depth: 0 });
+            }
+            continue;
+        }
         var edges: u32[>..] = [];
         let found = match_edges(g, source_lexicon(word.source), word.entry, input, word.from, 0, word.to, edges);
         if !found { continue; }

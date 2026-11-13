@@ -2169,12 +2169,22 @@ fn english_words(s: u64) {
     check(find(candidate(0), "GitHub") >= 0 && mixed_full == "wo yong github zuo sha",
           str("woyonggithubzuosha: ", candidate(0), ", the preedit keeping github between the syllables (got \"",
               mixed_full, "\")"));
+    check(preedit_of(s, "woyongResearchproposal") == "wo yong Research proposal",
+          "the mixed preedit separates adjacent English words and keeps typed capitals");
+    check(preedit_of(s, "woyongresearchproposalzuosha") == "wo yong research proposal zuo sha",
+          "the mixed preedit separates adjacent English words between Chinese syllables");
+    check(preedit_of(s, "researchproposalzenmexie") == "research proposal zen me xie",
+          "the mixed preedit separates adjacent English words at the start");
+    check(preedit_of(s, "woyongResearch'proposal'") == "wo yong Research'proposal'",
+          "the mixed preedit preserves typed apostrophes between and after English words");
     press(s, session::KEY_ESCAPE);
     check(session::set_scheme("flypy") == 0, "in 小鹤双拼");
     let mixed_flypy = preedit_of(s, "niysgithubzoua");
     type_text(s, "niysgithubzoua");
     check(find(candidate(0), "GitHub") >= 0 && mixed_flypy == "ni ys github zo ua",
           str("niysgithubzoua: ", candidate(0), ", the preedit ni ys github zo ua (got \"", mixed_flypy, "\")"));
+    check(preedit_of(s, "biruveyhderesearchproposal") == "bi ru ve yh de research proposal",
+          "the mixed 小鹤双拼 preedit also separates adjacent English words");
     press(s, session::KEY_ESCAPE);
     check(session::set_scheme("fullpinyin") == 0, "back to full pinyin");
     let capital = preedit_of(s, "Github");
