@@ -7,6 +7,7 @@ import SwiftUI
 @MainActor
 final class UpdateNotice {
     static let shared = UpdateNotice()
+    private static let cornerRadius: CGFloat = 18
 
     private var panel: UpdatePanel?
     private var controller: NoticeController?
@@ -58,16 +59,24 @@ final class UpdateNotice {
         if #available(macOS 26.0, *) {
             let glass = NSGlassEffectView()
             glass.style = .regular
-            glass.cornerRadius = 18
+            glass.cornerRadius = cornerRadius
             glass.contentView = content
-            return glass
+            // Clip the glass effect's backing layers to the window's rounded outline.
+            let container = NSView()
+            container.wantsLayer = true
+            container.layer?.cornerRadius = cornerRadius
+            container.layer?.masksToBounds = true
+            glass.frame = container.bounds
+            glass.autoresizingMask = [.width, .height]
+            container.addSubview(glass)
+            return container
         }
         let blur = NSVisualEffectView()
         blur.material = .popover
         blur.blendingMode = .behindWindow
         blur.state = .active
         blur.wantsLayer = true
-        blur.layer?.cornerRadius = 18
+        blur.layer?.cornerRadius = cornerRadius
         blur.layer?.masksToBounds = true
         content.frame = NSRect(x: 0, y: 0, width: 360, height: 280)
         content.autoresizingMask = [.width, .height]
