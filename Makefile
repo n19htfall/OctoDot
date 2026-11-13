@@ -143,6 +143,7 @@ test-images: images $(BIN)/images-test
 # of that same run, so a clean tree can build the sense table without a
 # separate rule for those two files.
 $(IMAGES)/semantic.tsv: tools/compile-semantic.py data/glossary_clean.tsv $(PREPARED)/report.json
+	@mkdir -p $(dir $@)
 	python3 tools/compile-semantic.py data/glossary_clean.tsv $(PREPARED)/english.tsv $(PREPARED)/lexicon.tsv $@
 
 test-typing: images $(IMAGES)/semantic.tsv $(BIN)/typing-test
@@ -151,7 +152,7 @@ test-typing: images $(IMAGES)/semantic.tsv $(BIN)/typing-test
 # The same three checks as a debug build. Full pinyin accuracy is several
 # minutes with the checks on, so this runs 小鹤双拼 only. Latency gates fail
 # at -O0; the flag prints them and does not fail the run.
-test-debug: images $(BIN_DEBUG)/typing-test $(BIN_DEBUG)/images-test $(BIN_DEBUG)/accuracy $(ACCURACY)/words.tsv
+test-debug: images $(IMAGES)/semantic.tsv $(BIN_DEBUG)/typing-test $(BIN_DEBUG)/images-test $(BIN_DEBUG)/accuracy $(ACCURACY)/words.tsv
 	$(BIN_DEBUG)/typing-test $(IMAGES) --no-latency-gates
 	$(BIN_DEBUG)/images-test $(PREPARED) $(IMAGES)
 	$(BIN_DEBUG)/accuracy $(IMAGES) $(ACCURACY) flypy
@@ -173,7 +174,7 @@ test-accuracy: images $(IMAGES)/semantic.tsv $(BIN)/accuracy $(ACCURACY)/words.t
 	    test $$status -eq 0 || exit $$status; \
 	done
 
-test-app: images
+test-app: images $(IMAGES)/semantic.tsv
 	$(MAKE) -C macos test
 
 bench: images $(BIN)/images-bench
