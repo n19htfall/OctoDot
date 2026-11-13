@@ -84,7 +84,7 @@ fn set_on(v: bool) { on = v; }
 
 fn head_index(a: u8, b: u8, c: u8) -> i64 {
     if a < 'a' || a > 'z' || b < 'a' || b > 'z' || c < 'a' || c > 'z' { return -1; }
-    return ((a - 'a') as i64) * 676 + ((b - 'a') as i64) * 26 + ((c - 'a') as i64);
+    return ((a - 'a') as i64) * 676 + ((b - 'a') as i64) * 26 + (c - 'a');
 }
 
 fn reindex() {
@@ -144,7 +144,7 @@ fn valid(d: Dict&) -> bool {
     for e in d.entries {
         if !is_code(e.code) || !(e.score >= 0.0) || e.weight == 0 { return false; }
         if e.count == 0 || e.count > MAX_FORMS { return false; }
-        if (e.form as i64) != next { return false; }
+        if e.form != next { return false; }
         // The rows are read below. A count past the array is refused here.
         if next + e.count > d.forms.len { return false; }
         next += e.count;

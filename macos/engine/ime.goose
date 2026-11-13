@@ -64,7 +64,7 @@ export fn octo_user_changes() -> u64 { userdb::changes }
 // Returns how many words and choices were removed or restored.
 export fn octo_forget(scope: u32) -> u32 {
     if scope > 2 { return 0; }
-    let n = userdb::forget(scope as i64);
+    let n = userdb::forget(scope);
     return if n > 0xFFFFFFFF { 0xFFFFFFFF } else { n as u32 };
 }
 

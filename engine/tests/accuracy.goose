@@ -234,28 +234,14 @@ fn offered_mask(w: decoder::Words&, input: const u8[:], end: i64, homophones: i6
     var mask: bool[>..] = [];
     for x in w.list.len { mask.push(false); }
     let begin = decoder::skip_separators(input, 0);
-    var i: i64 = 0;
-    var span_words: i64[>..] = [];
-    while i < w.list.len {
-        let from: i64 = w.list[i].from;
-        var j = i;
-        while j < w.list.len && w.list[j].from == from { j++; }
-        span_words.clear();
-        for x in i..j {
+    var offered: i64[>..] = [];
+    for p in input.len {
+        offered.clear();
+        decoder::offers(w, p, homophones, offered);
+        for x in offered {
             let to: i64 = w.list[x].to;
-            if to <= end && !(from == begin && to == end) { span_words.push(x); }
+            if to <= end && !(p == begin && to == end) { mask[x] = true; }
         }
-        sort(span_words) { a, b =>
-            let x = w.list[a];
-            let y = w.list[b];
-            x.to < y.to || (x.to == y.to && x.score > y.score)
-        };
-        var n: i64 = 0;
-        for k in span_words.len {
-            n = if k > 0 && w.list[span_words[k]].to == w.list[span_words[k - 1]].to { n + 1 } else { 0 };
-            if n < homophones { mask[span_words[k]] = true; }
-        }
-        i = j;
     }
     return mask;
 }
@@ -299,7 +285,7 @@ fn constrained(w: decoder::Words&, pool: const u8[:], text_at: const u32[:], all
                 let text = pool[text_at[x]..text_at[x + 1]];
                 let k: i64 = line.k;
                 if k + text.len > target.len || target[k..k + text.len] != text { continue; }
-                let score = line.score + (w.list[x].score as f64) +
+                let score = line.score + w.list[x].score +
                             decoder::fit(context, context_hash, text, hash(text), to == end);
                 let key = hash(text) ^ ((to as u64) * 0x9E3779B97F4A7C15) ^ (((k + text.len) as u64) * 0xC2B2AE3D27D4EB4F);
                 let known = seen.get(key);
@@ -427,7 +413,7 @@ fn diagnose(l: Line, code: const u8[:], got: const u8[:], d: Diagnosis&, out: u8
                     paths_to[to] += paths_to[word.from];
                     var chars: i64 = 0;
                     each_utf8(pool[text_at[x]..text_at[x + 1]]) { cp => chars++; };
-                    tokens += paths_to[word.from] * (chars as f64);
+                    tokens += paths_to[word.from] * chars;
                 }
                 tree_paths.push(paths_to[end]);
                 tree_tokens.push(tokens);
@@ -698,7 +684,7 @@ fn time_rerank(code: const u8[:]) {
     let m = rerank::live.meta[0];
     var s = decoder::Shortlist {};
     let t0 = clock_ns();
-    let n = decoder::shortlist(w, code, end, m.beam as i64, m.per_state as i64, m.shortlist as i64, s);
+    let n = decoder::shortlist(w, code, end, m.beam, m.per_state, m.shortlist, s);
     let t1 = clock_ns();
     shortlist_ns.push(t1 - t0);
     var job = rerank::Job { ids: [], starts: [] };
@@ -718,9 +704,9 @@ fn milliseconds(ns: i64[>..]&) -> u8[>..] {
     var total: i64 = 0;
     for x in ns { total += x; }
     format(out, "mean ");
-    format_flt(out, (total as f64) / (ns.len as f64) / 1.0e6, 2);
+    format_flt(out, (total as f64) / ns.len / 1.0e6, 2);
     format(out, " ms, p99 ");
-    format_flt(out, (ns[ns.len * 99 / 100] as f64) / 1.0e6, 2);
+    format_flt(out, ns[ns.len * 99 / 100] / 1.0e6, 2);
     format(out, " ms");
     return out;
 }
@@ -763,6 +749,14 @@ fn export_top(l: Line, code: const u8[:], k: i64, out: u8[>..]&) {
     }
 }
 
+// Whether `arg` is the option `name` ("--name=") with a value, and that value.
+fn has(arg: const u8[:], name: const u8[:]) -> bool { arg.len > name.len && starts_with(arg, name) }
+
+fn value(arg: const u8[:]) -> const u8[:] {
+    let name, v, ok = split_once(arg, '=');
+    return v;
+}
+
 fn main() {
     let all = args();
     var diagnosing = false;
@@ -782,38 +776,37 @@ fn main() {
         else if all[i] == "--no-english" { english::set_on(false); }
         else if all[i] == "--no-rerank" { rerank::set_on(false); }
         else if all[i] == "--time-rerank" { timing_rerank = true; }
-        else if starts_with(all[i], "--rerank-search=") {
-            let p, b, ok = split_once(all[i][16..], ',');
+        else if has(all[i], "--rerank-search=") {
+            let p, b, ok = split_once(value(all[i]), ',');
             let pv, ok1 = parse_int(p);
             let bv, ok2 = parse_int(b);
             if ok && ok1 && ok2 && pv > 0 && bv > 0 { rerank_per_state = pv; rerank_beam = bv; }
         }
-        else if all[i].len > 16 && all[i][..16] == "--top-per-state=" {
-            let v, ok = parse_int(all[i][16..]);
+        else if has(all[i], "--top-per-state=") {
+            let v, ok = parse_int(value(all[i]));
             if ok { top_per_state = v; }
         }
-        else if all[i].len > 11 && all[i][..11] == "--top-beam=" {
-            let v, ok = parse_int(all[i][11..]);
+        else if has(all[i], "--top-beam=") {
+            let v, ok = parse_int(value(all[i]));
             if ok { top_beam = v; }
         }
-        else if all[i].len > 9 && all[i][..9] == "--export=" { export_path.append(all[i][9..]); }
-        else if all[i].len > 13 && all[i][..13] == "--export-top=" { top_path.append(all[i][13..]); }
-        else if all[i].len > 12 && all[i][..12] == "--emissions=" {
-            if !load_emissions(all[i][12..]) {
+        else if has(all[i], "--export=") { export_path.append(value(all[i])); }
+        else if has(all[i], "--export-top=") { top_path.append(value(all[i])); }
+        else if has(all[i], "--emissions=") {
+            if !load_emissions(value(all[i])) {
                 write_stderr("accuracy: cannot read the emissions\n");
                 exit(2);
             }
             emitting = true;
         }
-        else if all[i].len > 14 && all[i][..14] == "--emit-weight=" {
-            let v, ok = parse_flt(all[i][14..]);
+        else if has(all[i], "--emit-weight=") {
+            let v, ok = parse_flt(value(all[i]));
             if ok { decoder::emit_weight = v; }
         }
-        else if all[i].len > 13 && all[i][..13] == "--fit-weight=" {
-            let v, ok = parse_flt(all[i][13..]);
+        else if has(all[i], "--fit-weight=") {
+            let v, ok = parse_flt(value(all[i]));
             if ok { decoder::fit_weight = v; }
         }
-
         else { at.push(i); }
     }
     if at.len != 3 && at.len != 4 {

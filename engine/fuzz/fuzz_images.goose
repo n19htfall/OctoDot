@@ -63,8 +63,8 @@ fn check_session() {
     assert(session::caps.len == session::input.len);
     for c in session::menu.candidates {
         assert(c.text + c.len <= session::menu.pool.len && c.refs + c.count <= session::menu.refs.len);
-        assert(c.code_len == 0 || (c.code as i64) + (c.code_len as i64) <= session::menu.pool.len);
-        assert(c.to as i64 <= session::input.len);
+        assert(c.code_len == 0 || (c.code as i64) + c.code_len <= session::menu.pool.len);
+        assert(c.to <= session::input.len);
     }
     let snap = session::snapshot(session_handle);
     let magic, ok = binary::read_u32le(snap, 0);
@@ -155,7 +155,7 @@ export fn octo_fuzz_aux(data: const u8[:]) -> i32 {
         assert(auxcode::fits(auxcode::live, auxcode::live.chars[i], ""));
     }
     let probe = data[..(if data.len < 2 { data.len } else { 2 })];
-    let cp = if data.len >= 4 { (data[data.len - 1] as u32) | ((data[data.len - 2] as u32) << 8) } else { 0 };
+    let cp = if data.len >= 4 { data[data.len - 1] | ((data[data.len - 2] as u32) << 8) } else { 0 };
     auxcode::fits(auxcode::live, cp, probe);
     return 1;
 }
@@ -294,7 +294,7 @@ export fn octo_fuzz_rerank(data: const u8[:]) -> i32 {
         assert(m.meta.len == 0 && m.chars.len == 0);
         return 0;
     }
-    assert(rerank::valid(m) && (m.meta[0].vocab as i64) == m.chars.len + rerank::SPECIALS);
+    assert(rerank::valid(m) && m.meta[0].vocab == m.chars.len + rerank::SPECIALS);
     var again: u8[>..] = [];
     rerank::write(m, again);
     var back = rerank::Model {};
@@ -310,8 +310,8 @@ let FUZZ_POSITIONS = 6;
 
 export fn octo_fuzz_rerank_weights(data: const u8[:]) -> i32 {
     if !write_file("fuzz-rerank.weights", data) { return 0; }
-    if rerank::octo_rerank_open("fuzz-rerank.weights", data.len as u64, FUZZ_DIMS as i32, 1, 2, FUZZ_VOCAB as i32,
-                                FUZZ_POSITIONS as i32) == 0 {
+    if rerank::octo_rerank_open("fuzz-rerank.weights", data.len as u64, FUZZ_DIMS, 1, 2, FUZZ_VOCAB,
+                                FUZZ_POSITIONS) == 0 {
         let ids: i32[9] = [1, 3, 4, 2, 1, 5, 6, 7, 2];
         let starts: i32[3] = [0, 4, 9];
         var bits: f64[2] = [0.0, 0.0];
@@ -343,8 +343,8 @@ export fn octo_fuzz_rerank_weights(data: const u8[:]) -> i32 {
         // Closing drops the trie. The same shape, opened again, must not
         // reuse the previous model's nodes on its first job.
         rerank::octo_rerank_close();
-        if rerank::octo_rerank_open("fuzz-rerank.weights", data.len as u64, FUZZ_DIMS as i32, 1, 2, FUZZ_VOCAB as i32,
-                                    FUZZ_POSITIONS as i32) == 0 {
+        if rerank::octo_rerank_open("fuzz-rerank.weights", data.len as u64, FUZZ_DIMS, 1, 2, FUZZ_VOCAB,
+                                    FUZZ_POSITIONS) == 0 {
             assert(rerank::octo_rerank_cache_live() == 0);
             let reopened = rerank::octo_rerank_cache_score(a_ids[..], a_starts[..], abits[..]);
             assert(reopened == 0 || reopened == 2);

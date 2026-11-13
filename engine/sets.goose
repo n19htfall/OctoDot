@@ -13,6 +13,7 @@
 import std;
 import os;
 import math;
+import image;
 import lexicon;
 
 namespace sets;
@@ -74,15 +75,14 @@ fn survey(directory: const u8[:]) {
     var pos: i64 = 0;
     while pos < names.len {
         let file = lexicon::next_line(names, pos);
-        if file.len <= 12 || compare(file[..8], "lexicon.") != 0 || compare(file[file.len - 4..], ".img") != 0 {
-            continue;
-        }
+        let id = image::id_of(file, "lexicon.");
+        if id.len == 0 { continue; }
         var img: u8[>..] = [];
         var probe = lexicon::Lexicon {};
         var stats = lexicon::LoadStats { check_ns: 0, verify_ns: 0, validate_ns: 0 };
         if !read_file(str(directory, "/", file), img) { continue; }
         let ok, digest = lexicon::load_into(probe, img, stats);
-        if !ok || digest != lexicon::live_digest || compare(file[8..file.len - 4], probe.meta[0].id) != 0 { continue; }
+        if !ok || digest != lexicon::live_digest || probe.meta[0].id != id { continue; }
         format(available, probe.meta[0].id, "\t", probe.meta[0].name, "\t", if probe.meta[0].on { "on" } else { "off" }, "\n");
     }
 }

@@ -281,7 +281,7 @@ fn index_of_run(run: u32) -> i64 {
 }
 
 fn remove_index(i: i64) {
-    orphan_pairs += lex.entries[i].len as i64;
+    orphan_pairs += lex.entries[i].len;
     stats.remove(lex.entries[i].run);
     remove_at(lex.entries, i);
 }
@@ -300,7 +300,7 @@ fn compact_words() {
         let n = lex.entries[i].len as i64;
         let start = new_pairs.len as u32;
         for k in n {
-            let pi = lex.runs[(old as i64) + k] as i64;
+            let pi = lex.runs[old + k] as i64;
             let flag: u8 = if pi < lex.flags.len { lex.flags[pi] } else { 0 };
             new_runs.push(new_pairs.len as u16);
             new_flags.push(flag);
@@ -473,7 +473,7 @@ fn kill_choice(c: i64) {
 
 fn write_choice(c: i64, input: const u8[:], text: const u8[:]) {
     var have = choices[c].span as i64;
-    if have == 0 { have = (choices[c].input_len as i64) + (choices[c].text_len as i64); }
+    if have == 0 { have = (choices[c].input_len as i64) + choices[c].text_len; }
     let need = input.len + text.len;
     if need <= have && have > 0 {
         let at = choices[c].input as i64;
@@ -656,7 +656,7 @@ fn reclaim_slots() {
             dead_c++;
             if !held_c.contains(i as u32) { free_c.push(i); }
         }
-        if ch.live || held_c.contains(i as u32) { need_c += (ch.input_len as i64) + (ch.text_len as i64); }
+        if ch.live || held_c.contains(i as u32) { need_c += (ch.input_len as i64) + ch.text_len; }
     }
     for i in english.len {
         let e = english[i];
@@ -664,7 +664,7 @@ fn reclaim_slots() {
             dead_e++;
             if !held_e.contains(i as u32) { free_e.push(i); }
         }
-        if e.live || held_e.contains(i as u32) { need_e += (e.code_len as i64) + (e.text_len as i64); }
+        if e.live || held_e.contains(i as u32) { need_e += (e.code_len as i64) + e.text_len; }
     }
     dead_choices = dead_c;
     dead_english = dead_e;
@@ -981,7 +981,7 @@ fn journal_restore(data: const u8[:]) -> i64 {
             code_of(pairs, code);
             let i, spot = locate(pairs, code, 0);
             if i < 0 { continue; }
-            id = lex.entries[i].run as i64;
+            id = lex.entries[i].run;
         } else if kind == ENGLISH {
             id = find_english(first, second);
             if id < 0 { continue; }
@@ -1065,7 +1065,7 @@ fn kill_english(c: i64) {
 
 fn write_english(c: i64, code: const u8[:], text: const u8[:]) {
     var have = english[c].span as i64;
-    if have == 0 { have = (english[c].code_len as i64) + (english[c].text_len as i64); }
+    if have == 0 { have = (english[c].code_len as i64) + english[c].text_len; }
     let need = code.len + text.len;
     if need <= have && have > 0 {
         let at = english[c].code as i64;
@@ -1207,15 +1207,15 @@ fn mix(h: u64, v: u64) -> u64 { (h ^ v) * FNV_PRIME }
 
 fn hash_surface_pairs(pairs: const lexicon::Pair[:]) -> u64 {
     var h = FNV_OFFSET;
-    for p in pairs { h = mix(h, p.cp as u64); }
+    for p in pairs { h = mix(h, p.cp); }
     return if h == 0 { 1 } else { h };
 }
 
 fn hash_reading_pairs(pairs: const lexicon::Pair[:]) -> u64 {
     var h = FNV_OFFSET;
     for p in pairs {
-        h = mix(h, p.cp as u64);
-        h = mix(mix(h, p.toned as u64), 0xFF);
+        h = mix(h, p.cp);
+        h = mix(mix(h, p.toned), 0xFF);
     }
     return if h == 0 { 1 } else { h };
 }
@@ -1223,7 +1223,7 @@ fn hash_reading_pairs(pairs: const lexicon::Pair[:]) -> u64 {
 fn hash_surface_entry(lex: lexicon::Lexicon&, i: i64) -> u64 {
     let e = lex.entries[i];
     var h = FNV_OFFSET;
-    for k in e.len { h = mix(h, lex.pairs[lex.runs[e.run + k]].cp as u64); }
+    for k in e.len { h = mix(h, lex.pairs[lex.runs[e.run + k]].cp); }
     return if h == 0 { 1 } else { h };
 }
 
@@ -1232,8 +1232,8 @@ fn hash_reading_entry(lex: lexicon::Lexicon&, i: i64) -> u64 {
     var h = FNV_OFFSET;
     for k in e.len {
         let p = lex.pairs[lex.runs[e.run + k]];
-        h = mix(h, p.cp as u64);
-        h = mix(mix(h, p.toned as u64), 0xFF);
+        h = mix(h, p.cp);
+        h = mix(mix(h, p.toned), 0xFF);
     }
     return if h == 0 { 1 } else { h };
 }
@@ -1243,17 +1243,17 @@ fn hash_tomb(i: i64) -> u64 {
     var h = FNV_OFFSET;
     for k in t.len {
         let p = tomb_pairs[(t.start as i64) + k];
-        h = mix(h, p.cp as u64);
-        h = mix(mix(h, p.toned as u64), 0xFF);
+        h = mix(h, p.cp);
+        h = mix(mix(h, p.toned), 0xFF);
     }
     return if h == 0 { 1 } else { h };
 }
 
 fn same_tomb(pairs: const lexicon::Pair[:], i: i64) -> bool {
     let t = tombs[i];
-    if !t.live || t.len as i64 != pairs.len { return false; }
+    if !t.live || t.len != pairs.len { return false; }
     for k in pairs.len {
-        let p = tomb_pairs[(t.start as i64) + k];
+        let p = tomb_pairs[t.start + k];
         if p.cp != pairs[k].cp || p.toned != pairs[k].toned { return false; }
     }
     return true;
@@ -1290,9 +1290,9 @@ fn find_tomb(pairs: const lexicon::Pair[:]) -> i64 {
 
 fn tomb_matches(pairs: const lexicon::Pair[:], i: i64) -> bool {
     let t = tombs[i];
-    if (t.len as i64) != pairs.len { return false; }
+    if t.len != pairs.len { return false; }
     for k in pairs.len {
-        let p = tomb_pairs[(t.start as i64) + k];
+        let p = tomb_pairs[t.start + k];
         if p.cp != pairs[k].cp || p.toned != pairs[k].toned { return false; }
     }
     return true;
@@ -1300,7 +1300,7 @@ fn tomb_matches(pairs: const lexicon::Pair[:], i: i64) -> bool {
 
 fn compact_tomb_pairs() {
     var n: i64 = 0;
-    for t in tombs { n += t.len as i64; }
+    for t in tombs { n += t.len; }
     guard n != tomb_pairs.len else { return; }
     var next: lexicon::Pair[>..] = [];
     for i in tombs.len {
@@ -1669,7 +1669,7 @@ fn restore(data: const u8[:]) -> bool {
         var valid = true;
         for cp in cps { if !lexicon::is_scalar(cp) { valid = false; } }
         if !valid || lex.pairs.len + pairs.len >= lexicon::MAX_PAIRS || lex.entries.len >= MAX_WORDS { continue; }
-        last_word = put(pairs, uses, day as u32) as i64;
+        last_word = put(pairs, uses, day as u32);
     }
     journal.clear();
     changes++;

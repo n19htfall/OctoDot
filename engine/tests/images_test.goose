@@ -97,7 +97,7 @@ fn every_spelling_round_trips(syllables: const u8[:], tsv: const u8[:]) {
             for r in sp.rows..sp.rows + sp.count {
                 let row = spelling::live.rows[r];
                 if row.toned == id && row.kind == spelling::kind_code(kind_text) &&
-                   row.credibility == credibility as f32 && (row.fuzzy as i64) == fuzzy &&
+                   row.credibility == credibility as f32 && row.fuzzy == fuzzy &&
                    (row.correction == 1) == (correction == "1") {
                     found = true;
                 }
@@ -381,7 +381,7 @@ fn same_winner(a: const f64[:], b: const f64[:]) -> bool {
 
 fn slot_bytes() -> i64 {
     let x = rerank::live.meta[0];
-    let stride = 2 * (x.layers as i64) * (x.dims as i64) + (x.dims as i64) + 1;
+    let stride = 2 * (x.layers as i64) * x.dims + x.dims + 1;
     return 4 * stride + 16;
 }
 
@@ -676,7 +676,7 @@ fn every_english_word(prepared: const u8[:], images: const u8[:]) {
         var legacy: u8[>..] = [];
         var writer = image::begin(legacy, image::KIND_ENGLISH, english::LEGACY_LAYOUT, 0, english::SECTIONS);
         var entries: english::LegacyEntry[>..] = [
-            english::LegacyEntry { code: "python", score: 3.321928 as f32, weight: 10, form: 0, count: 4 }
+            english::LegacyEntry { code: "python", score: 3.321928, weight: 10, form: 0, count: 4 }
         ];
         image::add(legacy, writer, entries);
         image::add(legacy, writer, fixture.forms);
@@ -769,7 +769,7 @@ fn the_grammar_model_answers(prepared: const u8[:], images: const u8[:]) {
     var fake: u8[>..] = [];
     fake.append("Rime::Grammar/1.0");
     while fake.len < 36 { fake.push(0); }
-    for v in [256 as u32, 4 as u32] { for i in 4 { fake.push(((v >> (8 * i)) & 0xFF) as u8); } }
+    for v in [256 as u32, 4] { for i in 4 { fake.push(((v >> (8 * i)) & 0xFF) as u8); } }
     while fake.len < 44 + 256 * 4 { fake.push(0); }
     var named = settings;
     var other: u8[>..] = [];

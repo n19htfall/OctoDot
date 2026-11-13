@@ -109,11 +109,11 @@ fn valid(m: Model&) -> bool {
     guard m.meta.len == 1 else { return false; }
     let x = m.meta[0];
     let dims: i64 = x.dims;
-    guard dims >= 8 && dims <= 4096 && x.heads >= 1 && dims % (x.heads as i64) == 0 && x.layers >= 1 &&
+    guard dims >= 8 && dims <= 4096 && x.heads >= 1 && dims % x.heads == 0 && x.layers >= 1 &&
           x.layers <= 16 && x.positions >= 3 && x.positions <= 64 && x.shortlist >= 2 &&
           x.shortlist <= MAX_SHORTLIST && x.per_state >= 1 && x.per_state <= 64 && x.beam >= 1 && x.beam <= 4096 &&
           x.weight == x.weight && x.weight >= 0.0 && x.weight <= 100.0 else { return false; }
-    guard (x.vocab as i64) == m.chars.len + SPECIALS && x.vocab <= MAX_VOCAB else { return false; }
+    guard x.vocab == m.chars.len + SPECIALS && x.vocab <= MAX_VOCAB else { return false; }
     guard x.file_size == weights_size(dims, x.layers, x.vocab, x.positions) else { return false; }
     var seen = dictionary<u32, bool> {};
     for cp in m.chars {
@@ -156,8 +156,8 @@ fn open(directory: const u8[:]) -> i32 {
     var m = Model {};
     if !load_into(m, img) { return 2; }
     let x = m.meta[0];
-    if octo_rerank_open(str(directory, "/rerank.weights"), x.file_size, x.dims as i32, x.layers as i32,
-                        x.heads as i32, x.vocab as i32, x.positions as i32) != 0 { return 3; }
+    if octo_rerank_open(str(directory, "/rerank.weights"), x.file_size, x.dims, x.layers,
+                        x.heads, x.vocab as i32, x.positions) != 0 { return 3; }
     live.meta.append(m.meta);
     live.chars.append(m.chars);
     for i in live.chars.len { ids.insert(live.chars[i], (i + SPECIALS) as i32); }
@@ -195,12 +195,12 @@ fn add(job: Job&, text: const u8[:]) -> bool {
     guard chars >= 1 && chars <= (live.meta[0].positions as i64) - 2 && job.ids.len + chars + 2 <= job.ids.cap else {
         return false;
     }
-    job.ids.push(BOS as i32);
+    job.ids.push(BOS);
     each_utf8(text) { cp =>
         let id = ids.get(cp as u32);
         if id { job.ids.push(id); } else { job.ids.push(UNK as i32); }
     };
-    job.ids.push(EOS as i32);
+    job.ids.push(EOS);
     job.starts.push(job.ids.len as i32);
     return true;
 }
@@ -294,7 +294,7 @@ fn choose(job: Job&, scores: const f64[:]) -> i64 {
             return -1;
         }
         if code == 0 && usable(bits[..]) {
-            let limit = 2.0 * abs_f(live.meta[0].weight as f64) * 0.001;
+            let limit = 2.0 * abs_f(live.meta[0].weight) * 0.001;
             if octo_rerank_cache_last_used() == 0 {
                 need_cold = false;
             } else {

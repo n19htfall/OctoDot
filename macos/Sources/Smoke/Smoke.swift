@@ -91,10 +91,17 @@ enum Smoke {
         (result, after) = engine.process(session, .character("."))
         check(after?.commit == "你好。", "a period commits the best reading and 。")
 
+        // Shape codes are off until a scheme is chosen in Settings, and ` is
+        // then no key of the composition. With 万象's codes on, it narrows.
+        snapshot = type("shi`o")
+        check(!snapshot.preedit.contains("`"), "shape codes are off by default: ` is not taken")
+        _ = engine.process(session, .special(.escape))
+        check(engine.setAuxScheme("wanxiang"), "the bundled 万象 shape codes load")
         snapshot = type("shi`o")
         check(snapshot.preedit == "shi`o" && snapshot.candidates.first?.text == "是",
-              "a shape code after `: shi`o gives 是 (the bundled 万象 codes load)")
+              "a shape code after `: shi`o gives 是")
         _ = engine.process(session, .special(.escape))
+        _ = engine.setAuxScheme("none")
         snapshot = type("zhong9")
         check(snapshot.candidates.first?.text == "种", "a tone key: zhong9 gives 种")
         _ = engine.process(session, .special(.escape))

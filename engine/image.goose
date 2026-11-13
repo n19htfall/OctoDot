@@ -114,3 +114,10 @@ fn restamp(img: u8[:]) {
     let sum = hash(img[HEADER..]);
     for i in 8 { img[32 + i] = ((sum >> (8 * i)) & 0xFF) as u8; }
 }
+
+// The id in an image's file name, <prefix><id>.img ("lexicon." gives diming
+// for lexicon.diming.img); empty for any other name.
+fn id_of(file: const u8[:], prefix: const u8[:]) -> const u8[:] {
+    guard file.len > prefix.len + 4 && starts_with(file, prefix) && ends_with(file, ".img") else { return file[0..0]; }
+    return file[prefix.len..file.len - 4];
+}

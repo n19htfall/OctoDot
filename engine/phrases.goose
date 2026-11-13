@@ -132,7 +132,7 @@ fn first_toned(core: lexicon::Lexicon&, p: i64) -> i64 {
     var b = core.toned.len;
     while a < b {
         let m = a + (b - a) / 2;
-        if (core.toned[m].plain as i64) < p { a = m + 1; } else { b = m; }
+        if core.toned[m].plain < p { a = m + 1; } else { b = m; }
     }
     return a;
 }
@@ -380,7 +380,7 @@ fn compile(text: const u8[:], core: lexicon::Lexicon&, syllables: const u8[:], k
             shortcuts.list.push(Shortcut { code: code_field, text: shortcuts.pool.len as u32, len: phrase.len as u16,
                                            weight: (if weight >= 0.0 { weight } else { DEFAULT_SHORTCUT_WEIGHT }) as f32 });
             shortcuts.pool.append(phrase);
-            order.push(line_no as f64);
+            order.push(line_no);
             report.shortcuts += 1;
             continue;
         }

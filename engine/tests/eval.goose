@@ -139,7 +139,7 @@ fn main() {
         let h = hash(text);
         let as_word = e.weight >= common && h % 27 == 0;
         let w = exp2(e.weight / lexicon::WEIGHT_SCALE) - 1.0;
-        let as_frequent = ((h >> 11) as f64) / 9007199254740992.0 * 280000.0 < w;
+        let as_frequent = (h >> 11) / 9007199254740992.0 * 280000.0 < w;
         if !as_word && !as_frequent { continue; }
         var code: u16[>..] = [];
         for k in e.len { code.push(lexicon::syl(lexicon::live, e, k) as u16); }

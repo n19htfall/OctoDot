@@ -169,7 +169,7 @@ fn editing(s: u64) {
     press(s, session::KEY_HOME);
     press(s, session::KEY_RIGHT);
     let grid = session::snapshot(s);
-    let grid_flags: i64 = (grid[6] as i64) | ((grid[7] as i64) << 8);
+    let grid_flags: i64 = grid[6] | ((grid[7] as i64) << 8);
     check((grid_flags & session::FLAG_EXPANDED) != 0 && session::grid_row == 0, "the snapshot marks the grid open");
     press(s, session::KEY_DOWN);
     check(session::highlight == 1 + session::PAGE_SIZE, "down again moves to the same place on the next row");
@@ -179,8 +179,8 @@ fn editing(s: u64) {
     check(!session::expanded && session::highlight == 1, "up from the first row closes the grid");
     press(s, session::KEY_DOWN);
     let picked = candidate(session::PAGE_SIZE + 2);
-    session::key(s, session::KeyEvent { key: 0, flags: session::KEYFLAG_PICK as u16, modifiers: 0,
-                                        codepoint: (session::PAGE_SIZE + 2) as u32, time_ms: 0 });
+    session::key(s, session::KeyEvent { key: 0, flags: session::KEYFLAG_PICK, modifiers: 0,
+                                        codepoint: (session::PAGE_SIZE + 2), time_ms: 0 });
     check(compare(session::commit, picked) == 0 && !session::expanded, "a click in the grid commits that candidate");
 
     session::key(s, key_event(session::KEY_OTHER, 'x', session::MOD_COMMAND));
@@ -474,7 +474,7 @@ fn charsets(s: u64) {
     type_text(s, "gei");
     let r = control_g(s);
     let snap = session::snapshot(s);
-    let flags: i64 = (snap[6] as i64) | ((snap[7] as i64) << 8);
+    let flags: i64 = snap[6] | ((snap[7] as i64) << 8);
     check((r & session::DIRTY) != 0 && rank("給") >= 0 && (flags & session::FLAG_FULL_CHARSET) != 0,
           str("Control-g while composing shows the full set (給 for gei, rank ", rank("給"), "), and the snapshot says so"));
     check(compare(candidate(0), "给") == 0, "  给 stays first");
@@ -505,7 +505,7 @@ fn random_keys(s: u64) {
 }
 
 fn keyed(s: u64, c: i64, flags: i64) -> u32 {
-    session::key(s, session::KeyEvent { key: session::KEY_OTHER as u16, flags: flags as u16, modifiers: 0,
+    session::key(s, session::KeyEvent { key: session::KEY_OTHER, flags: flags as u16, modifiers: 0,
                                         codepoint: c as u32, time_ms: 0 })
 }
 
@@ -966,8 +966,8 @@ fn halfwidth_punctuation(s: u64) {
           "halfwidth: a colon after digits still passes through");
 
     type_text(s, "nihao");
-    let cmd = session::key(s, session::KeyEvent { key: session::KEY_OTHER as u16, flags: flag as u16,
-                                                  modifiers: session::MOD_COMMAND, codepoint: 's' as u32, time_ms: 0 });
+    let cmd = session::key(s, session::KeyEvent { key: session::KEY_OTHER, flags: flag as u16,
+                                                  modifiers: session::MOD_COMMAND, codepoint: 's', time_ms: 0 });
     check((cmd & session::HANDLED) == 0 && (cmd & session::HAS_COMMIT) != 0 && !session::composing(),
           "halfwidth: Command still commits the reading and lets the shortcut through");
 
@@ -1089,7 +1089,7 @@ fn no_learn_policy(s: u64) {
 
 fn stored_syllables() -> i64 {
     var n: i64 = 0;
-    for e in userdb::lex.entries { n += e.len as i64; }
+    for e in userdb::lex.entries { n += e.len; }
     return n;
 }
 

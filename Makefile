@@ -50,41 +50,28 @@ $(PREPARED)/report.json: $(OCTO_PREP) data/wanxiang.lock data/unihan.lock data/g
 
 prep: fetch $(PREPARED)/report.json
 
-# Goose programs: the engine package plus one root file each.
-$(BIN)/octo-compile: tools/octo-compile/octo-compile.goose $(ENGINE) | $(GOOSE)
-	$(GOOSE) build $< -o $@ $(GOOSEFLAGS)
+# Goose programs: the engine package plus one root file each, built into
+# $(BIN). --debug checks overflow and range, and builds the C at -O0: that
+# build goes to $(BIN_DEBUG), so a debug run never replaces the release
+# binaries.
+define goose-program
+$(BIN)/$(1): $(2) $(ENGINE) | $(GOOSE)
+	$$(GOOSE) build $$< -o $$@ $$(GOOSEFLAGS)
 
-$(BIN)/images-test: engine/tests/images_test.goose $(ENGINE) | $(GOOSE)
-	$(GOOSE) build $< -o $@ $(GOOSEFLAGS)
-
-$(BIN)/typing-test: engine/tests/typing_test.goose $(ENGINE) | $(GOOSE)
-	$(GOOSE) build $< -o $@ $(GOOSEFLAGS)
-
-$(BIN)/eval: engine/tests/eval.goose $(ENGINE) | $(GOOSE)
-	$(GOOSE) build $< -o $@ $(GOOSEFLAGS)
-
-$(BIN)/accuracy: engine/tests/accuracy.goose $(ENGINE) | $(GOOSE)
-	$(GOOSE) build $< -o $@ $(GOOSEFLAGS)
-
-# --debug checks overflow and range, and builds the C at -O0. Its own
-# directory, so a debug run never replaces the release binaries.
-$(BIN_DEBUG)/typing-test: engine/tests/typing_test.goose $(ENGINE) | $(GOOSE)
+$(BIN_DEBUG)/$(1): $(2) $(ENGINE) | $(GOOSE)
 	@mkdir -p $(BIN_DEBUG)
-	$(GOOSE) build $< -o $@ $(GOOSEFLAGS) --debug
-
-$(BIN_DEBUG)/images-test: engine/tests/images_test.goose $(ENGINE) | $(GOOSE)
-	@mkdir -p $(BIN_DEBUG)
-	$(GOOSE) build $< -o $@ $(GOOSEFLAGS) --debug
-
-$(BIN_DEBUG)/accuracy: engine/tests/accuracy.goose $(ENGINE) | $(GOOSE)
-	@mkdir -p $(BIN_DEBUG)
-	$(GOOSE) build $< -o $@ $(GOOSEFLAGS) --debug
-
-$(BIN)/images-bench: engine/bench/images_bench.goose engine/bench/metrics.c engine/bench/images_bench.build $(ENGINE) | $(GOOSE)
-	$(GOOSE) build $< -o $@ $(GOOSEFLAGS)
-
-$(BIN)/typing-memory: engine/bench/typing_memory.goose engine/bench/metrics.c engine/bench/typing_memory.build $(ENGINE) | $(GOOSE)
-	$(GOOSE) build $< -o $@ $(GOOSEFLAGS)
+	$$(GOOSE) build $$< -o $$@ $$(GOOSEFLAGS) --debug
+endef
+$(eval $(call goose-program,octo-compile,tools/octo-compile/octo-compile.goose))
+$(eval $(call goose-program,images-test,engine/tests/images_test.goose))
+$(eval $(call goose-program,typing-test,engine/tests/typing_test.goose))
+$(eval $(call goose-program,accuracy,engine/tests/accuracy.goose))
+$(eval $(call goose-program,eval,engine/tests/eval.goose))
+$(eval $(call goose-program,images-bench,engine/bench/images_bench.goose))
+$(eval $(call goose-program,typing-memory,engine/bench/typing_memory.goose))
+# The benchmarks' own C, and the files that name it to the compiler.
+$(BIN)/images-bench: engine/bench/metrics.c engine/bench/images_bench.build
+$(BIN)/typing-memory: engine/bench/metrics.c engine/bench/typing_memory.build
 
 # One octo-compile run writes every image; lexicon.img stands for them all.
 # The grammar model goes beside grammar.img as it is: a hard link (one copy
@@ -97,19 +84,28 @@ $(IMAGES)/lexicon.img: $(BIN)/octo-compile $(PREPARED)/report.json data/rerank.l
 	for f in rerank.weights rerank.check.tsv; do \
 	    ln -f $(RERANK_DIR)/$$f $(IMAGES)/ 2>/dev/null || cp -c $(RERANK_DIR)/$$f $(IMAGES)/; done
 
-images: prep $(IMAGES)/lexicon.img
+# Chinese senses of English words already in the dictionary. Missing file:
+# the mixed decoder keeps its previous scores.
+# report.json is what octo-prep writes; english.tsv and lexicon.tsv come out
+# of that same run, so a clean tree can build the sense table without a
+# separate rule for those two files.
+$(IMAGES)/semantic.tsv: tools/compile-semantic.py data/glossary_clean.tsv $(PREPARED)/report.json
+	@mkdir -p $(dir $@)
+	python3 tools/compile-semantic.py data/glossary_clean.tsv $(PREPARED)/english.tsv $(PREPARED)/lexicon.tsv $@
 
-app: images $(IMAGES)/semantic.tsv
+images: prep $(IMAGES)/lexicon.img $(IMAGES)/semantic.tsv
+
+app: images
 	$(MAKE) -C macos all
 
 # Distribution (docs/distribution-and-onboarding.md): a development-signed disk
 # image, checked (mounted read-only); or a release, Developer ID signed,
 # notarized and stapled, with its update archive. make appcast signs a
 # release's update manifest; make release-key makes the signing key, once.
-dmg-dev: images $(IMAGES)/semantic.tsv
+dmg-dev: images
 	$(MAKE) -C macos test-dmg SIGN_PROFILE=dev
 
-dmg-release: images $(IMAGES)/semantic.tsv
+dmg-release: images
 	$(MAKE) -C macos release SIGN_PROFILE=release
 
 appcast:
@@ -121,7 +117,7 @@ release-key:
 uninstall:
 	$(MAKE) -C macos uninstall
 
-install: images $(IMAGES)/semantic.tsv
+install: images
 	$(MAKE) -C macos install
 
 test: check-privacy test-prep test-images test-typing test-app test-accuracy
@@ -137,22 +133,13 @@ test-prep: fetch
 test-images: images $(BIN)/images-test
 	$(BIN)/images-test $(PREPARED) $(IMAGES)
 
-# Chinese senses of English words already in the dictionary. Missing file:
-# the mixed decoder keeps its previous scores.
-# report.json is what octo-prep writes; english.tsv and lexicon.tsv come out
-# of that same run, so a clean tree can build the sense table without a
-# separate rule for those two files.
-$(IMAGES)/semantic.tsv: tools/compile-semantic.py data/glossary_clean.tsv $(PREPARED)/report.json
-	@mkdir -p $(dir $@)
-	python3 tools/compile-semantic.py data/glossary_clean.tsv $(PREPARED)/english.tsv $(PREPARED)/lexicon.tsv $@
-
-test-typing: images $(IMAGES)/semantic.tsv $(BIN)/typing-test
+test-typing: images $(BIN)/typing-test
 	$(BIN)/typing-test $(IMAGES)
 
 # The same three checks as a debug build. Full pinyin accuracy is several
 # minutes with the checks on, so this runs 小鹤双拼 only. Latency gates fail
 # at -O0; the flag prints them and does not fail the run.
-test-debug: images $(IMAGES)/semantic.tsv $(BIN_DEBUG)/typing-test $(BIN_DEBUG)/images-test $(BIN_DEBUG)/accuracy $(ACCURACY)/words.tsv
+test-debug: images $(BIN_DEBUG)/typing-test $(BIN_DEBUG)/images-test $(BIN_DEBUG)/accuracy $(ACCURACY)/words.tsv
 	$(BIN_DEBUG)/typing-test $(IMAGES) --no-latency-gates
 	$(BIN_DEBUG)/images-test $(PREPARED) $(IMAGES)
 	$(BIN_DEBUG)/accuracy $(IMAGES) $(ACCURACY) flypy
@@ -167,14 +154,14 @@ $(ACCURACY)/words.tsv: $(OCTO_PREP) data/accuracy.lock $(PREPARED)/report.json |
 
 # M1's accuracy gate, in both schemes: 95% of the common words and idioms first; names, places and
 # sentences are metrics. The summaries only (make accuracy lists the misses).
-test-accuracy: images $(IMAGES)/semantic.tsv $(BIN)/accuracy $(ACCURACY)/words.tsv
+test-accuracy: images $(BIN)/accuracy $(ACCURACY)/words.tsv
 	@for scheme in fullpinyin flypy; do \
 	    $(BIN)/accuracy $(IMAGES) $(ACCURACY) $$scheme >build/accuracy.$$scheme.txt; status=$$?; \
 	    grep -v '^miss' build/accuracy.$$scheme.txt; \
 	    test $$status -eq 0 || exit $$status; \
 	done
 
-test-app: images $(IMAGES)/semantic.tsv
+test-app: images
 	$(MAKE) -C macos test
 
 bench: images $(BIN)/images-bench

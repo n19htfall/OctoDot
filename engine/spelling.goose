@@ -59,7 +59,7 @@ var live = Table {};
 var fuzzy_on: u32 = 0;
 
 // Whether `row` counts: every fuzzy group it needs is on.
-fn usable(row: Row) -> bool { ((row.fuzzy as u32) & ~fuzzy_on) == 0 }
+fn usable(row: Row) -> bool { (row.fuzzy & ~fuzzy_on) == 0 }
 
 fn kind_code(name: const u8[:]) -> i64 {
     if name == "normal" { return NORMAL; }
@@ -122,7 +122,7 @@ fn valid(t: Table&, syllables: i64) -> bool {
     for r in t.rows {
         // NaN fails both comparisons
         if r.toned >= syllables || r.kind > INVALID || r.correction > 1 || !(r.credibility <= 0.0) ||
-           !(r.credibility > -1000.0) || ((r.fuzzy as u32) & ~known) != 0 {
+           !(r.credibility > -1000.0) || (r.fuzzy & ~known) != 0 {
             return false;
         }
     }

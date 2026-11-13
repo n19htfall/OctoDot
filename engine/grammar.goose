@@ -351,8 +351,8 @@ fn open(directory: const u8[:]) -> i32 {
     var s = Settings {};
     if !load_into(s, img) { return 2; }
     let m = s.meta[0];
-    octo_gram_settings(m.max_length as i32, m.min_length as i32, m.collocation as f64, m.non_collocation as f64,
-                       m.weak_collocation as f64, m.rear as f64);
+    octo_gram_settings(m.max_length, m.min_length, m.collocation, m.non_collocation,
+                       m.weak_collocation, m.rear);
     if octo_gram_open(path(directory, m.language), m.file_size) != 0 { return 3; }
     live.meta.clear();
     live.meta.append(s.meta);
@@ -375,7 +375,7 @@ fn query(context: const u8[:], word: const u8[:], rear: bool) -> f64 {
 
 // Words to keep per span inside the input: the model's choice when on, else
 // one (the unigram's best, which is all a search without context can use).
-fn homophones() -> i64 { if on { live.meta[0].homophones as i64 } else { 1 } }
+fn homophones() -> i64 { if on { live.meta[0].homophones } else { 1 } }
 
 // grammar.tsv from octo-prep: "key \t value" lines. False, with the reason
 // in `err`, for anything missing or malformed.
