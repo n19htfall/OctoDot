@@ -70,7 +70,7 @@ enum SettingsWindow {
         detail.minimumThickness = 440
         split.addSplitViewItem(detail)
 
-        let window = NSWindow(contentViewController: split)
+        let window = SettingsHostWindow(contentViewController: split)
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
         // A unified toolbar, even with nothing in it: the sidebar runs up under it.
         window.toolbar = NSToolbar(identifier: "OctoDotSettings")
@@ -125,6 +125,34 @@ enum SettingsWindow {
             model.openApp = choice.id
         }
         show()
+    }
+}
+
+/// The input method has no main menu to supply the standard close shortcut.
+private final class SettingsHostWindow: NSWindow {
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        closeIfShortcut(event) || super.performKeyEquivalent(with: event)
+    }
+
+    override func sendEvent(_ event: NSEvent) {
+        if !closeIfShortcut(event) { super.sendEvent(event) }
+    }
+
+    private func closeIfShortcut(_ event: NSEvent) -> Bool {
+        guard event.type == .keyDown, attachedSheet == nil else { return false }
+        let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
+        let key = event.charactersIgnoringModifiers?.lowercased()
+        switch modifiers {
+        case [] where key == "\u{1b}", .command where key == "w":
+            break
+        // Control-W can arrive as the ASCII control character instead of "w".
+        case .control where key == "w" || event.characters == "\u{17}":
+            break
+        default:
+            return false
+        }
+        performClose(nil)
+        return true
     }
 }
 
