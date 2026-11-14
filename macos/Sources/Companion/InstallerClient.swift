@@ -66,21 +66,33 @@ final class InstallerClient {
     private var connection: NSXPCConnection?
     private var connectionID = UUID()
 
-    // A timed-out enable query can still be in XPC. Keep its reply slot so
-    // the next poll waits on the same request until it actually finishes.
-    private var enableQuery: (id: UUID, waiters: [UUID: @Sendable (Bool) -> Void])?
+    // Pollers share a deadline and a connection dedicated to this request.
+    // Ending the request leaves the connection for installer changes alone.
+    private struct EnableQuery {
+        let id: UUID
+        let connection: NSXPCConnection
+        let deadline: Task<Void, Never>
+        var waiters: [UUID: @Sendable (Bool) -> Void]
+    }
+
+    private var enableQuery: EnableQuery?
 
     private func proxy(_ failed: @escaping @Sendable () -> Void) -> (any InstallerProtocol)? {
         let connection = self.connection ?? connect()
         return connection.remoteObjectProxyWithErrorHandler { _ in failed() } as? any InstallerProtocol
     }
 
-    private func connect() -> NSXPCConnection {
-        let id = UUID()
+    private func makeConnection() -> NSXPCConnection {
         let connection = NSXPCConnection(serviceName: Identity.installer)
         connection.remoteObjectInterface = NSXPCInterface(with: InstallerProtocol.self)
         connection.setCodeSigningRequirement(
             "anchor apple generic and certificate leaf[subject.OU] = \"\(Identity.team)\" and identifier \"\(Identity.installer)\"")
+        return connection
+    }
+
+    private func connect() -> NSXPCConnection {
+        let id = UUID()
+        let connection = makeConnection()
         connection.invalidationHandler = { [weak self] in
             Task { @MainActor in
                 guard let self, self.connectionID == id else { return }
@@ -111,25 +123,45 @@ final class InstallerClient {
 
     func isEnabled() async -> Bool {
         let waiterID = UUID()
-        defer { enableQuery?.waiters.removeValue(forKey: waiterID) }
-        return await InstallerWait<Bool>().wait(for: .seconds(2), returning: false) { reply in
+        defer {
+            if enableQuery?.waiters.removeValue(forKey: waiterID) != nil,
+               let query = enableQuery, query.waiters.isEmpty {
+                finishEnableQuery(query.id, enabled: false)
+            }
+        }
+        return await InstallerWait<Bool>().wait(for: nil, returning: false) { reply in
             guard !Task.isCancelled else { return }
             if enableQuery != nil {
                 enableQuery?.waiters[waiterID] = reply
                 return
             }
             let id = UUID()
-            enableQuery = (id, [waiterID: reply])
-            let finish: @Sendable (Bool) -> Void = { enabled in
-                Task { @MainActor in
-                    guard let query = self.enableQuery, query.id == id else { return }
-                    self.enableQuery = nil
-                    for reply in query.waiters.values { reply(enabled) }
+            let connection = makeConnection()
+            let deadline = Task { [weak self] in
+                do {
+                    try await Task.sleep(for: .seconds(2))
+                    self?.finishEnableQuery(id, enabled: false)
+                } catch {
+                    return
                 }
             }
-            guard let proxy = proxy({ finish(false) }) else { return finish(false) }
+            enableQuery = EnableQuery(id: id, connection: connection, deadline: deadline, waiters: [waiterID: reply])
+            let finish: @Sendable (Bool) -> Void = { [weak self] enabled in
+                Task { @MainActor in self?.finishEnableQuery(id, enabled: enabled) }
+            }
+            connection.resume()
+            guard let proxy = connection.remoteObjectProxyWithErrorHandler({ _ in finish(false) }) as? any InstallerProtocol
+            else { return finishEnableQuery(id, enabled: false) }
             proxy.isEnabled { finish($0) }
         }
+    }
+
+    private func finishEnableQuery(_ id: UUID, enabled: Bool) {
+        guard let query = enableQuery, query.id == id else { return }
+        enableQuery = nil
+        query.deadline.cancel()
+        query.connection.invalidate()
+        for reply in query.waiters.values { reply(enabled) }
     }
 
     func preflight() async -> Preflight? {
