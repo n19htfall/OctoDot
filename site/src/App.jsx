@@ -87,7 +87,7 @@ const STEPS = [
 ];
 
 const FEATURES = [
-  { tag: "方案", title: "全拼与小鹤双拼", text: "同一套词库，随时切换。双拼时，输入区按音节显示你实际按下的键。", sample: "zhong guo · vs go" },
+  { tag: "方案", title: "全拼与双拼", text: "同一套词库，随时切换。", sample: "zhong guo · vs go" },
   { tag: "中英", title: "中英文混合输入", text: "打 woyonggithub，直接得到「我用GitHub」。常用英文单词也会出现在候选里。", sample: "我用GitHub" },
   { tag: "可选", title: "模糊音", text: "z = zh、n = l 等十组，按需单独开启，默认全部关闭。", sample: "zong → 中" },
   { tag: "形码", title: "形码辅助筛字", text: "万象、墨奇、自然码等九套形码。打音节后加反引号，用字形缩小范围。", sample: "shi`o → 是" },
@@ -630,7 +630,7 @@ function Top() {
             </h1>
             <p className="hero-lede">
               <span className="nowrap">八千点是隐私优先的中文输入法，</span>
-              <span className="nowrap">目前支持全拼与小鹤双拼。</span>
+              <span className="nowrap">目前支持全拼与双拼。</span>
             </p>
             <div className="hero-actions">
               <DownloadButton icon="github" />
