@@ -444,7 +444,13 @@ final class SystemCandidateLookup: CandidateLookupProvider {
         if let cached = availability[key.language], cached.1 > Date() {
             state = cached.0
         } else {
-            state = await LanguageAvailability().status(from: source, to: target)
+            // SDK 26.4+ defaults this check to Apple Intelligence models, a
+            // different family from the low-latency session created below.
+            if #available(macOS 26.4, *) {
+                state = await LanguageAvailability(preferredStrategy: .lowLatency).status(from: source, to: target)
+            } else {
+                state = await LanguageAvailability().status(from: source, to: target)
+            }
             guard !Task.isCancelled else { return .unavailable }
             availability[key.language] = (state, Date().addingTimeInterval(state == .installed ? 60 : 15))
         }
