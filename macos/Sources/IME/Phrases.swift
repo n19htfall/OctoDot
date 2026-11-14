@@ -139,20 +139,6 @@ enum Phrases {
         NSWorkspace.shared.open(file)
     }
 
-    /// One line for the input menu.
-    static var statusLine: String {
-        let s = Engine.shared.phrasesStatus
-        switch s.state {
-        case .idle: return "No custom phrases yet"
-        case .compiling: return "Custom phrases: compiling…"
-        case .ready:
-            var line = "Custom phrases: \(s.words) words, \(s.shortcuts) shortcuts"
-            if s.skipped > 0 { line += "; \(s.skipped) lines skipped, first line \(s.firstBadLine): \(s.why)" }
-            return line
-        case .failed: return "Custom phrases did not compile: \(s.why)"
-        }
-    }
-
     private static func modified(_ url: URL) -> Date? {
         (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
     }

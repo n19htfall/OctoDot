@@ -271,7 +271,8 @@ build/octo-translation-test: Sources/IME/CandidateTranslations.swift $(wildcard 
 	$(SWIFTC) $(BASEFLAGS) Sources/IME/CandidateTranslations.swift $(wildcard Sources/TranslationTests/*.swift) \
 	    -lsqlite3 -Xlinker -weak_framework -Xlinker Translation -o $@
 
-build/octo-layout-test: Sources/Shared/Snapshot.swift Sources/IME/CandidatePanel.swift Sources/IME/CandidateStyle.swift \
+build/octo-layout-test: Sources/Shared/Snapshot.swift Sources/IME/CandidatePanel.swift Sources/IME/CandidateBar.swift \
+                        Sources/IME/CandidateTypesetter.swift Sources/IME/CandidateStyle.swift \
                         Sources/IME/CandidateTranslations.swift Sources/IME/TranslationModifier.swift $(wildcard Sources/CandidateLayoutTests/*.swift)
 	$(SWIFTC) $(BASEFLAGS) $^ -framework AppKit -lsqlite3 -Xlinker -weak_framework -Xlinker Translation -o $@
 

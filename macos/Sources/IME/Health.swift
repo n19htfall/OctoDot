@@ -50,10 +50,4 @@ enum Health {
         sources = []
         try? FileManager.default.removeItem(at: marker)
     }
-
-    /// A line for the input menu, if any run ended abnormally.
-    static var menuLine: String? {
-        let n = abnormalExits
-        return n > 0 ? "OctoDot ended unexpectedly \(n) time\(n == 1 ? "" : "s"); please report it" : nil
-    }
 }

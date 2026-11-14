@@ -31,7 +31,7 @@ enum SettingsWindow {
         ColorPanel.shared.close()
         if let observer { NotificationCenter.default.removeObserver(observer) }
         observer = nil
-        model.onTitle = nil
+        model.release()
         guard let window else { return }
         window.orderOut(nil)
         window.close()
@@ -75,7 +75,10 @@ enum SettingsWindow {
         // A unified toolbar, even with nothing in it: the sidebar runs up under it.
         window.toolbar = NSToolbar(identifier: "OctoDotSettings")
         window.toolbarStyle = .unified
-        model.onTitle = { [weak window] title in window?.title = title }
+        model.onTitle = { [weak window] title in
+            guard let window, window.title != title else { return }
+            window.title = title
+        }
         model.syncTitle()
         window.contentMinSize = NSSize(width: 640, height: 440)
         // Fit the full Input pane on a tall display while keeping the window on screen.
@@ -189,7 +192,7 @@ private struct Detail: View {
         case .appearance: AppearancePane(model: model)
         case .lexicon: LexiconPane(model: model)
         case .apps:
-            if let id = model.openApp { AppPane(model: model, id: id) }
+            if let entry = model.openEntry { AppPane(model: model, entry: entry) }
             else { AppsPane(model: model) }
         case .privacy: PrivacyPane(model: model)
         }
@@ -227,28 +230,55 @@ private struct PaneHeader: View {
     }
 }
 
-/// What the window shows and changes: read from the engine and the stored
-/// preferences whenever the window opens or comes forward, and changed
-/// through the same calls the input menu used to make.
+/// The settings panes bind to properties that apply changes to the live
+/// engine or preferences. Opening or refocusing the window rereads the
+/// settings and publishes a new snapshot only when something has changed.
 @MainActor
 @Observable
 final class SettingsModel {
-    var ready = false
-    var schemes: [Engine.Scheme] = []
-    var scheme = ""
-    var auxSchemes: [Engine.Scheme] = []
-    var auxScheme = ""
-    var fullCharset = false
-    var fuzzy: [Engine.FuzzyGroup] = []
-    var english = true
-    var sets: [Engine.LexiconSet] = []
-    var incognito = false
-    var phrases = ""
-    var health: String?
-    var forgot: String?
-    var translationModifier = TranslationModifier.current
-    var style = CandidateStyle.current
-    var apps: [AppRules.Entry] = []
+    /// The engine's lists and the stored preferences, as last read.
+    @MainActor
+    struct Values: Equatable {
+        var ready = false
+        var schemes: [Engine.Scheme] = []
+        var scheme = ""
+        var auxSchemes: [Engine.Scheme] = []
+        var auxScheme = ""
+        var fullCharset = false
+        var fuzzy: [Engine.FuzzyGroup] = []
+        var english = true
+        var sets: [Engine.LexiconSet] = []
+        var incognito = false
+        var translationModifier = TranslationModifier.current
+        var style = CandidateStyle.current
+        var apps: [AppRules.Entry] = []
+
+        /// Read now. The engine's lists exist only while it runs: until it
+        /// does, they stay as `previous` had them.
+        static func read(keeping previous: Values) -> Values {
+            AppRules.reload()
+            var next = previous
+            next.apps = AppRules.entries
+            next.translationModifier = TranslationModifier.current
+            next.style = CandidateStyle.current
+            next.incognito = Learning.incognito
+            next.ready = Engine.shared.isReady
+            guard next.ready else { return next }
+            next.schemes = Engine.shared.schemes()
+            next.scheme = Learning.scheme
+            next.auxSchemes = Engine.shared.auxSchemes()
+            next.auxScheme = Learning.auxScheme
+            next.fullCharset = Learning.fullCharset
+            next.fuzzy = Engine.shared.fuzzyGroups()
+            next.english = Learning.englishOn
+            next.sets = Engine.shared.lexiconSets()
+            return next
+        }
+    }
+
+    private var values = Values()
+    /// What the last "forget" did, shown under the privacy pane's buttons.
+    private(set) var forgot: String?
     /// The bundle id of the app whose page is open, or nil for the list.
     var openApp: String? {
         didSet { if openApp != oldValue { syncTitle() } }
@@ -261,88 +291,161 @@ final class SettingsModel {
     }
     /// The window title: the pane's, or the open app's name.
     @ObservationIgnored var onTitle: ((String) -> Void)?
+    /// The apps' icons, looked up once each (Launch Services is not free,
+    /// and a list row asks again every time it is drawn).
+    @ObservationIgnored private var icons: [String: NSImage] = [:]
+
+    func refresh() {
+        let next = Values.read(keeping: values)
+        if next != values { values = next }
+        if let openApp, !values.apps.contains(where: { $0.id == openApp }) { self.openApp = nil }
+        syncTitle()
+    }
+
+    /// The window closes for good: what it looked up goes with it.
+    func release() {
+        onTitle = nil
+        icons.removeAll()
+    }
 
     func syncTitle() { onTitle?(chromeTitle) }
 
     private var chromeTitle: String {
-        if pane == .apps, let openApp, let name = AppRules.entries.first(where: { $0.id == openApp })?.name {
-            return name
-        }
+        if pane == .apps, let entry = openEntry { return entry.name }
         return (pane ?? .input).title
     }
 
-    func refresh() {
-        AppRules.reload()
-        apps = AppRules.entries
-        if let openApp, !apps.contains(where: { $0.id == openApp }) { self.openApp = nil }
-        syncTitle()
-        translationModifier = TranslationModifier.current
-        style = CandidateStyle.current
-        incognito = Learning.incognito
-        health = Health.menuLine
-        ready = Engine.shared.isReady
-        guard ready else { return }             // the engine's lists exist only while it runs
-        schemes = Engine.shared.schemes()
-        scheme = Learning.scheme
-        auxSchemes = Engine.shared.auxSchemes()
-        auxScheme = Learning.auxScheme
-        fullCharset = Learning.fullCharset
-        fuzzy = Engine.shared.fuzzyGroups()
-        english = Learning.englishOn
-        sets = Engine.shared.lexiconSets()
-        phrases = Phrases.statusLine
+    // MARK: What the panes read
+
+    var ready: Bool { values.ready }
+    var schemes: [Engine.Scheme] { values.schemes }
+    var auxSchemes: [Engine.Scheme] { values.auxSchemes }
+    var fuzzy: [Engine.FuzzyGroup] { values.fuzzy }
+    var sets: [Engine.LexiconSet] { values.sets }
+    var apps: [AppRules.Entry] { values.apps }
+    var style: CandidateStyle { values.style }
+
+    // MARK: Input and lexicon
+
+    var scheme: String {
+        get { values.scheme }
+        set { Learning.useScheme(newValue); refresh() }
     }
 
-    func useScheme(_ id: String) { Learning.useScheme(id); refresh() }
-    func useAuxScheme(_ id: String) { Learning.useAuxScheme(id); refresh() }
-    func useFullCharset(_ on: Bool) { Learning.useFullCharset(on); refresh() }
-    func useFuzzy(_ id: String, on: Bool) { Learning.useFuzzy(id, on: on); refresh() }
-    func useEnglish(_ on: Bool) { Learning.useEnglish(on); refresh() }
-    func useSet(_ id: String, on: Bool) { Learning.useSet(id, on: on); refresh() }
-    func setIncognito(_ on: Bool) { Learning.incognito = on; refresh() }
+    var auxScheme: String {
+        get { values.auxScheme }
+        set { Learning.useAuxScheme(newValue); refresh() }
+    }
+
+    var fullCharset: Bool {
+        get { values.fullCharset }
+        set { Learning.useFullCharset(newValue); refresh() }
+    }
+
+    /// The fuzzy groups that are on, by id.
+    var fuzzyOn: Set<String> {
+        get { Set(values.fuzzy.filter(\.on).map(\.id)) }
+        set {
+            for group in values.fuzzy where newValue.contains(group.id) != group.on {
+                Learning.useFuzzy(group.id, on: !group.on)
+            }
+            refresh()
+        }
+    }
+
+    var english: Bool {
+        get { values.english }
+        set { Learning.useEnglish(newValue); refresh() }
+    }
+
+    /// The lexicon sets that are mounted, by id.
+    var mountedSets: Set<String> {
+        get { Set(values.sets.filter(\.mounted).map(\.id)) }
+        set {
+            for set in values.sets where newValue.contains(set.id) != set.mounted {
+                Learning.useSet(set.id, on: !set.mounted)
+            }
+            refresh()
+        }
+    }
+
+    var translationModifier: TranslationModifier {
+        get { values.translationModifier }
+        set {
+            guard newValue != TranslationModifier.current else { return }
+            TranslationModifier.select(newValue)
+            CandidatePanel.translationModifierChanged()
+            TranslationChords.reconfigure()
+            values.translationModifier = TranslationModifier.current
+        }
+    }
+
     func editPhrases() { Phrases.edit() }
 
-    func setTranslationModifier(_ modifier: TranslationModifier) {
-        guard modifier != TranslationModifier.current else { return }
-        TranslationModifier.select(modifier)
-        CandidatePanel.translationModifierChanged()
-        TranslationChords.reconfigure()
-        translationModifier = TranslationModifier.current
+    // MARK: Appearance
+
+    var fontSize: Double {
+        get { Double(values.style.fontSize) }
+        set { changeStyle { $0.fontSize = CGFloat(newValue) } }
     }
 
-    func setFontSize(_ size: Double) { change { $0.fontSize = CGFloat(size) } }
-    func setAccent(_ accent: String) { change { $0.accent = accent } }
-    func setInset(_ inset: Double) { change { $0.inset = CGFloat(inset) } }
-    func resetAppearance() { change { $0 = CandidateStyle() } }
+    var inset: Double {
+        get { Double(values.style.inset) }
+        set { changeStyle { $0.inset = CGFloat(newValue) } }
+    }
 
-    private func change(_ edit: (inout CandidateStyle) -> Void) {
-        var next = style
+    /// "system", a preset's id, or "#RRGGBB" (CandidateStyle.accent).
+    var accent: String {
+        get { values.style.accent }
+        set { changeStyle { $0.accent = newValue } }
+    }
+
+    func resetAppearance() { changeStyle { $0 = CandidateStyle() } }
+
+    private func changeStyle(_ edit: (inout CandidateStyle) -> Void) {
+        var next = values.style
         edit(&next)
-        guard next != style else { return }
+        guard next != values.style else { return }
         next.use()
-        style = next
+        values.style = next
     }
+
+    // MARK: Apps
 
     func addApp() { Companion.open("pick-app") }
 
-    func showApp(_ id: String) { openApp = id }
-
-    func showAppList() { openApp = nil }
-
-    func setAppHalfwidth(_ on: Bool, id: String) {
-        AppRules.setHalfwidth(on, for: id)
-        refresh()
-    }
-
-    func setAppNoLearn(_ on: Bool, id: String) {
-        AppRules.setNoLearn(on, for: id)
-        refresh()
+    /// The open app's rules. Setting them stores what changed.
+    var openEntry: AppRules.Entry? {
+        get { openApp.flatMap { id in values.apps.first { $0.id == id } } }
+        set {
+            guard let newValue, let old = openEntry, old.id == newValue.id else { return }
+            if newValue.halfwidthPunctuation != old.halfwidthPunctuation {
+                AppRules.setHalfwidth(newValue.halfwidthPunctuation, for: old.id)
+            }
+            if newValue.noLearn != old.noLearn { AppRules.setNoLearn(newValue.noLearn, for: old.id) }
+            refresh()
+        }
     }
 
     func removeApp(_ id: String) {
         AppRules.remove(id)
         if openApp == id { openApp = nil }
         refresh()
+    }
+
+    func icon(for id: String, side: CGFloat) -> NSImage {
+        let key = "\(id) \(side)"
+        if let known = icons[key] { return known }
+        let image = AppRules.icon(for: id, side: side)
+        icons[key] = image
+        return image
+    }
+
+    // MARK: Privacy
+
+    var incognito: Bool {
+        get { values.incognito }
+        set { Learning.incognito = newValue; refresh() }
     }
 
     func forget(_ scope: Engine.ForgetScope) {
@@ -355,30 +458,37 @@ final class SettingsModel {
     }
 }
 
+private extension Set {
+    /// A writable membership value for a toggle binding.
+    subscript(contains element: Element) -> Bool {
+        get { contains(element) }
+        set {
+            if newValue { insert(element) } else { remove(element) }
+        }
+    }
+}
+
 private struct InputPane: View {
-    let model: SettingsModel
+    @Bindable var model: SettingsModel
 
     var body: some View {
         Form {
             PaneHeader(pane: .input)
             Section {
-                Picker("输入方案", selection: Binding(get: { model.scheme }, set: { model.useScheme($0) })) {
+                Picker("输入方案", selection: $model.scheme) {
                     ForEach(model.schemes, id: \.id) { Text($0.name).tag($0.id) }
                 }
-                Picker("形码", selection: Binding(get: { model.auxScheme },
-                                                 set: { model.useAuxScheme($0) })) {
+                Picker("形码", selection: $model.auxScheme) {
                     Text("无").tag("none")
                     ForEach(model.auxSchemes, id: \.id) { Text($0.name).tag($0.id) }
                 }
-                Toggle("全部汉字", isOn: Binding(get: { model.fullCharset },
-                                                              set: { model.useFullCharset($0) }))
+                Toggle("全部汉字", isOn: $model.fullCharset)
             }
             if !model.fuzzy.isEmpty {
                 Section {
                     LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 8) {
                         ForEach(model.fuzzy, id: \.id) { group in
-                            Toggle(group.title, isOn: Binding(get: { group.on },
-                                                              set: { model.useFuzzy(group.id, on: $0) }))
+                            Toggle(group.title, isOn: $model.fuzzyOn[contains: group.id])
                         }
                     }
                 } header: {
@@ -387,8 +497,7 @@ private struct InputPane: View {
             }
             if #available(macOS 26.0, *) {
                 Section {
-                    Picker("翻译按键", selection: Binding(get: { model.translationModifier },
-                                                        set: { model.setTranslationModifier($0) })) {
+                    Picker("翻译按键", selection: $model.translationModifier) {
                         ForEach(TranslationModifier.allCases) { modifier in
                             Text(modifier.label).tag(modifier)
                         }
@@ -406,28 +515,25 @@ private struct InputPane: View {
             }
         }
         .formStyle(.grouped)
-        .disabled(!model.ready)
-        .overlay { if !model.ready { NotReady() } }
+        .needsEngine(model.ready)
     }
 }
 
 private struct AppearancePane: View {
-    let model: SettingsModel
+    @Bindable var model: SettingsModel
 
     var body: some View {
         Form {
             PaneHeader(pane: .appearance)
             Section {
                 LabeledContent("字号") {
-                    Measure(value: Binding(get: { Double(model.style.fontSize) }, set: { model.setFontSize($0) }),
-                            range: CandidateStyle.fontSizes)
+                    Measure(value: $model.fontSize, range: CandidateStyle.fontSizes)
                 }
                 LabeledContent("强调色") {
-                    AccentPicker(model: model)
+                    AccentPicker(accent: $model.accent)
                 }
                 LabeledContent("高亮边距") {
-                    Measure(value: Binding(get: { Double(model.style.inset) }, set: { model.setInset($0) }),
-                            range: CandidateStyle.insets)
+                    Measure(value: $model.inset, range: CandidateStyle.insets)
                 }
             } footer: {
                 HStack {
@@ -462,42 +568,30 @@ private struct Measure: View {
 /// The accent colors as swatches, like System Settings' own, with the
 /// system's accent first and a color of one's own last.
 private struct AccentPicker: View {
-    let model: SettingsModel
+    @Binding var accent: String
+
+    private static let systemFill = AnyShapeStyle(AngularGradient(
+        colors: [.blue, .purple, .pink, .red, .orange, .yellow, .green, .blue], center: .center))
+    private static let presetFills = CandidateStyle.presets.map { preset in
+        (id: preset.id, name: preset.name, fill: AnyShapeStyle(Color(nsColor: CandidateStyle(accent: preset.id).accentColor)))
+    }
 
     var body: some View {
         HStack(spacing: 4) {
-            Swatch(fill: AnyShapeStyle(AngularGradient(colors: [.blue, .purple, .pink, .red, .orange, .yellow, .green, .blue],
-                                                       center: .center)),
-                   selected: model.style.accent == "system", help: "系统强调色") {
-                model.setAccent("system")
+            Swatch(fill: Self.systemFill, selected: accent == "system", help: "系统强调色") {
+                accent = "system"
             }
-            ForEach(CandidateStyle.presets, id: \.id) { preset in
-                Swatch(fill: AnyShapeStyle(Color(nsColor: CandidateStyle(accent: preset.id).accentColor)),
-                       selected: model.style.accent == preset.id, help: preset.name) {
-                    model.setAccent(preset.id)
+            ForEach(Self.presetFills, id: \.id) { preset in
+                Swatch(fill: preset.fill, selected: accent == preset.id, help: preset.name) {
+                    accent = preset.id
                 }
             }
-            let own = CandidateStyle.color(hex: model.style.accent)
-            Button {
-                ColorPanel.shared.open(with: model.style.accentColor) { color in
-                    if let hex = CandidateStyle.hex(color) { model.setAccent(hex) }
+            let own = CandidateStyle.color(hex: accent)
+            Swatch(fill: own.map { AnyShapeStyle(Color(nsColor: $0)) }, selected: own != nil, help: "自定义颜色") {
+                ColorPanel.shared.open(with: CandidateStyle(accent: accent).accentColor) { color in
+                    if let hex = CandidateStyle.hex(color) { accent = hex }
                 }
-            } label: {
-                ZStack {
-                    if let own {
-                        Circle().fill(Color(nsColor: own))
-                    } else {
-                        Circle().strokeBorder(.secondary.opacity(0.6), lineWidth: 1)
-                        Image(systemName: "plus").font(.system(size: 9, weight: .bold)).foregroundStyle(.secondary)
-                    }
-                }
-                .frame(width: 16, height: 16)
-                .padding(3)
-                .overlay(Circle().strokeBorder(own != nil ? Color.primary.opacity(0.55) : .clear, lineWidth: 2))
             }
-            .buttonStyle(.plain)
-            .help("自定义颜色")
-            .accessibilityLabel("自定义颜色")
         }
     }
 }
@@ -532,20 +626,30 @@ final class ColorPanel: NSObject {
     @objc private func changed(_ panel: NSColorPanel) { onChange?(panel.color) }
 }
 
+/// One color to choose, ringed when chosen. With no fill, an outline with a
+/// plus: a color of one's own, not yet chosen.
 private struct Swatch: View {
-    let fill: AnyShapeStyle
+    let fill: AnyShapeStyle?
     let selected: Bool
     let help: String
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            Circle()
-                .fill(fill)
-                .frame(width: 16, height: 16)
-                .overlay(Circle().strokeBorder(.black.opacity(0.12)))
-                .padding(3)
-                .overlay(Circle().strokeBorder(selected ? Color.primary.opacity(0.55) : .clear, lineWidth: 2))
+            Group {
+                if let fill {
+                    Circle()
+                        .fill(fill)
+                        .overlay(Circle().strokeBorder(.black.opacity(0.12)))
+                } else {
+                    Circle()
+                        .strokeBorder(.secondary.opacity(0.6), lineWidth: 1)
+                        .overlay(Image(systemName: "plus").font(.system(size: 9, weight: .bold)).foregroundStyle(.secondary))
+                }
+            }
+            .frame(width: 16, height: 16)
+            .padding(3)
+            .overlay(Circle().strokeBorder(selected ? Color.primary.opacity(0.55) : .clear, lineWidth: 2))
         }
         .buttonStyle(.plain)
         .help(help)
@@ -555,7 +659,7 @@ private struct Swatch: View {
 }
 
 private struct AppsPane: View {
-    @Bindable var model: SettingsModel
+    let model: SettingsModel
 
     var body: some View {
         Form {
@@ -563,9 +667,9 @@ private struct AppsPane: View {
             if !model.apps.isEmpty {
                 Section {
                     ForEach(model.apps) { app in
-                        Button { model.showApp(app.id) } label: {
+                        Button { model.openApp = app.id } label: {
                             HStack(spacing: 10) {
-                                Image(nsImage: AppRules.icon(for: app.id, side: 28))
+                                Image(nsImage: model.icon(for: app.id, side: 28))
                                     .frame(width: 28, height: 28)
                                 Text(app.name)
                                     .foregroundStyle(.primary)
@@ -592,25 +696,23 @@ private struct AppsPane: View {
 }
 
 private struct AppPane: View {
-    @Bindable var model: SettingsModel
-    let id: String
-
-    private var entry: AppRules.Entry? { model.apps.first { $0.id == id } }
+    let model: SettingsModel
+    let entry: AppRules.Entry
 
     var body: some View {
         Form {
             Section {
                 VStack(spacing: 8) {
                     HStack {
-                        Button { model.showAppList() } label: {
+                        Button { model.openApp = nil } label: {
                             Label(Pane.apps.title, systemImage: "chevron.backward")
                         }
                         .buttonStyle(.borderless)
                         Spacer()
                     }
-                    Image(nsImage: AppRules.icon(for: id, side: 54))
+                    Image(nsImage: model.icon(for: entry.id, side: 54))
                         .frame(width: 54, height: 54)
-                    Text(entry?.name ?? id)
+                    Text(entry.name)
                         .font(.title2.weight(.semibold))
                         .multilineTextAlignment(.center)
                 }
@@ -618,37 +720,47 @@ private struct AppPane: View {
                 .padding(.vertical, 12)
             }
             Section {
-                Picker("标点样式", selection: Binding(get: { entry?.halfwidthPunctuation ?? false },
-                                                     set: { model.setAppHalfwidth($0, id: id) })) {
+                Picker("标点样式", selection: rule(\.halfwidthPunctuation)) {
                     Text(AppRules.Entry.followDefault).tag(false)
                     Text(AppRules.Entry.halfwidth).tag(true)
                 }
             }
             Section {
-                Toggle("不学习用户输入行为", isOn: Binding(get: { entry?.noLearn ?? false },
-                                                   set: { model.setAppNoLearn($0, id: id) }))
+                Toggle("不学习用户输入行为", isOn: rule(\.noLearn))
             } footer: {
                 Note("开启后，OctoDot 不会从你在此应用中的输入和选词学习。已学词条仍可使用。")
             }
             Section {
-                Button("移除", role: .destructive) { model.removeApp(id) }
+                Button("移除", role: .destructive) { model.removeApp(entry.id) }
             }
         }
         .formStyle(.grouped)
     }
+
+    /// One of this app's rules, stored as soon as it changes.
+    private func rule(_ keyPath: WritableKeyPath<AppRules.Entry, Bool>) -> Binding<Bool> {
+        Binding {
+            guard let current = model.openEntry, current.id == entry.id else { return entry[keyPath: keyPath] }
+            return current[keyPath: keyPath]
+        } set: { on in
+            guard var changed = model.openEntry, changed.id == entry.id else { return }
+            changed[keyPath: keyPath] = on
+            model.openEntry = changed
+        }
+    }
 }
 
 private struct LexiconPane: View {
-    let model: SettingsModel
+    @Bindable var model: SettingsModel
 
     var body: some View {
         Form {
             PaneHeader(pane: .lexicon)
             Section("万象词库") {
                 ForEach(model.sets, id: \.id) { set in
-                    Toggle(set.name, isOn: Binding(get: { set.mounted }, set: { model.useSet(set.id, on: $0) }))
+                    Toggle(set.name, isOn: $model.mountedSets[contains: set.id])
                 }
-                Toggle("英文单词", isOn: Binding(get: { model.english }, set: { model.useEnglish($0) }))
+                Toggle("英文单词", isOn: $model.english)
             }
             Section {
                 LabeledContent("自定义短语") {
@@ -657,20 +769,19 @@ private struct LexiconPane: View {
             }
         }
         .formStyle(.grouped)
-        .disabled(!model.ready)
-        .overlay { if !model.ready { NotReady() } }
+        .needsEngine(model.ready)
     }
 }
 
 private struct PrivacyPane: View {
-    let model: SettingsModel
+    @Bindable var model: SettingsModel
     @State private var confirmingEverything = false
 
     var body: some View {
         Form {
             PaneHeader(pane: .privacy)
             Section {
-                Toggle("无痕模式", isOn: Binding(get: { model.incognito }, set: { model.setIncognito($0) }))
+                Toggle("无痕模式", isOn: $model.incognito)
             } footer: {
                 Note("无痕模式下不学习用户的输入习惯")
             }
@@ -722,5 +833,13 @@ private struct NotReady: View {
             .foregroundStyle(.secondary)
             .padding()
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+private extension View {
+    /// A pane whose rows come from the engine: greyed out, under a note,
+    /// while the engine has not loaded its images.
+    func needsEngine(_ ready: Bool) -> some View {
+        disabled(!ready).overlay { if !ready { NotReady() } }
     }
 }
