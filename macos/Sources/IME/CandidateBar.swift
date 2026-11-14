@@ -28,6 +28,7 @@ final class CandidateBar: NSView {
     private var divider = NSRect.zero
     private var track = NSRect.zero
     private var thumb = NSRect.zero
+    private static let scrollGutter: CGFloat = 16
     private var separators: [CGFloat] = []
     private var gridWidth: CGFloat = 0
     private var hovered: Int?
@@ -108,13 +109,16 @@ final class CandidateBar: NSView {
         let sameList = sameStyle && previous?.candidates == page.candidates
             && previous?.origin == page.origin && previous?.expanded == page.expanded
         syncBlends(to: page, sameList: sameList)
-        let clearHover = hovered != nil
+        let previousHover = hovered
         self.page = page
         hovered = nil
         cells.removeAll()
         separators.removeAll()
         let size = page.expanded ? layoutGrid(page) : layoutRow(page)
         frame.size = size
+        if !track.isEmpty, let window {
+            hovered = scrollbarTarget(at: convert(window.mouseLocationOutsideOfEventStream, from: nil))
+        }
         let full = NSRect(origin: .zero, size: size)
         plain.frame = full
         chrome.frame = full
@@ -135,7 +139,7 @@ final class CandidateBar: NSView {
             stopHighlightSlide()
         }
         let row = numberRow(page)
-        let textSame = sameList && blends.isEmpty && !clearHover && drawnNumberRow == row
+        let textSame = sameList && blends.isEmpty && previousHover == hovered && drawnNumberRow == row
             && drawnCells == cells && previous?.comments == page.comments
             && previous?.translations == page.translations
         if textSame {
@@ -229,17 +233,18 @@ final class CandidateBar: NSView {
         }
         gridWidth = (cells.map(\.maxX).max() ?? s.inset)
         let showScroll = page.menuCount > count
-        let scrollGutter: CGFloat = showScroll ? 16 : 0
+        let scrollGutter = showScroll ? Self.scrollGutter : 0
         let width = ceil(gridWidth + s.inset + scrollGutter)
         let height = ceil(y + s.inset)
         if showScroll {
-            track = NSRect(x: width - 16, y: s.inset, width: 12, height: max(height - 2 * s.inset, 1))
-            let total = max(page.menuCount, 1)
-            let thumbH = max(22, track.height * CGFloat(count) / CGFloat(total))
-            let travel = max(track.height - thumbH, 0)
-            let span = CGFloat(max(total - count, 1))
-            let thumbY = track.minY + travel * CGFloat(min(max(page.origin, 0), total - count)) / span
-            thumb = NSRect(x: track.midX - 1.5, y: thumbY, width: 3, height: thumbH)
+            let inset = max(s.inset, 8)
+            track = NSRect(x: width - scrollGutter, y: inset, width: scrollGutter, height: height - 2 * inset)
+            let fractionVisible = CGFloat(count) / CGFloat(page.menuCount)
+            let thumbHeight = max(min(22, track.height / 2), track.height * fractionVisible)
+            let lastOrigin = page.menuCount - count
+            let progress = CGFloat(min(max(page.origin, 0), lastOrigin)) / CGFloat(lastOrigin)
+            let thumbY = track.minY + (track.height - thumbHeight) * progress
+            thumb = NSRect(x: track.midX - 1, y: thumbY, width: 2, height: thumbHeight)
         } else {
             track = .zero
             thumb = .zero
@@ -265,6 +270,7 @@ final class CandidateBar: NSView {
 
     func forget() {
         page = nil
+        thumbDrag = nil
         drawnNumberRow = nil
         drawnCells = []
         stopHighlightSlide()
@@ -481,7 +487,7 @@ final class CandidateBar: NSView {
                 columnWidths[column] = max(columnWidths[column],
                                            ceil(fixed[i] + min(comments[i], commentLimit) + min(labels[i], labelLimit)))
             }
-            let scroll: CGFloat = page.menuCount > labels.count ? 16 : 0
+            let scroll = page.menuCount > labels.count ? Self.scrollGutter : 0
             return ceil(2 * s.inset + columnWidths.reduce(0, +) + CGFloat(cols - 1) * 8 + scroll)
         }
         let natural = labels.max() ?? 0
@@ -633,7 +639,9 @@ final class CandidateBar: NSView {
     private func drawChrome() {
         guard let page else { return }
         if !thumb.isEmpty {
-            NSColor.tertiaryLabelColor.setFill()
+            let overScrollbar = hovered.map { (-5 ... -3).contains($0) } ?? false
+            let opacity: CGFloat = overScrollbar || thumbDrag != nil ? 0.42 : 0.18
+            NSColor.labelColor.withAlphaComponent(opacity).setFill()
             NSBezierPath(roundedRect: thumb, xRadius: thumb.width / 2, yRadius: thumb.width / 2).fill()
         }
         if !divider.isEmpty {
@@ -734,12 +742,18 @@ final class CandidateBar: NSView {
     /// A cell's index, -1 or -2 for the page arrows, -3 or -4 for the scrollbar
     /// track above and below the thumb, -5 for the thumb, or nil.
     private func target(at point: NSPoint) -> Int? {
-        if !thumb.isEmpty && thumb.insetBy(dx: -8, dy: -2).contains(point) { return -5 }
-        if track.contains(point) { return point.y < thumb.midY ? -3 : -4 }
+        if let target = scrollbarTarget(at: point) { return target }
         if let i = cells.firstIndex(where: { $0.contains(point) }) { return i }
         if previousArrow.contains(point) { return -1 }
         if nextArrow.contains(point) { return -2 }
         return nil
+    }
+
+    private func scrollbarTarget(at point: NSPoint) -> Int? {
+        // The full gutter is interactive, including the space past the visible track.
+        guard !track.isEmpty, track.insetBy(dx: 0, dy: style.inset - track.minY).contains(point) else { return nil }
+        if point.y >= thumb.minY - 2 && point.y < thumb.maxY + 2 { return -5 }
+        return point.y < thumb.midY ? -3 : -4
     }
 
     override func scrollWheel(with event: NSEvent) {
@@ -765,8 +779,9 @@ final class CandidateBar: NSView {
     override func mouseDown(with event: NSEvent) {
         dragged = false
         let point = convert(event.locationInWindow, from: nil)
-        if !thumb.isEmpty && thumb.insetBy(dx: -8, dy: -2).contains(point), let page {
+        if scrollbarTarget(at: point) == -5, let page {
             thumbDrag = (point.y, page.origin)
+            chrome.needsDisplay = true
         } else {
             thumbDrag = nil
         }
@@ -779,7 +794,7 @@ final class CandidateBar: NSView {
         let total = max(page.menuCount, page.candidates.count)
         let visible = page.candidates.count
         let span = CGFloat(max(total - visible, 1))
-        let travel = max(track.height - thumb.height, 1)
+        let travel = track.height - thumb.height
         let delta = Int(((point.y - drag.startY) / travel * span).rounded())
         let wantRow = max(0, drag.origin + delta) / page.columns
         var safety = 0
@@ -802,6 +817,10 @@ final class CandidateBar: NSView {
         }
     }
 
+    override func mouseEntered(with event: NSEvent) {
+        mouseMoved(with: event)
+    }
+
     override func mouseExited(with event: NSEvent) {
         hovered = nil
         plain.needsDisplay = true
@@ -809,7 +828,14 @@ final class CandidateBar: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
-        defer { dragged = false; thumbDrag = nil }
+        defer {
+            dragged = false
+            if thumbDrag != nil {
+                thumbDrag = nil
+                mouseMoved(with: event)
+                chrome.needsDisplay = true
+            }
+        }
         guard !dragged, let page, let hit = target(at: convert(event.locationInWindow, from: nil)) else { return }
         switch hit {
         case -1: if page.hasPrevious { onAction?(.previousPage) }
