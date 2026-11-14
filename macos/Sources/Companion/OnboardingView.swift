@@ -31,6 +31,7 @@ struct OnboardingView: View {
             }
         }
         .frame(width: 620, height: 500)
+        .onDisappear { model.stopOnboarding() }
     }
 }
 
@@ -109,7 +110,7 @@ private struct LocationStep: View {
             Heading(title: "把 OctoDot 移到“应用程序”",
                     detail: "OctoDot 正在从磁盘映像里运行。要安装输入法并保持更新，需要先把它放到“应用程序”文件夹。")
             Button {
-                Task { await model.moveToApplications() }
+                model.runOnboardingAction { await $0.moveToApplications() }
             } label: {
                 Label("移到“应用程序”并重新打开", systemImage: "folder.badge.plus")
             }
@@ -131,7 +132,7 @@ private struct InstallStep: View {
                 Button("继续") { model.next() }.buttonStyle(.borderedProminent).controlSize(.large)
             } else {
                 Button {
-                    Task { await model.install() }
+                    model.runOnboardingAction { await $0.install() }
                 } label: {
                     if model.busy { ProgressView().controlSize(.small) } else { Label("设置 OctoDot 输入法", systemImage: "keyboard") }
                 }
@@ -140,6 +141,9 @@ private struct InstallStep: View {
                 .disabled(model.busy)
             }
             if let share = model.grammarProgress { GrammarDownload(share: share) }
+            if model.canCancelOnboardingAction {
+                Button("停止等待") { model.cancelOnboardingAction() }
+            }
             if model.showSettingsHelp && !model.enabled {
                 Card {
                     Text("在系统设置中打开 OctoDot").font(.headline)
@@ -178,7 +182,7 @@ private struct PrivacyStep: View {
                     .disabled(!preflight.ok)
             } else {
                 Button {
-                    Task { await model.runPreflight() }
+                    model.runOnboardingAction { await $0.runPreflight() }
                 } label: {
                     if model.busy { ProgressView().controlSize(.small) } else { Label("检查", systemImage: "checklist") }
                 }

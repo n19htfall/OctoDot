@@ -130,6 +130,7 @@ struct UpdateVerifier: Sendable {
         var hasher = SHA256()
         var total = 0
         while let chunk = try handle.read(upToCount: 1 << 20), !chunk.isEmpty {
+            try Task.checkCancellation()
             total += chunk.count
             guard total <= manifest.size else { throw UpdateError.sizeMismatch }
             hasher.update(data: chunk)

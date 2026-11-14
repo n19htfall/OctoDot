@@ -49,8 +49,9 @@ enum CLI {
             }
             return say(ok, message)
         case "--enable":
-            let ok = await installer.enableIME()
-            return say(ok, ok ? "OctoDot is among your input sources." :
+            let outcome = await installer.enableIME()
+            if !outcome.message.isEmpty { return say(outcome.ok, outcome.message) }
+            return say(outcome.ok, outcome.ok ? "OctoDot is among your input sources." :
                        "Not enabled yet: System Settings → Keyboard → Input Sources.")
         case "--preflight":
             guard let preflight = await installer.preflight() else { return say(false, "The check did not run.") }

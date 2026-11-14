@@ -11,14 +11,13 @@ import Foundation
 /// into place, so the input method never maps half a file.
 enum GrammarStore {
     enum Failure: Error, CustomStringConvertible {
-        case noPin, noSharedFolder, wrongSize, wrongHash, http(Int)
+        case noPin, noSharedFolder, wrongSize, wrongHash
 
         var description: String {
             switch self {
             case .noPin: "随附的输入法没有指定语法模型"
             case .noSharedFolder: "与输入法共享的文件夹不存在"
             case .wrongSize, .wrongHash: "文件不是输入法所需要的模型"
-            case .http(let status): "服务器返回 \(status)"
             }
         }
     }
@@ -43,6 +42,7 @@ enum GrammarStore {
     /// share downloaded. True if it put one there.
     @discardableResult
     static func ensure(progress: @escaping @Sendable (Double) -> Void = { _ in }) async throws -> Bool {
+        try Task.checkCancellation()
         guard let pin else { throw Failure.noPin }
         guard !pin.isInstalled else { return false }
         guard let root = GrammarPin.root, let folder = pin.folder else { throw Failure.noSharedFolder }
@@ -55,17 +55,27 @@ enum GrammarStore {
             try await Task.detached { try FileManager.default.copyItem(at: copy, to: staged) }.value
         } else {
             guard let url = pin.url else { throw Failure.noPin }
-            let file = try await Download.run(url, expected: pin.size, progress: progress)
+            let file = try await ProgressDownload.fetch(url, configuration: UpdateProxyConfiguration.ephemeral()) {
+                written, expected in
+                let total = expected > 0 ? Double(expected) : Double(pin.size)
+                progress(min(1, Double(written) / max(total, 1)))
+            }
             do { try fm.moveItem(at: file, to: staged) } catch {
                 try? fm.removeItem(at: file)
                 throw error
             }
         }
+        try Task.checkCancellation()
         let size = (try? fm.attributesOfItem(atPath: staged.path)[.size] as? NSNumber)?.uint64Value
         guard size == pin.size else { throw Failure.wrongSize }
-        guard try await Task.detached(operation: { try sha256(of: staged) }).value == pin.sha256 else {
-            throw Failure.wrongHash
+        let hashing = Task.detached { try sha256(of: staged) }
+        let hash = try await withTaskCancellationHandler {
+            try await hashing.value
+        } onCancel: {
+            hashing.cancel()
         }
+        guard hash == pin.sha256 else { throw Failure.wrongHash }
+        try Task.checkCancellation()
         try? fm.removeItem(at: folder)                  // what an interrupted attempt left
         try fm.moveItem(at: staging, to: folder)
         return true
@@ -91,6 +101,7 @@ enum GrammarStore {
         defer { try? handle.close() }
         var hasher = SHA256()
         while true {
+            try Task.checkCancellation()
             let more = try autoreleasepool { () -> Bool in
                 guard let chunk = try handle.read(upToCount: 8 << 20), !chunk.isEmpty else { return false }
                 hasher.update(data: chunk)
@@ -99,70 +110,5 @@ enum GrammarStore {
             if !more { break }
         }
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
-    }
-}
-
-/// One download that reports its progress (URLSession's async download
-/// reports none). The delegate's callbacks come one at a time, on the
-/// session's own serial queue.
-private final class Download: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
-    private let expected: UInt64
-    private let progress: @Sendable (Double) -> Void
-    private var continuation: CheckedContinuation<URL, Error>?
-    private var file: URL?
-    private var failure: Error?
-    private var reported = -1.0
-
-    private init(expected: UInt64, progress: @escaping @Sendable (Double) -> Void) {
-        self.expected = expected
-        self.progress = progress
-    }
-
-    static func run(_ url: URL, expected: UInt64, progress: @escaping @Sendable (Double) -> Void) async throws -> URL {
-        let download = Download(expected: expected, progress: progress)
-        let session = URLSession(configuration: try UpdateProxyConfiguration.ephemeral(), delegate: download, delegateQueue: nil)
-        defer { session.finishTasksAndInvalidate() }
-        return try await withCheckedThrowingContinuation { continuation in
-            download.continuation = continuation
-            session.downloadTask(with: url).resume()
-        }
-    }
-
-    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64,
-                    totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
-        let total = totalBytesExpectedToWrite > 0 ? Double(totalBytesExpectedToWrite) : Double(expected)
-        let share = min(1, Double(totalBytesWritten) / max(total, 1))
-        if share - reported >= 0.005 || share == 1 {
-            reported = share
-            progress(share)
-        }
-    }
-
-    /// The file is deleted when this returns, so it is moved aside first.
-    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
-        if let status = (downloadTask.response as? HTTPURLResponse)?.statusCode, status != 200 {
-            failure = GrammarStore.Failure.http(status)
-            return
-        }
-        let kept = FileManager.default.temporaryDirectory.appendingPathComponent("grammar-\(UUID().uuidString)")
-        do {
-            try FileManager.default.moveItem(at: location, to: kept)
-            file = kept
-        } catch {
-            failure = error
-        }
-    }
-
-    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        let continuation = self.continuation
-        self.continuation = nil
-        if let error = error ?? failure {
-            if let file { try? FileManager.default.removeItem(at: file) }
-            continuation?.resume(throwing: error)
-        } else if let file {
-            continuation?.resume(returning: file)
-        } else {
-            continuation?.resume(throwing: GrammarStore.Failure.http(0))
-        }
     }
 }

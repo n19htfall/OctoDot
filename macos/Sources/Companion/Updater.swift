@@ -32,6 +32,9 @@ final class Updater {
 
     private var manifestData: Data?
     private var timer: Timer?
+    private var installTask: Task<Void, Never>?
+    var canStopInstallWait: Bool { installTask != nil }
+    @ObservationIgnored private var downloadID: UUID?
     private var downloadStarted = Date.distantPast
 
     /// The key built into this app; nil in a build made without one (then
@@ -72,22 +75,30 @@ final class Updater {
             if interactive { UpdateNotice.shared.present(self) }
             return
         }
+        phase = .checking
+        if interactive { UpdateNotice.shared.present(self) }
+        if let outcome = await InstallerClient.shared.pendingUpdate() {
+            if outcome.ok {
+                phase = .installing
+                relaunch()
+            } else {
+                phase = .failed(outcome.message)
+            }
+            return
+        }
         guard let key = Self.publicKey,
               let verifier = try? UpdateVerifier(publicKeyBase64: key, releasesPrefix: Identity.releasesPrefix),
               let url = URL(string: Identity.appcastURL) else {
             phase = .failed("这个 OctoDot 构建没有更新密钥，无法检查更新。")
-            if interactive { UpdateNotice.shared.present(self) }
             return
         }
         let configuration: URLSessionConfiguration
         do { configuration = try UpdateProxyConfiguration.ephemeral() } catch {
             phase = .failed("\(error)")
-            if interactive { UpdateNotice.shared.present(self) }
             return
         }
-        phase = .checking
-        if interactive { UpdateNotice.shared.present(self) }
         let session = URLSession(configuration: configuration)
+        defer { session.finishTasksAndInvalidate() }
         do {
             let (data, response) = try await session.data(from: url)
             guard (response as? HTTPURLResponse)?.statusCode == 200 else {
@@ -107,8 +118,21 @@ final class Updater {
         }
     }
 
+    func startInstall() {
+        guard installTask == nil else { return }
+        installTask = Task { [weak self] in
+            guard let self else { return }
+            defer { self.installTask = nil }
+            await self.install()
+        }
+    }
+
+    func stopInstallWait() {
+        installTask?.cancel()
+    }
+
     /// Downloads, checks and installs the update, then starts the new app.
-    func install() async {
+    private func install() async {
         guard case .available(let manifest) = phase, let manifestData, let key = Self.publicKey,
               let verifier = try? UpdateVerifier(publicKeyBase64: key, releasesPrefix: Identity.releasesPrefix),
               let url = URL(string: manifest.url) else { return }
@@ -121,26 +145,40 @@ final class Updater {
         bytesPerSecond = 0
         downloadSize = Int64(manifest.size)
         downloadStarted = Date()
+        let id = UUID()
+        downloadID = id
+        defer { downloadID = nil }
         phase = .downloading
         do {
-            let file = try await UpdateDownload.fetch(url, configuration: configuration) { [weak self] bytes in
-                Task { @MainActor in self?.note(bytes) }
+            let file = try await ProgressDownload.fetch(url, configuration: configuration) { [weak self] bytes, _ in
+                Task { @MainActor in
+                    if let self, self.downloadID == id { self.note(bytes) }
+                }
             }
             defer { try? FileManager.default.removeItem(at: file) }
+            try Task.checkCancellation()
             note(downloadSize)
             phase = .verifying
-            try await Task.detached {
+            let verification = Task.detached {
                 try verifier.verifyPayload(at: file, for: manifest)
-            }.value
+            }
+            try await withTaskCancellationHandler {
+                try await verification.value
+            } onCancel: {
+                verification.cancel()
+            }
+            try Task.checkCancellation()
             let handle = try FileHandle(forReadingFrom: file)
             phase = .installing
             let (ok, message) = await InstallerClient.shared.installUpdate(manifest: manifestData, file: handle)
             try? handle.close()
             guard ok else {
-                phase = .failed(message)
+                phase = Task.isCancelled && message == Outcome.cancelled.message ? .available(manifest) : .failed(message)
                 return
             }
             relaunch()
+        } catch is CancellationError {
+            phase = .available(manifest)
         } catch {
             phase = .failed("\(error)")
         }
@@ -163,75 +201,4 @@ final class Updater {
             DispatchQueue.main.async { NSApp.terminate(nil) }
         }
     }
-}
-
-/// URLSession's async `download(from:)` reports no progress. A resumed download
-/// task does: its delegate is called as bytes arrive. The callbacks come one
-/// at a time, on the session's own serial queue. The file is deleted when
-/// `didFinishDownloadingTo` returns, so it is moved aside first.
-private final class UpdateDownload: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
-    private let report: @Sendable (Int64) -> Void
-    private var continuation: CheckedContinuation<URL, Error>?
-    private var file: URL?
-    private var failure: Error?
-    private var reportedAt = Date.distantPast
-
-    private init(report: @escaping @Sendable (Int64) -> Void) {
-        self.report = report
-    }
-
-    static func fetch(_ url: URL, configuration: URLSessionConfiguration,
-                      report: @escaping @Sendable (Int64) -> Void) async throws -> URL {
-        let download = UpdateDownload(report: report)
-        let session = URLSession(configuration: configuration, delegate: download, delegateQueue: nil)
-        defer { session.finishTasksAndInvalidate() }
-        return try await withCheckedThrowingContinuation { continuation in
-            download.continuation = continuation
-            session.downloadTask(with: url).resume()
-        }
-    }
-
-    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
-                    didWriteData bytesWritten: Int64, totalBytesWritten: Int64,
-                    totalBytesExpectedToWrite: Int64) {
-        let done = totalBytesExpectedToWrite > 0 && totalBytesWritten >= totalBytesExpectedToWrite
-        let now = Date()
-        guard done || now.timeIntervalSince(reportedAt) >= 0.1 else { return }
-        reportedAt = now
-        report(totalBytesWritten)
-    }
-
-    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
-                    didFinishDownloadingTo location: URL) {
-        if let status = (downloadTask.response as? HTTPURLResponse)?.statusCode, status != 200 {
-            failure = UpdateDownloadError(status: status)
-            return
-        }
-        let kept = FileManager.default.temporaryDirectory
-            .appendingPathComponent("octodot-update-\(UUID().uuidString).zip")
-        do {
-            try FileManager.default.moveItem(at: location, to: kept)
-            file = kept
-        } catch {
-            failure = error
-        }
-    }
-
-    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        let continuation = self.continuation
-        self.continuation = nil
-        if let error = error ?? failure {
-            if let file { try? FileManager.default.removeItem(at: file) }
-            continuation?.resume(throwing: error)
-        } else if let file {
-            continuation?.resume(returning: file)
-        } else {
-            continuation?.resume(throwing: UpdateDownloadError(status: 0))
-        }
-    }
-}
-
-private struct UpdateDownloadError: Error, CustomStringConvertible {
-    let status: Int
-    var description: String { "更新服务器返回 \(status)。" }
 }

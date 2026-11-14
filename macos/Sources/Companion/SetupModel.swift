@@ -14,8 +14,12 @@ final class SetupModel {
 
     enum Screen: Equatable { case loading, wizard, home }
 
-    var screen = Screen.loading
-    var step = Step.install
+    var screen = Screen.loading {
+        didSet { if screen != .wizard { stopPolling() } }
+    }
+    var step = Step.install {
+        didSet { if step != .install { stopPolling() } }
+    }
     var facts: SetupFacts?
     var state: SetupState?
     /// Working on something (a button shows progress).
@@ -31,9 +35,15 @@ final class SetupModel {
     var fullCharset = false
     /// The grammar model's download, while there is one: the share done.
     var grammarProgress: Double?
+    var canCancelOnboardingAction = false
 
-    private var poll: Timer?
-    private var placingGrammar = false
+    @ObservationIgnored private var poll: Task<Void, Never>?
+    @ObservationIgnored private var onboardingAction: Task<Void, Never>?
+    @ObservationIgnored private var grammarRequest: UUID?
+    @ObservationIgnored private var refreshing = false
+    @ObservationIgnored private var installedForEnable = false
+
+    deinit { poll?.cancel() }
 
     /// Steps this install goes through (the location step only when needed).
     var steps: [Step] { (state == .wrongLocation ? [.location] : []) + [.install, .privacy, .tryIt] }
@@ -41,7 +51,16 @@ final class SetupModel {
     /// Looks at the Mac and decides: an outdated input method is brought up
     /// to date in place. Once the input method is ready, show the home screen.
     func refresh() async {
-        guard let facts = await InstallerClient.shared.facts() else {
+        guard !refreshing, !busy, onboardingAction == nil else { return }
+        refreshing = true
+        defer { refreshing = false }
+        await refresh(installIfOutdated: true)
+    }
+
+    private func refresh(installIfOutdated: Bool) async {
+        let facts = await InstallerClient.shared.facts()
+        guard !Task.isCancelled else { return }
+        guard let facts else {
             screen = .wizard
             report(false, "OctoDot 的安装程序没有响应。请从磁盘映像重新安装 OctoDot。")
             return
@@ -49,6 +68,7 @@ final class SetupModel {
         self.facts = facts
         let state = SetupState.of(facts)
         self.state = state
+        if state != .disabled { installedForEnable = false }
         enabled = facts.enabled
         switch state {
         case .wrongLocation:
@@ -61,15 +81,22 @@ final class SetupModel {
             step = .install
             screen = .wizard
         case .outdated:
+            guard installIfOutdated else {
+                screen = .home
+                return
+            }
             busy = true
             let (ok, text, note) = await installWithGrammar()
             busy = false
+            guard !Task.isCancelled else { return }
             report(ok && note == nil, [text, note].compactMap { $0 }.joined(separator: " "))
-            if ok { await refresh() } else { screen = .home }
+            if ok { await refresh(installIfOutdated: false) } else { screen = .home }
         case .ready:
             screen = .home
             if GrammarStore.isMissing {
-                if let note = await placeGrammar() { report(false, note) } else { IMELink.grammarReady() }
+                let note = await placeGrammar()
+                guard !Task.isCancelled else { return }
+                if let note { report(false, note) } else { IMELink.grammarReady() }
             }
         }
     }
@@ -81,17 +108,20 @@ final class SetupModel {
     /// downloaded, its progress shown. nil, or what to tell the user: the
     /// input method types without the model, less accurately, until it is there.
     func placeGrammar() async -> String? {
-        placingGrammar = true
+        let id = UUID()
+        grammarRequest = id
         defer {
-            placingGrammar = false
+            grammarRequest = nil
             grammarProgress = nil
         }
         do {
             try await GrammarStore.ensure { [weak self] share in
                 Task { @MainActor in
-                    if let self, self.placingGrammar { self.grammarProgress = share }
+                    if let self, self.grammarRequest == id { self.grammarProgress = share }
                 }
             }
+            return nil
+        } catch is CancellationError {
             return nil
         } catch {
             return "语法模型未能就位（\(error)）。在你再次打开 OctoDot 之前，输入仍可使用，但准确度会低一些。"
@@ -103,6 +133,7 @@ final class SetupModel {
     /// is not in place.
     private func installWithGrammar() async -> (Bool, String, String?) {
         let note = await placeGrammar()
+        guard !Task.isCancelled else { return (false, Outcome.cancelled.message, nil) }
         let (ok, text) = await InstallerClient.shared.installIME()
         if ok {
             GrammarStore.prune()
@@ -111,12 +142,36 @@ final class SetupModel {
         return (ok, text, note)
     }
 
+    func runOnboardingAction(_ action: @escaping @MainActor (SetupModel) async -> Void) {
+        guard onboardingAction == nil, !busy, !refreshing else { return }
+        canCancelOnboardingAction = true
+        onboardingAction = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                self.onboardingAction = nil
+                self.canCancelOnboardingAction = false
+            }
+            await action(self)
+        }
+    }
+
+    func stopOnboarding() {
+        stopPolling()
+        cancelOnboardingAction()
+    }
+
+    func cancelOnboardingAction() {
+        canCancelOnboardingAction = false
+        onboardingAction?.cancel()
+    }
+
     // MARK: Step A: location
 
     func moveToApplications() async {
         busy = true
         let (ok, path) = await InstallerClient.shared.copyToApplications()
         busy = false
+        if Task.isCancelled, path == Outcome.cancelled.message { return }
         guard ok else { return report(false, path) }
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.createsNewApplicationInstance = true
@@ -131,36 +186,50 @@ final class SetupModel {
     /// enabled (macOS may want the user to switch it on in System Settings),
     /// and moves on the moment it is.
     func install() async {
+        stopPolling()
         busy = true
-        let (ok, text, note) = await installWithGrammar()
-        guard ok else {
-            busy = false
-            return report(false, text)
+        defer { busy = false }
+        if !installedForEnable {
+            let (ok, text, note) = await installWithGrammar()
+            if Task.isCancelled, text == Outcome.cancelled.message { return }
+            guard ok else { return report(false, text) }
+            installedForEnable = true
+            report(note == nil, [text, note].compactMap { $0 }.joined(separator: " "))
         }
-        report(note == nil, [text, note].compactMap { $0 }.joined(separator: " "))
-        enabled = await InstallerClient.shared.enableIME()
-        busy = false
-        if enabled { return step = .privacy }
-        startPolling()
+        guard !Task.isCancelled, screen == .wizard, step == .install else { return }
+        let outcome = await InstallerClient.shared.enableIME()
+        if !outcome.message.isEmpty, outcome != .cancelled { report(false, outcome.message) }
+        guard !Task.isCancelled, screen == .wizard, step == .install else { return }
+        if outcome.ok {
+            enabled = true
+            step = .privacy
+        } else {
+            startPolling()
+        }
     }
 
     private func startPolling() {
-        poll?.invalidate()
-        let started = Date()
-        poll = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                if Date().timeIntervalSince(started) > 1.5 { self.showSettingsHelp = true }
-                Task { @MainActor in
-                    guard await InstallerClient.shared.isEnabled() else { return }
-                    self.poll?.invalidate()
-                    self.poll = nil
+        guard poll == nil else { return }
+        poll = Task { [weak self] in
+            let started = ContinuousClock.now
+            while !Task.isCancelled {
+                if ContinuousClock.now - started > .milliseconds(1500) { self?.showSettingsHelp = true }
+                let enabled = await InstallerClient.shared.isEnabled()
+                guard !Task.isCancelled, let self else { return }
+                if enabled {
                     self.enabled = true
-                    self.showSettingsHelp = false
-                    if self.step == .install { self.step = .privacy }
+                    self.step = .privacy
+                    return
                 }
+                do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
             }
         }
+    }
+
+    private func stopPolling() {
+        poll?.cancel()
+        poll = nil
+        showSettingsHelp = false
     }
 
     func openKeyboardSettings() {
@@ -173,8 +242,10 @@ final class SetupModel {
 
     func runPreflight() async {
         busy = true
-        preflight = await InstallerClient.shared.preflight()
+        let result = await InstallerClient.shared.preflight()
         busy = false
+        guard !Task.isCancelled else { return }
+        preflight = result
         if preflight == nil { report(false, "输入法检查没有运行。") }
     }
 
@@ -208,6 +279,7 @@ final class SetupModel {
     }
 
     func finish() {
+        stopOnboarding()
         screen = .home
         message = nil
     }

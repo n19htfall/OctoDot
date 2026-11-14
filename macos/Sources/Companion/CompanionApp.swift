@@ -49,6 +49,7 @@ struct RootView: View {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let model = SetupModel()
     let updater = Updater()
+    private var initialRefresh: Task<Void, Never>?
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         NSAppleEventManager.shared().setEventHandler(self, andSelector: #selector(handleURL(_:reply:)),
@@ -57,7 +58,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        Task { await model.refresh() }
+        initialRefresh = Task { await model.refresh() }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        initialRefresh?.cancel()
+        model.stopOnboarding()
+        updater.stopInstallWait()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }

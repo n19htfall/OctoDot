@@ -236,11 +236,18 @@ private struct UpdateNoticeView: View {
 
     @ViewBuilder private var controls: some View {
         switch updater.phase {
-        case .downloading:
-            Button("关闭", action: onClose)
-                .buttonStyle(.borderless)
-                .keyboardShortcut(.cancelAction)
-        case .checking, .verifying, .installing, .idle:
+        case .downloading, .verifying, .installing:
+            if updater.phase != .downloading {
+                ProgressView().controlSize(.small).padding(.bottom, 10)
+            }
+            HStack {
+                if updater.canStopInstallWait {
+                    Button(updater.phase == .installing ? "停止等待" : "取消更新") { updater.stopInstallWait() }
+                }
+                Button("关闭", action: onClose).keyboardShortcut(.cancelAction)
+            }
+            .buttonStyle(.borderless)
+        case .checking, .idle:
             ProgressView()
                 .controlSize(.small)
                 .padding(.bottom, 10)
@@ -248,7 +255,7 @@ private struct UpdateNoticeView: View {
                 .buttonStyle(.borderless)
                 .keyboardShortcut(.cancelAction)
         case .available:
-            prominent("安装并重新打开") { Task { await updater.install() } }
+            prominent("安装并重新打开") { updater.startInstall() }
                 .keyboardShortcut(.defaultAction)
                 .padding(.bottom, 8)
             Button("稍后", action: onClose)

@@ -29,6 +29,38 @@ final class Installer: NSObject, InstallerProtocol, @unchecked Sendable {
     /// One operation at a time: two installs must never interleave their renames.
     private let lock = NSLock()
 
+    // A separate lock lets the service report progress while a change runs.
+    private struct Requests {
+        var running: Set<String> = []
+        var finished: [String: MutationStatus] = [:]
+        var order: [String] = []
+    }
+
+    private let requests = OSAllocatedUnfairLock(initialState: Requests())
+
+    func mutationStatus(_ request: String, reply: @escaping (Data?) -> Void) {
+        let status = requests.withLock { requests in
+            requests.finished[request] ?? (requests.running.contains(request) ? .running : .unknown)
+        }
+        reply(try? JSONEncoder().encode(status))
+    }
+
+    private func record(_ request: String, reply: @escaping (Bool, String) -> Void,
+                        operation: (_ reply: (Bool, String) -> Void) -> Void) {
+        requests.withLock { _ = $0.running.insert(request) }
+        operation { ok, message in
+            requests.withLock { requests in
+                requests.running.remove(request)
+                requests.finished[request] = .finished(ok, message)
+                requests.order.append(request)
+                if requests.order.count > 64 {
+                    requests.finished.removeValue(forKey: requests.order.removeFirst())
+                }
+            }
+            reply(ok, message)
+        }
+    }
+
     // MARK: Facts
 
     func facts(reply: @escaping (Data?) -> Void) {
@@ -64,7 +96,11 @@ final class Installer: NSObject, InstallerProtocol, @unchecked Sendable {
 
     // MARK: Installing the IME
 
-    func installIME(reply: @escaping (Bool, String) -> Void) {
+    func installIME(_ request: String, reply: @escaping (Bool, String) -> Void) {
+        record(request, reply: reply) { done in performInstallIME(reply: done) }
+    }
+
+    private func performInstallIME(reply: (Bool, String) -> Void) {
         lock.lock()
         defer { lock.unlock() }
         let (ok, message) = install()
@@ -236,7 +272,11 @@ final class Installer: NSObject, InstallerProtocol, @unchecked Sendable {
 
     // MARK: Input sources
 
-    func enableIME(reply: @escaping (Bool) -> Void) { reply(InputSources.enable(Identity.ime)) }
+    func enableIME(_ request: String, reply: @escaping (Bool) -> Void) {
+        record(request, reply: { ok, _ in reply(ok) }) { done in
+            done(InputSources.enable(Identity.ime), "")
+        }
+    }
     func isEnabled(reply: @escaping (Bool) -> Void) { reply(InputSources.isEnabled(Identity.ime)) }
     func selectIME(reply: @escaping (Bool) -> Void) { reply(InputSources.select(Identity.ime)) }
     func launchIME(reply: @escaping (Bool) -> Void) {
@@ -254,7 +294,11 @@ final class Installer: NSObject, InstallerProtocol, @unchecked Sendable {
         reply(result.status == 0 ? result.output : nil)
     }
 
-    func importUserData(_ transfer: Data, reply: @escaping (Bool, String) -> Void) {
+    func importUserData(_ transfer: Data, request: String, reply: @escaping (Bool, String) -> Void) {
+        record(request, reply: reply) { done in performImport(transfer, reply: done) }
+    }
+
+    private func performImport(_ transfer: Data, reply: (Bool, String) -> Void) {
         lock.lock()
         defer { lock.unlock() }
         guard (try? JSONDecoder().decode(Transfer.self, from: transfer)) != nil else {
@@ -300,7 +344,11 @@ final class Installer: NSObject, InstallerProtocol, @unchecked Sendable {
 
     // MARK: The companion itself
 
-    func copyToApplications(reply: @escaping (Bool, String) -> Void) {
+    func copyToApplications(_ request: String, reply: @escaping (Bool, String) -> Void) {
+        record(request, reply: reply) { done in performCopy(reply: done) }
+    }
+
+    private func performCopy(reply: (Bool, String) -> Void) {
         lock.lock()
         defer { lock.unlock() }
         guard Signatures.valid(companion, identifier: Identity.companion) else {
@@ -316,7 +364,11 @@ final class Installer: NSObject, InstallerProtocol, @unchecked Sendable {
         }
     }
 
-    func installUpdate(manifest: Data, file: FileHandle, reply: @escaping (Bool, String) -> Void) {
+    func installUpdate(manifest: Data, file: FileHandle, request: String, reply: @escaping (Bool, String) -> Void) {
+        record(request, reply: reply) { done in performUpdate(manifest: manifest, file: file, reply: done) }
+    }
+
+    private func performUpdate(manifest: Data, file: FileHandle, reply: (Bool, String) -> Void) {
         lock.lock()
         defer { lock.unlock() }
         let (ok, message) = update(manifest: manifest, file: file)
@@ -371,7 +423,11 @@ final class Installer: NSObject, InstallerProtocol, @unchecked Sendable {
 
     // MARK: Uninstalling
 
-    func uninstall(wipe: Bool, reply: @escaping (Bool, String) -> Void) {
+    func uninstall(wipe: Bool, request: String, reply: @escaping (Bool, String) -> Void) {
+        record(request, reply: reply) { done in performUninstall(wipe: wipe, reply: done) }
+    }
+
+    private func performUninstall(wipe: Bool, reply: (Bool, String) -> Void) {
         lock.lock()
         defer { lock.unlock() }
         InputSources.disable(Identity.ime)

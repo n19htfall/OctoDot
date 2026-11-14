@@ -129,10 +129,12 @@ private struct UpdateRow: View {
             }
             Spacer()
             if case .available = updater.phase {
-                Button("安装并重新打开") { Task { await updater.install() } }.buttonStyle(.borderedProminent)
+                Button("安装并重新打开") { updater.startInstall() }.buttonStyle(.borderedProminent)
+            } else if updater.canStopInstallWait {
+                Button(updater.phase == .installing ? "停止等待" : "取消更新") { updater.stopInstallWait() }
             } else {
                 Button("检查更新…") { Task { await updater.check(interactive: true) } }
-                    .disabled(updater.phase == .checking || updater.phase == .downloading || updater.phase == .verifying || updater.phase == .installing)
+                    .disabled(updater.phase == .checking || updater.phase == .installing)
             }
         }
     }
@@ -175,8 +177,13 @@ private struct UninstallSheet: View {
     private func uninstall() async {
         working = true
         defer { working = false }
+        let installer = InstallerClient.shared
+        if let pending = await installer.pendingUninstall() {
+            finishUninstall(pending.ok, pending.message)
+            return
+        }
         if choice == .backup {
-            guard let transfer = await InstallerClient.shared.exportUserData() else {
+            guard let transfer = await installer.exportUserData() else {
                 message = "无法读取数据来制作备份，什么都没有移除。"
                 return
             }
@@ -191,7 +198,11 @@ private struct UninstallSheet: View {
                 return
             }
         }
-        let (ok, text) = await InstallerClient.shared.uninstall(wipe: choice != .keep)
+        let (ok, text) = await installer.uninstall(wipe: choice != .keep)
+        finishUninstall(ok, text)
+    }
+
+    private func finishUninstall(_ ok: Bool, _ text: String) {
         guard ok else {
             message = text
             return

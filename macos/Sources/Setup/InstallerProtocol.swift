@@ -7,6 +7,9 @@ import Foundation
 /// chose, except an update's file, passed as an open handle and checked
 /// again.
 @objc protocol InstallerProtocol {
+    /// The status of a previously sent mutation, as JSON.
+    func mutationStatus(_ request: String, reply: @escaping (Data?) -> Void)
+
     /// SetupFacts as JSON.
     func facts(reply: @escaping (Data?) -> Void)
 
@@ -14,10 +17,10 @@ import Foundation
     /// registers it, and reloads the running IME (or restarts it, when its
     /// launcher changed); removes the old install (com.example) if it is
     /// there, its data left as it is. The message says what happened.
-    func installIME(reply: @escaping (Bool, String) -> Void)
+    func installIME(_ request: String, reply: @escaping (Bool, String) -> Void)
 
     /// Enables the installed IME's input source; true once it is enabled.
-    func enableIME(reply: @escaping (Bool) -> Void)
+    func enableIME(_ request: String, reply: @escaping (Bool) -> Void)
     func isEnabled(reply: @escaping (Bool) -> Void)
     /// Makes it the current input source (for the wizard's test field).
     func selectIME(reply: @escaping (Bool) -> Void)
@@ -35,17 +38,22 @@ import Foundation
     func exportUserData(reply: @escaping (Data?) -> Void)
 
     /// Restores a Transfer (JSON) through the running input method.
-    func importUserData(_ transfer: Data, reply: @escaping (Bool, String) -> Void)
+    func importUserData(_ transfer: Data, request: String, reply: @escaping (Bool, String) -> Void)
 
     /// Copies the running companion to /Applications; the message is the new path or why not.
-    func copyToApplications(reply: @escaping (Bool, String) -> Void)
+    func copyToApplications(_ request: String, reply: @escaping (Bool, String) -> Void)
 
     /// Verifies `manifest` (JSON, signed) and the update in `file` again,
     /// unpacks it, checks its code signature, and swaps it in for
     /// /Applications/OctoDot.app.
-    func installUpdate(manifest: Data, file: FileHandle, reply: @escaping (Bool, String) -> Void)
+    func installUpdate(manifest: Data, file: FileHandle, request: String, reply: @escaping (Bool, String) -> Void)
 
     /// Disables the input source, quits the IME and removes it; with
     /// `wipe`, its user dictionary, phrases, key and settings first.
-    func uninstall(wipe: Bool, reply: @escaping (Bool, String) -> Void)
+    func uninstall(wipe: Bool, request: String, reply: @escaping (Bool, String) -> Void)
+}
+
+/// A mutation's result is recorded before the service sends its reply.
+enum MutationStatus: Codable {
+    case unknown, running, finished(Bool, String)
 }
