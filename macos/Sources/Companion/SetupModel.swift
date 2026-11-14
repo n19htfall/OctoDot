@@ -180,6 +180,23 @@ final class SetupModel {
 
     // MARK: Step D: try it
 
+    struct Scheme {
+        let id: String
+        let name: String
+    }
+
+    let schemes: [Scheme] = {
+        let defaultScheme = Scheme(id: "fullpinyin", name: "全拼")
+        guard let url = Bundle.main.resourceURL?.appendingPathComponent("OctoDotIME.app/Contents/Resources/data/schemes.tsv"),
+              let table = try? String(contentsOf: url, encoding: .utf8) else { return [defaultScheme] }
+        let doublePinyin = table.split(separator: "\n").compactMap { line -> Scheme? in
+            let fields = line.split(separator: "\t")
+            guard fields.count == 2, fields[0] != defaultScheme.id else { return nil }
+            return Scheme(id: String(fields[0]), name: String(fields[1]))
+        }
+        return [defaultScheme] + doublePinyin
+    }()
+
     func selectIME() { Task { _ = await InstallerClient.shared.selectIME() } }
     func useScheme(_ id: String) {
         scheme = id

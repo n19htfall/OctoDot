@@ -288,6 +288,45 @@ fn shuangpin(s: u64) {
     userdb::clock_override = 0;
 }
 
+fn more_shuangpin(s: u64) {
+    let ids = ["sogou", "microsoft", "ziranma", "ziguang", "abc", "pinyinjj", "guobiao"];
+    let keys = ["m;tm", "m;tm", "mytm", "m;tf", "mytw", "mqtj", "mjtd"];
+    for i in ids.len {
+        check(session::set_scheme(ids[i]) == 0, str("switching to ", ids[i]));
+        first_is(s, keys[i], "明天", true);
+    }
+
+    check(session::set_scheme("ziguang") == 0, "switching to 紫光 for a Chinese sentence with an English substring");
+    type_text(s, "ribwm;uiiidpuhghyededpbbjjiibafruitd");
+    check(!session::first_has_english(), "  an English word ending inside a double-pinyin pair stays behind Chinese");
+    press(s, session::KEY_ESCAPE);
+
+    check(session::set_scheme("sogou") == 0, "搜狗 uses the semicolon key for ing");
+    check(preedit_of(s, "m;tm") == "m; tm" && preedit_of(s, "m;8tm7") == "m;8 tm7",
+          "  a semicolon stays with its syllable, including a tone after it");
+    first_is(s, "m;8tm7", "明天", true);
+    check(preedit_of(s, "m;`om;") == "m;`o m;", "  a shape code can follow or precede a spelling with a semicolon");
+    type_text(s, "m;");
+    press(s, session::KEY_BACKSPACE);
+    check(session::input == "m" && session::commit.len == 0, "  backspace removes the semicolon key");
+    press(s, session::KEY_ESCAPE);
+    type_text(s, "m;tm;");
+    check(session::commit == "明天；" && !session::composing(), "  a semicolon after complete syllables is punctuation");
+    typed(s, ';');
+    check(session::commit == "；", "  a standalone semicolon is punctuation");
+
+    userdb::reset();
+    check(pick(s, "m;tm", "明天", 0), "  picking a word with a semicolon in its code");
+    var saved: u8[>..] = [];
+    saved.append(session::user_save());
+    check(find(saved, "\nsogou:m;tm\t明天\t") >= 0 && session::user_restore(saved) == 0 &&
+          userdb::chosen("m;tm", "明天") > 0, "  saved choices with a semicolon survive reload");
+    userdb::reset();
+    check(session::set_scheme("fullpinyin") == 0, "back to 全拼");
+    type_text(s, "mingtian;");
+    check(session::commit == "明天；" && !session::composing(), "  the semicolon is punctuation in 全拼");
+}
+
 // Hot swaps (docs/hotswap-architecture.md): lexicon sets on and off at
 // once, even mid-composition; schemes in well under a millisecond.
 fn hot_swaps(s: u64) {
@@ -2615,6 +2654,7 @@ fn main() {
     storage(session::new_session());
     learning_at_capacity();
     shuangpin(session::new_session());
+    more_shuangpin(session::new_session());
     hot_swaps(session::new_session());
     custom_phrases(session::new_session());
     userdb::reset();

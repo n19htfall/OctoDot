@@ -50,7 +50,7 @@ fn rebuild() {
     decoder::search(words, g, lexicon::live, input);
     let reach = decoder::chinese_reach(words, input);
     readable = decoder::assemble(menu, words, input);
-    decoder::place_mixed(menu, words, input);
+    decoder::place_mixed(menu, words, g, input);
     for i in reach..input.len {
         if input[i] >= 'a' && input[i] <= 'z' { letters_unread = true; }
     }

@@ -4,8 +4,8 @@
 //
 // PREPARED holds octo-prep's syllables.tsv, charsets.tsv, lexicon.tsv (the
 // core) and lexicon.<set>.tsv (each switchable set), spellings.<scheme>.tsv
-// and aux.tsv; OUT receives lexicon.img,
-// spellings.fullpinyin.img and aux.<scheme>.img for each auxiliary-code
+// and aux.tsv; OUT receives lexicon.img, spellings.<scheme>.img, schemes.tsv,
+// and aux.<scheme>.img for each auxiliary-code
 // scheme, and grammar.img when octo-prep prepared grammar.tsv (the model's
 // .gram file goes beside it; the Makefile links it there). With --limit, only the first N entries and
 // spellings, characters with auxiliary codes and English words are kept:
@@ -102,7 +102,7 @@ fn main() {
         }
     }
     // Every scheme octo-prep prepared: spellings.<id>.tsv → spellings.<id>.img.
-    var schemes: i64 = 0;
+    var schemes: u8[>..] = [];
     var pos: i64 = 0;
     while pos < names.len {
         let file = lexicon::next_line(names, pos);
@@ -128,12 +128,13 @@ fn main() {
         store(output, image, img);
         print(image, " (", table.meta[0].name, "): ", table.spellings.len, " spellings, ", table.rows.len, " rows, ",
               img.len, " bytes");
-        schemes++;
+        format(schemes, table.meta[0].id, "\t", table.meta[0].name, "\n");
     }
-    if schemes == 0 {
+    if schemes.len == 0 {
         write_stderr("octo-compile: no spellings.<scheme>.tsv to compile\n");
         exit(1);
     }
+    store(output, "schemes.tsv", schemes);
     {
         var tsv: u8[>..] = [];
         read(prepared, "aux.tsv", tsv);

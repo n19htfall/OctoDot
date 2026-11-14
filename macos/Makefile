@@ -119,7 +119,7 @@ GLOSSARY_STAMP  := build/glossary.inputs
 # Every file copied into Resources/data, plus the grammar pin's inputs. The
 # core filename identifies both code and data, so a data-only update reloads.
 CORE_DATA    := $(sort $(wildcard $(IMAGES)/lexicon*.img $(IMAGES)/spellings.*.img $(IMAGES)/aux.*.img \
-                $(IMAGES)/grammar.img $(IMAGES)/english.img $(IMAGES)/syllables.tsv \
+                $(IMAGES)/grammar.img $(IMAGES)/english.img $(IMAGES)/syllables.tsv $(IMAGES)/schemes.tsv \
                 $(IMAGES)/rerank.img $(IMAGES)/rerank.weights) $(GLOSSARY_INDEX) $(IMAGES)/semantic.tsv)
 CORE_ID      := build/core.identity
 
@@ -230,7 +230,7 @@ $(IME_APP): $(CORE_INPUTS) $(CORE_DATA) $(CORE_ID) $(IMAGES)/$(GRAMMAR_NAME) scr
 	done
 	cp $(IMAGES)/lexicon*.img $(IMAGES)/spellings.*.img $(IMAGES)/aux.*.img $(IMAGES)/grammar.img \
 	    $(IMAGES)/english.img $(IMAGES)/semantic.tsv \
-	    $(IMAGES)/syllables.tsv $@.partial/Contents/Resources/data/
+	    $(IMAGES)/syllables.tsv $(IMAGES)/schemes.tsv $@.partial/Contents/Resources/data/
 	cp $(GLOSSARY_INDEX) $@.partial/Contents/Resources/data/glossary.sqlite3
 	printf '%s %s %s\n' $(GRAMMAR_SHA) $$(stat -f %z $(IMAGES)/$(GRAMMAR_NAME)) $(GRAMMAR_NAME) \
 	    > $@.partial/Contents/Resources/data/grammar.pin

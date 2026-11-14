@@ -205,7 +205,7 @@ private struct TryStep: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Heading(title: "试一试",
-                    detail: "点一下输入框，OctoDot 即成为当前输入法。输入 nihao（小鹤双拼输入 wussqigr），用空格或数字选词。")
+                    detail: "选一个输入方案，点一下输入框试打，再用空格或数字选词。")
             TextField("在这里输入…", text: $text, axis: .vertical)
                 .font(.title3)
                 .lineLimit(2...4)
@@ -214,10 +214,8 @@ private struct TryStep: View {
                 .onChange(of: focused) { _, now in if now { model.selectIME() } }
             Card {
                 Picker("方案", selection: Binding(get: { model.scheme }, set: { model.useScheme($0) })) {
-                    Text("全拼").tag("fullpinyin")
-                    Text("小鹤双拼").tag("flypy")
+                    ForEach(model.schemes, id: \.id) { Text($0.name).tag($0.id) }
                 }
-                .pickerStyle(.segmented)
                 Toggle("全部汉字（不只常用字）",
                        isOn: Binding(get: { model.fullCharset }, set: { model.useFullCharset($0) }))
             }

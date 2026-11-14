@@ -136,8 +136,8 @@ fn shape(g: Graph&, input: const u8[:]) {
     }
 }
 
-// Builds the graph for `input`: letters, ' separators, tone digits and `
-// shape codes, at most MAX_INPUT bytes (longer input is cut there).
+// Builds the graph for `input`: letters, ; in some spellings, ' separators,
+// tone digits and ` shape codes, at most MAX_INPUT bytes.
 fn build(g: Graph&, typed: const u8[:], sp: spelling::Table&, lex: lexicon::Lexicon&) {
     clear(g);
     let input = if typed.len > MAX_INPUT { typed[..MAX_INPUT] } else { typed };

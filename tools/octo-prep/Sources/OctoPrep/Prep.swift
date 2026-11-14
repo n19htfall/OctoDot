@@ -26,6 +26,13 @@ public struct PrepOptions {
     public var schemes: [(path: String, name: String, preedit: String)] = [
         ("base/全拼", "fullpinyin", "typed"),
         ("base/小鹤双拼", "flypy", "syllables"),
+        ("base/搜狗双拼", "sogou", "syllables"),
+        ("base/微软双拼", "microsoft", "syllables"),
+        ("base/自然码", "ziranma", "syllables"),
+        ("base/紫光双拼", "ziguang", "syllables"),
+        ("base/智能ABC", "abc", "syllables"),
+        ("base/拼音加加", "pinyinjj", "syllables"),
+        ("base/国标双拼", "guobiao", "syllables"),
     ]
 
     /// Fuzzy pinyin (模糊音): 万象's rule blocks, each a group the user turns

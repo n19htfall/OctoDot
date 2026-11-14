@@ -16,6 +16,7 @@ import os;
 import binary;
 import slot_pool;
 import lexicon;
+import spelling;
 import auxcode;
 import lattice;
 import decoder;
@@ -252,8 +253,8 @@ fn drop_keys(count: i64) {
     if marked { caps.pop_n(n); } else { caps.clear(); }
 }
 
-// Room for a key that belongs to what is typed before it (' or a tone or
-// shape code): made only if the first word leaves that behind.
+// Room for a key that belongs to what is typed before it: made only if the
+// first word leaves that behind.
 fn room_after() -> bool {
     if room() { return true; }
     fresh_menu();
@@ -645,10 +646,26 @@ fn handle_key(handle: u64, ev: KeyEvent) -> u32 {
         }
         return with_commit(HANDLED | DIRTY);
     }
+    let last: u8 = if input.len > 0 { input[input.len - 1] } else { 0 };
+    // Some double-pinyin schemes use ; for ing. Keep it in the composition
+    // only when the decoder can read through the pair. E.g. m; reads ming,
+    // while a semicolon outside the spelling commits punctuation.
+    if ev.key == KEY_OTHER && c == ';' && !shifted && lattice::is_letter(last) {
+        let pair: u8[2] = [last, ';'];
+        if spelling::find(spelling::live, pair[..]) >= 0 && room_after() {
+            input.push(';');
+            caps.push(0);
+            rebuild();
+            if readable == input.len { return with_commit(HANDLED | DIRTY); }
+            input.pop();
+            caps.pop();
+            rebuild();
+        }
+    }
+    let syllable_end = lattice::is_letter(last) || last == ';';
     // A tone for the syllable just typed: 7 8 9 0 are first to fourth (0 also neutral).
     if ev.key == KEY_OTHER && is_tone_key(c) {
-        if input.len > 0 && input[input.len - 1] >= 'a' && input[input.len - 1] <= 'z' && !in_shape_code() &&
-           room_after() {
+        if syllable_end && !in_shape_code() && room_after() {
             input.push(c as u8);
             caps.push(0);
             rebuild();
@@ -662,8 +679,7 @@ fn handle_key(handle: u64, ev: KeyEvent) -> u32 {
     }
     // A shape code for the syllable just typed follows `.
     if ev.key == KEY_OTHER && c == '`' {
-        let last: u8 = if input.len > 0 { input[input.len - 1] } else { 0 };
-        let after_syllable = (last >= 'a' && last <= 'z') || is_tone_key(last);
+        let after_syllable = syllable_end || is_tone_key(last);
         if auxcode::loaded() && after_syllable && !in_shape_code() && room_after() {
             input.push('`');
             caps.push(0);

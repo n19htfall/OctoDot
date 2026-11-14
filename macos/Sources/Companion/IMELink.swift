@@ -14,7 +14,7 @@ enum IMELink {
         ensureRunning { post("showSettings") }
     }
 
-    /// The scheme the IME types in (fullpinyin, flypy).
+    /// The scheme the IME types in.
     static func useScheme(_ id: String) { ensureRunning { post("scheme." + id) } }
 
     /// The full character set, or the daily one.

@@ -3,6 +3,8 @@
 // where the Chinese search's front leaves off, and place_mixed puts the best
 // mixed sentence into the menu.
 import std;
+import lattice;
+import spelling;
 import userdb;
 import grammar;
 import english;
@@ -422,8 +424,8 @@ fn mixed_sentence(w: Words&, input: const u8[:], english: const i64[:], words: i
 
 // Where the mixed sentence `text` (`words`, scoring `score`) goes in the
 // menu: 0 for first, 2 for the first page behind the Chinese, -1 for nowhere.
-fn mixed_place(m: Menu&, w: Words&, input: const u8[:], words: const i64[:], keys: const u8[:], text: const u8[:],
-               score: f64) -> i64 {
+fn mixed_place(m: Menu&, w: Words&, g: lattice::Graph&, input: const u8[:], words: const i64[:], keys: const u8[:],
+               text: const u8[:], score: f64) -> i64 {
     // A word of four letters or fewer is also a pile of pinyin: it can sit
     // on the page, and takes first only with a capital. An unfinished
     // completion is only a bridge while the word is being typed, and does
@@ -449,6 +451,24 @@ fn mixed_place(m: Menu&, w: Words&, input: const u8[:], words: const i64[:], key
         if lead >= EN_TOP1 && !short_en { slot = 0; }
         else if lead >= EN_PAGE { slot = 2; }
     }
+    // A lowercase English word can end inside a double-pinyin pair (紫光
+    // "fr ui td" contains "fruit"). Keep the Chinese reading first when
+    // the best path actually uses that pair.
+    if slot == 0 && reached_front(w, input.len) && spelling::live.meta.len == 1 &&
+       spelling::live.meta[0].preedit == spelling::PREEDIT_SYLLABLES {
+        var chinese: Segment[>..] = [];
+        segments(m, w, g, input, false, chinese);
+        for i in words {
+            let word = w.list[i];
+            if word.source != ENGLISH || span_capital(word.from, word.end - word.from) { continue; }
+            for seg in chinese {
+                if seg.from < word.end && word.end < seg.to && g.edges[seg.edge].kind <= spelling::FUZZY {
+                    slot = 2;
+                    break;
+                }
+            }
+        }
+    }
     // What the user chose for these keys before outranks all of that.
     let mixed_chosen = userdb::chosen(keys, text);
     var chinese_chosen: i64 = 0;
@@ -464,7 +484,7 @@ fn mixed_place(m: Menu&, w: Words&, input: const u8[:], words: const i64[:], key
 // Puts the best mixed sentence into the menu the Chinese search assembled.
 // True when it became the first candidate: its words are then the menu's
 // path, which the preedit and the word make_room commits follow.
-fn place_mixed(m: Menu&, w: Words&, input: const u8[:]) -> bool {
+fn place_mixed(m: Menu&, w: Words&, g: lattice::Graph&, input: const u8[:]) -> bool {
     var english: i64[>..] = [];
     for i in w.list.len { if w.list[i].source == ENGLISH { english.push(i); } }
     guard english.len > 0 && input.len > 0 && w.front_score.len == input.len + 1 else { return false; }
@@ -479,7 +499,7 @@ fn place_mixed(m: Menu&, w: Words&, input: const u8[:]) -> bool {
     var text: u8[>..] = [];
     append_words(w, words, text);
     guard text.len > 0 && text.len <= 65535 else { return false; }
-    var slot = mixed_place(m, w, input, words, keys, text, score);
+    var slot = mixed_place(m, w, g, input, words, keys, text, score);
     guard slot >= 0 else { return false; }
     // A custom shortcut for these keys stays first.
     if slot == 0 && m.candidates.len > 0 && m.candidates[0].count == 0 && m.candidates[0].code_len == 0 { slot = 1; }

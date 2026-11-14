@@ -154,6 +154,17 @@ enum Smoke {
         check(snapshot.preedit == "vs go" && snapshot.candidates.first?.text == "中国",
               "  vsgo gives 中国, the preedit showing the keys typed, by syllable")
         _ = engine.process(session, .special(.escape))
+        let newSchemes: [Engine.Scheme] = [
+            .init(id: "sogou", name: "搜狗双拼"), .init(id: "microsoft", name: "微软双拼"),
+            .init(id: "ziranma", name: "自然码"), .init(id: "ziguang", name: "紫光双拼"),
+            .init(id: "abc", name: "智能ABC"), .init(id: "pinyinjj", name: "拼音加加"),
+            .init(id: "guobiao", name: "国标双拼"),
+        ]
+        check(newSchemes.allSatisfy(schemes.contains), "the settings list includes the seven new schemes")
+        check(engine.setScheme("sogou"), "switching to 搜狗双拼")
+        snapshot = type("m;tm")
+        check(snapshot.preedit == "m; tm" && snapshot.candidates.first?.text == "明天",
+              "  the semicolon key is part of the spelling in 搜狗双拼")
         check(!engine.setScheme("nope") && engine.setScheme("fullpinyin"), "an unknown scheme is refused; back to 全拼")
 
         // Lexicon sets and shape codes switched through the ABI.

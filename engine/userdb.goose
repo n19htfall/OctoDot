@@ -1544,7 +1544,7 @@ fn is_input(text: const u8[:]) -> bool {
     for c in text[..(if colon >= 0 { colon } else { 0 })] {
         if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-') { return false; }
     }
-    for c in keys { if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '`') { return false; } }
+    for c in keys { if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '`' || c == ';') { return false; } }
     return true;
 }
 

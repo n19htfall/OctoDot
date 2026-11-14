@@ -1,8 +1,8 @@
 # 八千点 OctoDot
 
 A privacy-first Chinese input method for macOS. It types whole sentences in
-全拼 (full pinyin) or 小鹤双拼, and everything it does happens on your Mac:
-the input method runs in a sandbox with no network access at all.
+全拼 (full pinyin) and eight 双拼 schemes. Everything it does happens on your
+Mac. The input method runs in a sandbox with no network access at all.
 
 [all releases](https://github.com/n19htfall/OctoDot/releases) ·
 [website](https://n19htfall.github.io/OctoDot/)
@@ -28,7 +28,7 @@ the input method runs in a sandbox with no network access at all.
 2. Open OctoDot. It walks you through installing and enabling the input
    method. If macOS asks you to confirm, the guide takes you to System
    Settings → Keyboard → Text Input → Input Sources.
-3. Choose 全拼 or 小鹤双拼, and try typing right there in the guide.
+3. Choose an input scheme and try typing right there in the guide.
 4. Switch to OctoDot from the input menu in the menu bar.
 
 If OctoDot does not show up in the input menu, remove it in System Settings →
@@ -43,9 +43,9 @@ then move OctoDot.app to the Trash.
 
 ## Features
 
-- **全拼 and 小鹤双拼**, on the same lexicon. Switch at any time from the
-  input menu. In 小鹤双拼 the input area shows the keys you typed, split by
-  syllable (`vsgo` → `vs go`).
+- **全拼 and 双拼**, on the same lexicon. The 双拼 schemes are 小鹤、搜狗、微软、
+  自然码、紫光、智能 ABC、拼音加加、国标. Choose one under Settings → 输入方案.
+  The input area shows the keys you typed, split by syllable (小鹤 `vsgo` → `vs go`).
 - **Chinese and English together.** Type `woyonggithub` and get
   「我用GitHub」. Common English words appear among the candidates; there is
   no separate English mode to switch into.
@@ -110,9 +110,8 @@ OctoDot is two apps, and they are kept apart on purpose:
 | Hold Option | replace the visible candidates with translations (macOS 26 or later) |
 | Shift alone | switch between Chinese and English |
 
-The input menu in the menu bar switches between 全拼 and 小鹤双拼, turns the
-extra lexicon sets (地名, 名人, 艺人) and the grammar model on and off, picks
-the shape-code scheme, and opens Settings.
+Use Settings to switch input and shape-code schemes and toggle the extra
+lexicon sets (地名, 名人, 艺人). The input menu in the menu bar opens Settings.
 
 ### Custom phrases
 
@@ -124,8 +123,8 @@ the text, then a tab or spaces, then a code.
 我的邮箱    yx
 ```
 
-A pinyin code (first line) makes a word that works inside sentences and in
-both 全拼 and 小鹤双拼. Any other code (second line) is a shortcut, offered
+A pinyin code (first line) makes a word that works inside sentences in
+全拼 and 双拼. Any other code (second line) is a shortcut, offered
 first when you type it exactly. The format is the one 万象 and Rime use for
 `custom_phrase.txt`.
 
