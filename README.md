@@ -58,6 +58,10 @@ then move OctoDot.app to the Trash.
 - **Abbreviations.** Type initials only (`zgr`).
 - **Fuzzy pinyin (模糊音).** Ten pairs such as z = zh and n = l, each with
   its own switch. All are off by default.
+- **It reads what you just typed.** A sentence typed a word or a phrase at
+  a time is read as one: after 中科院, `chengdu` is 成都, not 程度. What it
+  keeps for this is the last few characters you committed, in memory only,
+  until you move elsewhere.
 - **It learns your choices.** A candidate you pick comes first the next
   time. You can make it forget the last 15 minutes, today, or everything.
 - **Custom phrases.** Keep your own phrases in a text file; they take

@@ -6,6 +6,7 @@
 //   session_menu.goose       the menu for the letters still to convert
 //   session_learning.goose   what a composition teaches the user dictionary
 //   session_data.goose       the data that is loaded, and the host's switches
+//   session_context.goose    what sits before the caret, for the next composition
 //
 // Nothing a host passes in may abort: bad handles, unknown keys and full
 // buffers are handled, never asserted. A failed check on the IME's main
@@ -28,6 +29,7 @@ import grammar;
 import session_menu;
 import session_learning;
 import session_data;
+import session_context;
 
 namespace session;
 
@@ -85,8 +87,9 @@ struct Session { generation: u32, live: bool }
 
 // A selection made inside a composition: the letters it read, the bytes of
 // its text, how many words it was made of (in picked_ends) and how many
-// character readings they have (in picked_pairs).
-struct Pick { letters: u8, bytes: u16, words: u8, pairs: u8, english: u8, foreign: u8 }
+// character readings they have (in picked_pairs); `led` if it was first
+// because of what came before the composition (session_context.goose).
+struct Pick { letters: u8, bytes: u16, words: u8, pairs: u8, english: u8, foreign: u8, led: u8 }
 
 var sessions = slot_pool<Session> {};
 var next_generation: u32 = 1;
@@ -148,6 +151,9 @@ var chinese_full = false;
 // characters (的这螺片蒽酮 for development).
 var chinese_bits = 0.0;
 var weak_chinese = false;   // the exact English match came first over that reading (place_english)
+// The best reading's last syllable is not typed out yet: its keys are the
+// start of a spelling ("i" of "ig" in 小鹤双拼), or carry a shape code.
+var half_typed = false;
 var builds: u64 = 0;        // menus built: a late score applies only to the menu it was for
 var words = decoder::Words {};          // the words the menu being shown was built from
 var shortlist = decoder::Shortlist {};  // what the reranker scores for it
@@ -198,7 +204,7 @@ fn reset(handle: u64) {
 fn clear_client_context() {
     clear_composition();
     recent.clear();
-    userdb::set_carry(0, 0);
+    tail_clear();
     last_was_digit = false;
 }
 
@@ -222,6 +228,7 @@ fn make_room() {
     learn_composition();
     append_commit(confirmed);
     append_commit(lead_text);
+    tail_read = true;                       // what follows, follows what this just committed
     var keys: u8[>..] = [];
     decoder::typed_span(input, 0, lead_to, keys);
     remember(keys, lead_text, 0);
@@ -301,14 +308,21 @@ fn clear_menu() {
 // ---- picking and committing ---------------------------------------------------------
 
 fn append_commit(text: const u8[:]) {
-    if commit.len + text.len <= commit.cap { commit.append(text); }
+    guard commit.len + text.len <= commit.cap else {
+        tail_clear();                       // the text is lost, and so is the place
+        return;
+    }
+    commit.append(text);
+    tail_take(text);
 }
 
 // Commits the selections and the letters still to convert, as typed.
 fn commit_raw() {
     let from = commit.len;
     append_commit(confirmed);
+    let keys = commit.len;
     for p in input.len { if input[p] != '\'' && commit.len < commit.cap { commit.push(as_typed(p)); } }
+    if commit.len > keys || input.len > 0 { tail_clear(); }     // letters as typed end the clause
     remember("", commit[from..], 0);
     clear_composition();
 }
@@ -354,6 +368,7 @@ fn room_for_text(text_len: i64) -> bool {
     if picks.len == 0 { return false; }
     learn_composition();
     append_commit(confirmed);
+    tail_read = true;
     clear_picks();
     return text_len <= confirmed.cap;
 }
@@ -362,7 +377,7 @@ fn room_for_text(text_len: i64) -> bool {
 // what the host put in its place (`foreign`). The text is confirmed, the
 // letters it read are consumed, and its words are kept to learn from. False,
 // with nothing taken, if it does not fit.
-fn take(c: decoder::Candidate, text: const u8[:], foreign: bool) -> bool {
+fn take(c: decoder::Candidate, text: const u8[:], foreign: bool, led: bool) -> bool {
     let to: i64 = c.to;
     guard to > 0 && to <= input.len && picks.len < picks.cap && consumed.len + to <= consumed.cap &&
           picked_ends.len + c.count <= picked_ends.cap && room_for_text(text.len) else { return false; }
@@ -372,7 +387,7 @@ fn take(c: decoder::Candidate, text: const u8[:], foreign: bool) -> bool {
     take_words(c);
     picks.push(Pick { letters: to as u8, bytes: text.len as u16, words: c.count as u8,
                       pairs: (picked_pairs.len - before) as u8, english: if c.code_len > 0 { 1 } else { 0 },
-                      foreign: if foreign { 1 } else { 0 } });
+                      foreign: if foreign { 1 } else { 0 }, led: if led { 1 } else { 0 } });
     return true;
 }
 
@@ -399,7 +414,7 @@ fn select(i: i64) -> u32 {
     guard i >= 0 && i < menu.candidates.len else { return HANDLED; }
     let c = menu.candidates[i];
     let replace = replacement.len > 0 && confirmed.len + replacement.len <= confirmed.cap;
-    if !take(c, if replace { replacement[..] } else { decoder::candidate_text(menu, c) }, replace) {
+    if !take(c, if replace { replacement[..] } else { decoder::candidate_text(menu, c) }, replace, i == 0 && promoted) {
         commit_raw();
         return HANDLED | DIRTY | HAS_COMMIT;
     }
@@ -559,9 +574,16 @@ fn handle_key(handle: u64, ev: KeyEvent) -> u32 {
         rebuild();
         return HANDLED | DIRTY;
     }
-    if composing() && (ev.modifiers & MOD_COMMAND) != 0 { return commit_passing(); }
+    if composing() && (ev.modifiers & MOD_COMMAND) != 0 {
+        let done = commit_passing();
+        tail_clear();                       // the shortcut that follows may move the caret or change the text
+        return done;
+    }
     if chord != 0 {
-        if !composing() { recent.clear(); }
+        if !composing() {
+            recent.clear();
+            tail_clear();
+        }
         return 0;
     }
 
@@ -572,6 +594,7 @@ fn handle_key(handle: u64, ev: KeyEvent) -> u32 {
     let letter = ev.key == KEY_OTHER && lower != 0 && !shifted;
     let capital_letter = ev.key == KEY_OTHER && lower != 0 && shifted && english::on;
     if letter || capital_letter {
+        if !composing() { begin_composition(); }
         if !room() { make_room(); }
         guard room() else { return with_commit(HANDLED | DIRTY); }
         input.push(lower as u8);
@@ -584,23 +607,29 @@ fn handle_key(handle: u64, ev: KeyEvent) -> u32 {
     if !composing() {
         if ev.key == KEY_BACKSPACE {
             note_backspace();               // deleting what was just committed?
+            tail_backspace();
             return 0;
         }
         if ev.key == KEY_OTHER && c >= '0' && c <= '9' {
             last_was_digit = true;
             recent.clear();
+            tail_clear();
             return 0;
         }
         let after_digit = last_was_digit && (c == '.' || c == ',' || c == ':');
         last_was_digit = false;
         if ev.key != KEY_OTHER || after_digit {
             // Escape leaves the app text and its learning context intact.
-            if ev.key != KEY_ESCAPE { recent.clear(); }
+            if ev.key != KEY_ESCAPE {
+                recent.clear();
+                tail_clear();
+            }
             return 0;
         }
         let mark = punctuation(c, halfwidth_punct);
         if mark.len == 0 {
             recent.clear();
+            tail_clear();
             return 0;
         }
         append_commit(mark);
@@ -694,7 +723,8 @@ fn handle_key(handle: u64, ev: KeyEvent) -> u32 {
         if mark.len > 0 {                          // the best reading, then the mark
             fresh_menu();
             let whole = first_whole();              // that reading is the composition's last pick
-            if whole >= 0 && take(menu.candidates[whole], decoder::candidate_text(menu, menu.candidates[whole]), false) {
+            if whole >= 0 && take(menu.candidates[whole], decoder::candidate_text(menu, menu.candidates[whole]), false,
+                                  whole == 0 && promoted) {
                 commit_picks();
             } else {
                 commit_raw();

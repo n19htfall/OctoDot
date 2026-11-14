@@ -7,7 +7,8 @@
 #   make bench              the images against M1's gates: size, load time, memory, lookups
 #   make eval               ranking quality, judged by the lexicon itself (SCHEME=flypy for 小鹤双拼)
 #   make accuracy           the accuracy set (data/accuracy.lock's sources), with every miss (SCHEME=flypy for 小鹤双拼;
-#                           DIAGNOSE=1 says why each sentence is missed)
+#                           DIAGNOSE=1 says why each sentence is missed; SPLIT=word, phrase or half types each
+#                           sentence in pieces and measures what the text before a piece does, FLIPS=1 listing them)
 #   make fuzz               fuzz the image loaders (FUZZ_SECONDS=20 per target)
 #   make test-debug         typing, the images and 小鹤双拼 accuracy, built with Goose's --debug checks
 #   make relock TAG=v18.2.0 pin another 万象 release and show what changed
@@ -174,7 +175,8 @@ eval: images $(BIN)/eval
 	$(BIN)/eval $(IMAGES) $(SCHEME)
 
 accuracy: images $(BIN)/accuracy $(ACCURACY)/words.tsv
-	$(BIN)/accuracy $(IMAGES) $(ACCURACY) $(SCHEME) $(if $(DIAGNOSE),--diagnose)
+	$(BIN)/accuracy $(IMAGES) $(ACCURACY) $(SCHEME) $(if $(DIAGNOSE),--diagnose) $(if $(SPLIT),--split=$(SPLIT)) \
+	    $(if $(FLIPS),--flips)
 
 fuzz: images $(BIN)/octo-compile
 	$(MAKE) -C engine/fuzz test

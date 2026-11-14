@@ -15,6 +15,8 @@ import sets;
 import english;
 import rerank;
 import session;
+import session_learning;
+import session_context;
 
 namespace session;
 
@@ -41,6 +43,7 @@ fn rebuild() {
         userdb::refresh();
         refreshed_day = day;
     }
+    set_lead();
     var g = lattice::Graph {};
     lattice::build(g, input, spelling::live, lexicon::live);
     if caps.len == input.len { decoder::set_case(caps[..]); } else { decoder::set_case(""); }
@@ -86,6 +89,12 @@ fn show_input(w: decoder::Words&, g: lattice::Graph&) {
     shown.clear();
     var segs: decoder::Segment[>..] = [];
     decoder::segments(menu, w, g, input, true, segs);
+    half_typed = false;
+    if segs.len > 0 {
+        let last = segs[segs.len - 1];
+        half_typed = w.list[last.word].source != decoder::ENGLISH &&
+                     spelling::find(spelling::live, input[last.from..last.to]) < 0;
+    }
     var full = segs.len > 0;
     var at: i64 = 0;
     for seg in segs {
@@ -261,12 +270,167 @@ fn rerankable() -> bool {
 // shows the candidates, after the key has returned (so the app typed in
 // never waits for it) and its preedit is on screen: the menu is shown once,
 // already reranked. With rerank_sync (the tests and the accuracy harness)
-// it is reranked here.
+// it is reranked here. A sentence is reranked among the search's best
+// (RERANK_SENTENCE), and a word that reads the whole input among the first
+// page's, by what came before it (RERANK_WORDS).
 fn request_rerank() {
     decoder::clear_shortlist(shortlist);
     rerank_due = 0;
-    guard rerank::active() && rerankable() else { return; }
+    rerank_kind = 0;
+    if promote_recalled() { return; }
+    guard rerank::active() else { return; }
+    if rerankable() { rerank_kind = RERANK_SENTENCE; }
+    else if led_words() { rerank_kind = RERANK_WORDS; }
+    else { return; }
     if rerank_sync { rerank_now(); } else { rerank_due = builds; }
+}
+
+// ---- a word that reads the whole input, after what came before it ------------------
+//
+// When one word reads the whole input no sentence is searched, and the
+// words come in the order of their own scores: typed a word at a time, a
+// clause gets no help from its own beginning. Here the text before the
+// input (decoder::preceding) may move one word of the first page to first
+// place, and only one, so the page stays the page the user knows:
+//
+//   - by the user's own recent text: they picked this word after the same
+//     word before, twice or more, lately (userdb's recent pairs). This alone
+//     may pass over a word they chose for these keys;
+//   - by the reranker: its P(word | the clause so far) beside the word's
+//     own score. Only over a first word the user never chose for these
+//     keys, only for keys spelled out in full to the last syllable's end,
+//     and only by a margin: a wrong move costs a wrong commit, a right one
+//     saves a glance.
+//
+// The margins are measured, not reasoned (accuracy --split, on the corpus,
+// docs/context-design.md): at these, the text before a piece fixes about
+// ten first candidates for each one it breaks.
+
+let RERANK_SENTENCE = 1;
+let RERANK_WORDS = 2;
+var rerank_kind: i64 = 0;       // what refine is to rerank
+var word_weight = 2.25;         // the reranker's bits for a word, against its own score: the sentences' weight
+var word_margin = 8.0;          // bits a word must lead the first by to take its place
+var lead_margin = 6.0;          // bits a sentence must lead the one chosen without that text by
+var lead_top: i64 = 6;          // the search's best sentences that are read after that text
+var lead_reach: i64 = 12;       // and only sentences of at most this many characters: a longer one says enough itself
+var user_recall = 0.75;         // userdb::recall of a word picked after the same word twice, lately
+
+// The first page's candidates that are one Chinese word reading the whole
+// input, in order: their places in the menu.
+fn whole_words(places: i64[>..]&) {
+    let n = if menu.candidates.len < PAGE_SIZE { menu.candidates.len } else { PAGE_SIZE };
+    for i in n {
+        let c = menu.candidates[i];
+        if c.to != input.len || c.count != 1 || c.code_len != 0 || menu.refs[c.refs].source == decoder::ENGLISH {
+            continue;
+        }
+        places.push(i);
+    }
+}
+
+// The word candidate `c` is, as the search found it (an index into
+// words.list), or -1.
+fn word_of(c: decoder::Candidate) -> i64 {
+    guard c.count == 1 && c.refs < menu.refs.len else { return -1; }
+    let r = menu.refs[c.refs];
+    let lo, hi = decoder::span(words, decoder::skip_separators(input, 0), c.to);
+    for k in lo..hi {
+        let x: i64 = words.by_span[k];
+        if words.list[x].source == r.source && words.list[x].entry == r.entry { return x; }
+    }
+    return -1;
+}
+
+// Candidate `i` takes first place, and the rest keep their order.
+fn promote(i: i64) {
+    guard i > 0 && i < menu.candidates.len else { return; }
+    let c = menu.candidates[i];
+    remove_at(menu.candidates, i);
+    decoder::insert_candidate(menu, 0, c);
+    promoted = true;
+}
+
+// Whether the text before the input may move a word to first place: there
+// is such text and it is trusted, the keys are spelled out in full, to the
+// last syllable's end, and read whole, and the first candidate is a word the
+// user never chose for them, with another to compare it with.
+fn led_words() -> bool {
+    guard decoder::preceding.len > 0 && chinese_full && !half_typed &&
+          readable == input.len && !letters_unread && menu.candidates.len > 1 else { return false; }
+    var places: i64[>..] = [];
+    whole_words(places);
+    guard places.len > 1 && places[0] == 0 else { return false; }
+    var span: u8[>..] = [];
+    decoder::typed_span(input, decoder::skip_separators(input, 0), input.len, span);
+    return userdb::chosen(span, decoder::candidate_text(menu, menu.candidates[0])) == 0;
+}
+
+// By the user's own recent text. True if a word moved.
+fn promote_recalled() -> bool {
+    guard context_on && decoder::lead_prev != 0 && decoder::preceding.len > 0 && userdb::pom.len > 0 &&
+          readable == input.len && !letters_unread else { return false; }
+    var places: i64[>..] = [];
+    whole_words(places);
+    guard places.len > 1 && places[0] == 0 else { return false; }
+    var best: i64 = -1;
+    var most = 0.0;
+    var first = 0.0;
+    for k in places.len {
+        let x = word_of(menu.candidates[places[k]]);
+        if x < 0 { continue; }
+        let r = decoder::recalled(words, decoder::lead_prev, decoder::lead_ant, x);
+        if k == 0 { first = r; }
+        else if r > most { most = r; best = places[k]; }
+    }
+    guard best > 0 && most >= user_recall && most > first else { return false; }
+    promote(best);
+    return true;
+}
+
+// The end of the text before the input that fits the model beside `chars`
+// more characters; empty when there is none.
+fn rerank_lead(chars: i64) -> const u8[:] {
+    guard decoder::preceding.len > 0 else { return ""; }
+    let room = rerank::room() - chars;
+    guard room > 0 else { return ""; }
+    return decoder::preceding[last_chars(decoder::preceding, room)..];
+}
+
+// By the reranker: each word of the first page after the clause so far,
+// left open, since more of the clause may follow. True if a word moved.
+fn rerank_words() -> bool {
+    var places: i64[>..] = [];
+    whole_words(places);
+    guard places.len > 1 && places[0] == 0 else { return false; }
+    var chars: i64 = 0;
+    for p in places {
+        let n = chars_in(decoder::candidate_text(menu, menu.candidates[p]));
+        if n > chars { chars = n; }
+    }
+    let lead = rerank_lead(chars);
+    guard lead.len > 0 else { return false; }
+    var job = rerank::Job { ids: [], starts: [] };
+    rerank::clear_job(job);
+    var own: f64[>..] = [];
+    for p in places {
+        let c = menu.candidates[p];
+        let x = word_of(c);
+        let text = decoder::candidate_text(menu, c);
+        guard x >= 0 && rerank::add_after(job, lead, text, false) else { return false; }
+        own.push(words.list[x].score);
+    }
+    var bits: f64[>..] = [];
+    guard rerank::rate(job, bits) && bits.len == places.len else { return false; }
+    var best: i64 = -1;
+    var top = decoder::NONE;
+    for k in 1..places.len {
+        let total = own[k] + word_weight * bits[k];
+        if total > top { top = total; best = places[k]; }
+    }
+    guard best > 0 && top - (own[0] + word_weight * bits[0]) >= word_margin else { return false; }
+    promote(best);
+    return true;
 }
 
 // Whether candidate `c` is a sentence with an English word in it.
@@ -307,7 +471,7 @@ fn rerank_now() -> bool {
         }
     }
     retain(menu.candidates) { c => !candidate_mixed(c) };
-    let changed = rerank_chinese();
+    let changed = if rerank_kind == RERANK_WORDS { rerank_words() } else { rerank_chinese() };
     for k in mixed.len { decoder::insert_candidate(menu, places[k], mixed[k]); }
     return changed;
 }
@@ -317,12 +481,48 @@ fn rerank_chinese() -> bool {
     let n = decoder::shortlist(words, input, readable, m.beam, m.per_state, m.shortlist, shortlist);
     var job = rerank::Job { ids: [], starts: [] };
     rerank::clear_job(job);
+    var chars: i64 = 0;
     for k in n {
         if !rerank::add(job, decoder::shortlist_text(shortlist, k)) { break; }
+        let c = chars_in(decoder::shortlist_text(shortlist, k));
+        if c > chars { chars = c; }
     }
     let scored = rerank::count(job);
     guard scored >= 2 && shortlist.scores.len >= scored else { return false; }
-    let k = rerank::choose(job, shortlist.scores[..scored]);
+    let lead = if chars <= lead_reach { rerank_lead(chars) } else { "" };
+    var k: i64 = -1;
+    var led = false;
+    if lead.len == 0 {
+        k = rerank::choose(job, shortlist.scores[..scored]);
+    } else {
+        // The search's best sentences again, after the clause so far: the
+        // same text before every one of them, so their scores still
+        // compare. The sentence chosen without it stands unless it is one
+        // of them and another leads it, after that text, by a margin.
+        let again = if scored < lead_top { scored } else { lead_top };
+        var all = true;
+        for i in again {
+            if !rerank::add_after(job, lead, decoder::shortlist_text(shortlist, i), true) { all = false; break; }
+        }
+        var bits: f64[>..] = [];
+        if all && rerank::rate(job, bits) && bits.len == scored + again {
+            let search = shortlist.scores[..scored];
+            k = rerank::best(search, bits[..scored]);
+            let after = rerank::best(search[..again], bits[scored..]);
+            if k >= 0 && k < again && after >= 0 && after != k {
+                let weight = rerank::live.meta[0].weight as f64;
+                let gap = (search[after] + weight * bits[scored + after]) - (search[k] + weight * bits[scored + k]);
+                if gap >= lead_margin {
+                    k = after;
+                    led = true;
+                }
+            }
+        } else {
+            rerank::clear_job(job);
+            for i in scored { rerank::add(job, decoder::shortlist_text(shortlist, i)); }
+            k = rerank::choose(job, shortlist.scores[..scored]);
+        }
+    }
     guard k >= 0 && menu.candidates.len > 0 else { return false; }
     let text = decoder::shortlist_text(shortlist, k);
     guard decoder::candidate_text(menu, menu.candidates[0]) != text else { return false; }
@@ -335,6 +535,7 @@ fn rerank_chinese() -> bool {
     for r in shortlist.ref_at[k]..shortlist.ref_at[k + 1] { menu.refs.push(shortlist.refs[r]); }
     c.count = (shortlist.ref_at[k + 1] - shortlist.ref_at[k]) as u16;
     decoder::insert_candidate(menu, 0, c);
+    if led { promoted = true; }
     return true;
 }
 

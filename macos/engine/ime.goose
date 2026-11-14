@@ -1,10 +1,10 @@
-// The IME's C ABI, version 11: what the Swift host calls, and nothing else.
+// The IME's C ABI (ABI_VERSION below): what the Swift host calls, and nothing else.
 // Every export runs on the thread that called goose_init (the main thread),
 // and none may abort on anything the host passes in.
 import std;
 import octo from "../../engine";
 
-let ABI_VERSION = 17;
+let ABI_VERSION = 18;
 
 export fn octo_abi_version() -> u32 { ABI_VERSION }
 
@@ -148,6 +148,12 @@ export fn octo_rerank() -> i32 { session::rerank_state() }
 
 // Turns the reranker on (1) or off (0).
 export fn octo_set_rerank(on: u32) { session::set_rerank(on != 0); }
+
+// What was committed just before a composition, read for its candidates
+// (engine/session_context.goose). On by default; off (0), every menu is made
+// as if nothing came before it. 1 while on.
+export fn octo_context() -> i32 { if session::context_on { 1 } else { 0 } }
+export fn octo_set_context(on: u32) { session::set_context(on != 0); }
 
 // The full character set (1) or 万象's daily one (0): the default that
 // Control-g switches from while composing. 1 while the full one is in use.

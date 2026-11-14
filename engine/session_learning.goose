@@ -116,6 +116,9 @@ fn pairs_of(lex: lexicon::Lexicon&, i: i64, out: lexicon::Pair[>..]&) -> bool {
 //     once if it came along in a sentence the engine proposed. A pick from
 //     a single letter ("g") teaches only the choice: picking from pages of a
 //     one-letter abbreviation says too little to promote a word everywhere.
+//     A pick that was first because of what came before it (`led`) teaches
+//     neither: the text before it was why, and that is learned as the link
+//     below. Typed alone, its letters offer what they did before.
 // And for the composition: if it took two picks or more, the whole as a
 // phrase (up to userdb::MAX_PHRASE syllables), and its choice for the whole
 // input; a sentence accepted in one pick becomes a phrase only up to
@@ -164,7 +167,7 @@ fn learn_composition() {
         } else {
             if p.english != 0 {
                 userdb::learn_english(span, confirmed[byte..byte + p.bytes], id);
-            } else {
+            } else if p.led == 0 {
                 userdb::choose(span, confirmed[byte..byte + p.bytes], id);
             }
             let amount = if p.words == 1 { userdb::EXPLICIT } else { userdb::INCIDENTAL };
@@ -177,7 +180,7 @@ fn learn_composition() {
                     continue;
                 }
                 let slice = words[from..ends[k]];
-                if span.len >= 2 { userdb::learn(slice, amount, id); }
+                if span.len >= 2 && p.led == 0 { userdb::learn(slice, amount, id); }
                 if slice.len > 0 {
                     let surface = userdb::hash_surface_pairs(slice);
                     if chain_prev != 0 { userdb::observe(chain_prev, chain_ant, userdb::hash_reading_pairs(slice), slice.len); }

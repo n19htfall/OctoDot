@@ -12,7 +12,7 @@ final class Engine {
     static let shared = Engine()
 
     /// The ABI this host was written against. The engine reports its own.
-    static let abiVersion: UInt32 = 17
+    static let abiVersion: UInt32 = 18
 
     struct Session: Hashable, Sendable {
         fileprivate let handle: UInt64
@@ -209,6 +209,14 @@ final class Engine {
         let state = octo_rerank()
         return state < 0 ? nil : state == 1
     }
+
+    // MARK: What came before (docs/context-design.md)
+
+    /// Whether what was committed just before a composition is read for its
+    /// candidates. On by default.
+    var context: Bool { octo_context() == 1 }
+
+    func setContext(on: Bool) { octo_set_context(on ? 1 : 0) }
 
     // MARK: The character set
 

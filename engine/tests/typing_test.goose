@@ -1072,9 +1072,10 @@ fn no_learn_policy(s: u64) {
     let held = userdb::pom.len;
     let carried = userdb::carry_prev;
     let words = userdb::lex.entries.len;
-    check(pick(s, "zhongguo", "中国", quiet) && session::commit == "中国" && userdb::pom.len == held &&
-          userdb::carry_prev == carried && userdb::chosen("zhongguo", "中国") == 0 && userdb::lex.entries.len == words,
-          "no-learn: 中国 commits and adds no word, count, or context link");
+    check(carried != 0 && pick(s, "zhongguo", "中国", quiet) && session::commit == "中国" && userdb::pom.len == held &&
+          userdb::carry_prev == 0 && session::tail.len == 0 && userdb::chosen("zhongguo", "中国") == 0 &&
+          userdb::lex.entries.len == words,
+          "no-learn: 中国 commits and adds no word, count, or context link, and nothing is kept of what came before it");
 
     userdb::reset();
     check(pick(s, "xian", "西安", 0) && userdb::chosen("xian", "西安") == 1, "xian learns 西安");
@@ -1466,7 +1467,10 @@ fn report_band(label: const u8[:], samples: i64[>..]&) -> u8[>..] {
     return out;
 }
 
-fn time_sentences(s: u64, flypy: bool, cache: bool, rounds: i64, keys: i64[>..]&, shown: i64[>..]&, scores: i64[>..]&) {
+// `lead`: each sentence is typed after that text, as if it had just been
+// committed (engine/session_context.goose); empty, with nothing before it.
+fn time_sentences(s: u64, flypy: bool, cache: bool, rounds: i64, lead: const u8[:], keys: i64[>..]&, shown: i64[>..]&,
+                  scores: i64[>..]&) {
     if !cache { rerank::cache_free(); }
     rerank::cache_on = cache;
     rerank::reset_stats();
@@ -1474,6 +1478,8 @@ fn time_sentences(s: u64, flypy: bool, cache: bool, rounds: i64, keys: i64[>..]&
     for round in rounds {
         for i in 4 {
             press(s, session::KEY_ESCAPE);
+            press(s, session::KEY_LEFT);
+            if lead.len > 0 { session::tail_set(lead); }
             let text = bench_text(flypy, i);
             var n: i64 = 0;
             let mid = text.len / 2;
@@ -1513,7 +1519,7 @@ fn incremental_bench(s: u64) {
         var warm_keys: i64[>..] = [];
         var warm_shown: i64[>..] = [];
         var warm_scores: i64[>..] = [];
-        time_sentences(s, flypy, true, 3, warm_keys, warm_shown, warm_scores);
+        time_sentences(s, flypy, true, 3, "", warm_keys, warm_shown, warm_scores);
         print("latency  ", name, " incremental ", report_band("key", warm_keys), "; ",
               report_band("key → refine", warm_shown), "; ", report_band("score", warm_scores));
         print_rerank_stats(str(name, " incremental"));
@@ -1526,10 +1532,39 @@ fn incremental_bench(s: u64) {
         var cold_keys: i64[>..] = [];
         var cold_shown: i64[>..] = [];
         var cold_scores: i64[>..] = [];
-        time_sentences(s, flypy, false, 3, cold_keys, cold_shown, cold_scores);
+        time_sentences(s, flypy, false, 3, "", cold_keys, cold_shown, cold_scores);
         print("latency  ", name, " cold ", report_band("key", cold_keys), "; ", report_band("key → refine", cold_shown),
               "; ", report_band("score", cold_scores));
         print_rerank_stats(str(name, " cold"));
+        // The same sentences after a clause's beginning, and words typed
+        // one at a time after it: what reading the text before costs.
+        var led_keys: i64[>..] = [];
+        var led_shown: i64[>..] = [];
+        var led_scores: i64[>..] = [];
+        time_sentences(s, flypy, true, 3, "我们上次讨论过的那个问题", led_keys, led_shown, led_scores);
+        print("latency  ", name, " after text ", report_band("key", led_keys), "; ",
+              report_band("key → refine", led_shown), "; ", report_band("score", led_scores));
+        print_rerank_stats(str(name, " after text"));
+        var word_keys: i64[>..] = [];
+        var word_shown: i64[>..] = [];
+        var word_scores: i64[>..] = [];
+        rerank::reset_stats();
+        let pieces = if flypy { ["igdu", "budv", "viui", "du", "wfti", "xmzl", "ui", "jmyi"] }
+                     else { ["chengdu", "budui", "zhishi", "du", "wenti", "xianzai", "shi", "jianyi"] };
+        for round in 6 {
+            for piece in pieces {
+                press(s, session::KEY_ESCAPE);
+                press(s, session::KEY_LEFT);
+                session::tail_set("我们上次讨论过的那个问题");
+                for c in piece { timed_key(s, session::KEY_OTHER, c, word_keys, word_shown, word_scores); }
+            }
+        }
+        press(s, session::KEY_ESCAPE);
+        press(s, session::KEY_LEFT);
+        print("latency  ", name, " words after text ", report_band("key", word_keys), "; ",
+              report_band("key → refine", word_shown), "; ", report_band("score", word_scores), " (", word_scores.len,
+              " of ", word_keys.len, " keys scored)");
+        print_rerank_stats(str(name, " words after text"));
     }
     session::set_scheme("fullpinyin");
     let long = "lingyifangmiantamenyejiangchangshirangyixiedaxingqixietongguosheshuidefangshidaodaqianfang";
@@ -1901,6 +1936,211 @@ fn reranking(s: u64) {
     press(s, session::KEY_ESCAPE);
     session::rerank_sync = false;
     userdb::forget(userdb::RECENT);
+}
+
+// What was committed just before, for the next composition
+// (engine/session_context.goose): what is kept of it, what drops it, and
+// what it may do to a menu.
+fn context(s: u64) {
+    userdb::reset();
+    userdb::clock_override = 1794000000;
+    press(s, session::KEY_LEFT);
+    check(session::tail.len == 0 && session::tail_trust == session::TRUST_NONE, "context: nothing is known at first");
+
+    // ---- what is kept ----
+    check(pick(s, "xian", "西安", 0) && session::tail == "西安" && session::tail_trust == session::TRUST_FULL,
+          "context: a commit is what the next composition follows");
+    check(pick(s, "zhongguo", "中国", 0) && session::tail == "西安中国" && userdb::carry_prev != 0,
+          "  the next commit joins it");
+    press(s, session::KEY_ESCAPE);
+    check(session::tail == "西安中国", "  Escape with nothing typed leaves it");
+    type_text(s, "ren");
+    check(decoder::preceding == "西安中国" && session::tail_read, "  and the next composition reads it");
+    press(s, session::KEY_ESCAPE);
+    check(session::tail == "西安中国" && !session::composing(), "  cancelling a composition leaves it too");
+
+    // ---- a correction ----
+    press(s, session::KEY_BACKSPACE);
+    check(session::tail == "西安中" && session::tail_trust == session::TRUST_CORRECTED && userdb::carry_prev == 0,
+          "context: Backspace takes the deleted character out of it, and the word it cut is no longer one");
+    type_text(s, "guo");
+    check(decoder::preceding.len == 0 && !session::tail_read,
+          "  the composition after a deletion reads nothing before it");
+    let r = rank("国");
+    check(r >= 0 && r < session::PAGE_SIZE, "  国 is offered for guo");
+    typed(s, '1' + r);
+    check(session::tail == "西安中国" && session::tail_trust == session::TRUST_FULL,
+          "  and once it commits, the text is whole again and trusted");
+    for k in 4 { press(s, session::KEY_BACKSPACE); }
+    check(session::tail.len == 0 && session::tail_trust == session::TRUST_CORRECTED, "  deleted to its start, it is empty");
+    press(s, session::KEY_BACKSPACE);
+    check(session::tail_trust == session::TRUST_NONE, "  and a deletion past what is known leaves nothing known");
+    check(pick(s, "zhongguo", "中国", 0) && session::tail == "中国", "  the next commit starts it afresh");
+
+    // ---- what drops it ----
+    var kept: u8[>..] = [];
+    for event in 9 {
+        press(s, session::KEY_LEFT);
+        if !pick(s, "xian", "西安", 0) || session::tail != "西安" { format(kept, " setup", event); continue; }
+        if event == 0 { typed(s, ','); }
+        else if event == 1 { press(s, session::KEY_LEFT); }
+        else if event == 2 { press(s, session::KEY_RETURN); }
+        else if event == 3 { press(s, session::KEY_SPACE); }
+        else if event == 4 { typed(s, '5'); }
+        else if event == 5 { session::key(s, key_event(session::KEY_OTHER, 'v', session::MOD_COMMAND)); }
+        else if event == 6 {                    // letters committed as typed
+            type_text(s, "abc");
+            press(s, session::KEY_RETURN);
+        }
+        else if event == 7 {                    // a shortcut while composing: the composition commits first
+            type_text(s, "zhongguo");
+            session::key(s, key_event(session::KEY_OTHER, 'a', session::MOD_COMMAND));
+        }
+        else {                                  // another field
+            let other = session::new_session();
+            typed(other, 'a');
+            press(other, session::KEY_ESCAPE);
+            session::free_session(other);
+        }
+        if session::tail.len != 0 || userdb::carry_prev != 0 { format(kept, " ", event); }
+    }
+    check(kept.len == 0, str("context: punctuation, an arrow, Return, Space, a digit, a shortcut, keys committed as ",
+                             "typed and another field each drop it", kept));
+    press(s, session::KEY_LEFT);
+    check(pick(s, "zhongguo", "中国", session::KEYFLAG_NO_LEARN) && session::tail.len == 0,
+          "  and a key that must not teach keeps nothing");
+
+    // ---- time ----
+    check(pick(s, "xian", "西安", 0), "context: 西安, then a pause");
+    userdb::clock_override += 10;
+    typed(s, 'z');
+    check(session::tail_read && decoder::preceding == "西安", "  ten seconds later it is still read");
+    userdb::clock_override += 60;
+    typed(s, 'h');
+    check(session::tail_read && decoder::preceding == "西安", "  and that holds for the composition, however long it takes");
+    press(s, session::KEY_ESCAPE);
+    typed(s, 'z');
+    check(!session::tail_read && decoder::preceding.len == 0 && session::tail.len == 0, "  after that it is gone");
+    press(s, session::KEY_ESCAPE);
+    check(pick(s, "xian", "西安", 0), "context: 西安, a deletion, then a pause");
+    press(s, session::KEY_BACKSPACE);
+    userdb::clock_override += 60;
+    typed(s, 'z');
+    check(session::tail.len == 0, "  what a deletion left is not kept past the pause either");
+    press(s, session::KEY_ESCAPE);
+    check(pick(s, "xian", "西安", 0), "context: 西安, then a pause before a deletion");
+    userdb::clock_override += 60;
+    press(s, session::KEY_BACKSPACE);
+    check(session::tail.len == 0 && session::tail_trust == session::TRUST_NONE,
+          "  a deletion that long after is somewhere else, for all the engine knows");
+
+    // ---- its size, and the picks of a composition ----
+    press(s, session::KEY_LEFT);
+    for k in 9 { pick(s, "zhongguo", "中国", 0); }
+    check(session::chars_in(session::tail) == session::TAIL_CHARS, "context: only the last 16 characters are kept");
+    press(s, session::KEY_LEFT);
+    type_text(s, "zhongguoren");
+    let prefix = rank("中国");
+    check(prefix >= 0 && prefix < session::PAGE_SIZE, "  中国 is offered for the start of zhongguoren");
+    typed(s, '1' + prefix);
+    check(session::composing() && decoder::preceding == "中国",
+          "  what was picked earlier in a composition is what the rest of it follows");
+    for k in 4 { press(s, session::KEY_BACKSPACE); }
+    check(session::composing() && decoder::preceding.len == 0, "  and taking the pick back takes that away");
+    press(s, session::KEY_ESCAPE);
+    session::context_on = false;
+    check(pick(s, "xian", "西安", 0), "context off: 西安 commits");
+    type_text(s, "ren");
+    check(decoder::preceding.len == 0 && !session::tail_read, "  and nothing reads it");
+    press(s, session::KEY_ESCAPE);
+    session::context_on = true;
+    userdb::reset();
+    userdb::clock_override = 1794000000;
+
+    // ---- what it may do to a menu ----
+    guard session::rerank_state() >= 0 else {
+        print("skip  context: the images have no reranker to read it");
+        userdb::clock_override = 0;
+        return;
+    }
+    session::set_rerank(true);
+    session::rerank_sync = true;
+    press(s, session::KEY_LEFT);
+    let keys = "chengdu";
+    let bare = first(s, keys);
+    check(pick(s, "zhongkeyuan", "中科院", 0), "context: 中科院 commits");
+    type_text(s, keys);
+    let led = candidate(0);
+    check(compare(led, bare) != 0 && compare(candidate(1), bare) == 0 && session::promoted,
+          str("  after it, chengdu is ", led, " first, and ", bare, ", first with nothing before it, is second"));
+    press(s, session::KEY_SPACE);
+    check(session::commit == led && userdb::chosen(keys, led) == 0 && userdb::pom.len > 0,
+          "  accepting it teaches the pair, not a choice for chengdu alone");
+    press(s, session::KEY_LEFT);
+    check(compare(first(s, keys), bare) == 0, str("  so chengdu alone is still ", bare));
+
+    // As the host does it: the key says PENDING, and refine moves the word.
+    session::rerank_sync = false;
+    press(s, session::KEY_LEFT);
+    pick(s, "zhongkeyuan", "中科院", 0);
+    var result: u32 = 0;
+    for c in keys { result = typed(s, c); }
+    check((result & session::PENDING) != 0 && compare(candidate(0), bare) == 0,
+          "  through the host: the key says the menu may change, and has not yet");
+    check((session::refine(s) & session::DIRTY) != 0 && compare(candidate(0), led) == 0 && session::refine(s) == 0,
+          str("  refine puts ", led, " first, once"));
+    press(s, session::KEY_SPACE);
+    session::rerank_sync = true;
+
+    // A correction: the composition after a deletion is made as if nothing came before.
+    for k in session::chars_in(led) { press(s, session::KEY_BACKSPACE); }
+    check(session::tail == "中科院" && session::tail_trust == session::TRUST_CORRECTED, "context: deleting it leaves 中科院");
+    type_text(s, keys);
+    check(compare(candidate(0), bare) == 0 && !session::promoted,
+          str("  and chengdu typed again is ", bare, " first: the text before it does not offer the deleted word again"));
+    press(s, session::KEY_ESCAPE);
+
+    // The user's choice for these keys stands.
+    userdb::reset();
+    press(s, session::KEY_LEFT);
+    check(pick(s, keys, bare, 0) && userdb::chosen(keys, bare) == 1, str("context: ", bare, " chosen for chengdu"));
+    press(s, session::KEY_LEFT);
+    pick(s, "zhongkeyuan", "中科院", 0);
+    type_text(s, keys);
+    check(compare(candidate(0), bare) == 0 && !session::promoted, "  stays first after 中科院 too");
+    press(s, session::KEY_ESCAPE);
+
+    // Unless the user themselves picked the other after this very word, twice, lately.
+    for k in 2 {
+        press(s, session::KEY_LEFT);
+        pick(s, "zhongkeyuan", "中科院", 0);
+        pick(s, keys, led, 0);
+    }
+    for k in 3 {
+        press(s, session::KEY_LEFT);
+        pick(s, keys, bare, 0);
+    }
+    press(s, session::KEY_LEFT);
+    check(compare(first(s, keys), bare) == 0, str("context: chosen more often, ", bare, " is first for chengdu alone"));
+    pick(s, "zhongkeyuan", "中科院", 0);
+    type_text(s, keys);
+    check(compare(candidate(0), led) == 0 && session::promoted,
+          str("  and after 中科院, where the user picked it twice, ", led, " is"));
+    press(s, session::KEY_ESCAPE);
+
+    // Off, nothing moves.
+    userdb::reset();
+    session::context_on = false;
+    press(s, session::KEY_LEFT);
+    pick(s, "zhongkeyuan", "中科院", 0);
+    type_text(s, keys);
+    check(compare(candidate(0), bare) == 0, "context off: chengdu after 中科院 is as it is alone");
+    press(s, session::KEY_ESCAPE);
+    session::context_on = true;
+    session::rerank_sync = false;
+    press(s, session::KEY_LEFT);
+    userdb::reset();
+    userdb::clock_override = 0;
 }
 
 // Notes in `seen` if typing `code` offers `form` anywhere among the candidates.
@@ -2388,6 +2628,8 @@ fn main() {
     mixed_sentences(session::new_session());
     userdb::reset();
     reranking(session::new_session());
+    userdb::reset();
+    context(session::new_session());
     userdb::reset();
     cache_modes(session::new_session());
     userdb::reset();

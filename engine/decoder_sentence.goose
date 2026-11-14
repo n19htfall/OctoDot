@@ -32,13 +32,19 @@ fn recalled(w: Words&, prev_h: u64, ant_h: u64, current: i64) -> f64 {
     return userdb::recall(prev_h, ant_h, userdb::hash_reading_entry(lex, word.entry), lex.entries[word.entry].len);
 }
 
+// The two words before the input, as the user dictionary hashes a word's
+// text (0 for none): what was committed last, or picked earlier in this
+// composition. The session sets them before each search (set_lead).
+var lead_prev: u64 = 0;
+var lead_ant: u64 = 0;
+
 // For `current` after the sentence's words `prev` and, before it, `anterior`
-// (-1 for none): where the sentence has no word yet, what was committed
-// last stands in.
+// (-1 for none): where the sentence has no word yet, the words before the
+// input stand in.
 fn context_boost(w: Words&, anterior: i64, prev: i64, current: i64) -> f64 {
     if userdb::pom.len == 0 { return 0.0; }
-    if prev < 0 { return recalled(w, userdb::carry_prev, userdb::carry_ant, current); }
-    return recalled(w, surface_of(w, prev), if anterior >= 0 { surface_of(w, anterior) } else { userdb::carry_prev },
+    if prev < 0 { return recalled(w, lead_prev, lead_ant, current); }
+    return recalled(w, surface_of(w, prev), if anterior >= 0 { surface_of(w, anterior) } else { lead_prev },
                     current);
 }
 
@@ -117,10 +123,14 @@ fn best_path(w: Words&, input: const u8[:], end: i64, path: i64[>..]&) -> bool {
     return true;
 }
 
-// The text before the input, which the first word of a sentence follows.
-// Empty, the first word scores the model's non-collocation penalty, as in
-// librime: so it is in the IME, which does not set it yet (the accuracy
-// harness's --chained does).
+// The text before the input: the end of the clause as it was committed,
+// where that is trusted, and what was picked earlier in this composition
+// (session_context.goose sets it before each search); empty for none. The
+// sentence search does not read it. The grammar model's fit after it
+// was tried, in the beam and for a word typed alone, and broke one reading
+// for every two or three it fixed (accuracy --split,
+// docs/context-design.md): the session's reranker reads it instead, and
+// decides by a margin.
 var preceding: u8[>..];
 
 // Partial sentences the beam keeps, ending where their last word ends: the
@@ -323,15 +333,12 @@ fn kbest_sentences(w: Words&, input: const u8[:], end: i64, beam: i64, homophone
         if top.len > beam { top.resize(beam); }
         for t in top {
             let line = lines[t];
-            // What a word after this line follows: its last two words (the
-            // preceding text, for the empty line), as text for the model and
-            // as words for the user's recent text.
+            // What a word after this line follows: its last two words, as
+            // text for the model and as words for the user's recent text.
             var prev: i64 = -1;
             var anterior: i64 = -1;
             context.clear();
-            if line.word < 0 {
-                context.append(preceding);
-            } else {
+            if line.word >= 0 {
                 if line.prev >= 0 && lines[line.prev].word >= 0 {
                     let before: i64 = lines[line.prev].word;
                     anterior = offered[before];

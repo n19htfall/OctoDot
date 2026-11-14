@@ -18,6 +18,7 @@ import english;
 import semantic;
 import rerank;
 import session;
+import session_context;
 
 namespace session;
 
@@ -119,6 +120,7 @@ fn set_scheme(id: const u8[:]) -> i32 {
     userdb::scope.append(id);
     clear_composition();
     recent.clear();
+    tail_clear();
     return 0;
 }
 
@@ -387,6 +389,15 @@ fn set_full_charset(v: bool) {
 
 fn set_rerank(v: bool) {
     rerank::set_on(v);
+    if input.len > 0 { rebuild(); }
+}
+
+// What came before a composition, read for its candidates or not
+// (session_context.goose). Off, nothing is forgotten: the tail is still
+// kept, so turning it back on needs no new commit.
+fn set_context(v: bool) {
+    context_on = v;
+    if !v { tail_read = false; }
     if input.len > 0 { rebuild(); }
 }
 

@@ -26,7 +26,13 @@
 // reranked as the IME reranks them, here at once rather than on a worker;
 // --no-rerank measures the decoder alone.
 //
-//   accuracy IMAGES SET_DIR [SCHEME] [--no-grammar] [--no-rerank] [--chained] [--diagnose]
+// --split=word|phrase|half types each sentence as several compositions
+// instead, the way a clause is often typed, and measures what the text
+// before a composition does for it (docs/context-design.md): see "Typed in
+// pieces" below.
+//
+//   accuracy IMAGES SET_DIR [SCHEME] [--no-grammar] [--no-rerank] [--diagnose]
+//            [--split=word|phrase|half [--flips] [--set=NAME=VALUE ...]]
 import std;
 import os;
 import dictionary;
@@ -208,6 +214,255 @@ fn percent(hits: i64, total: i64) -> u8[>..] {
 }
 
 
+// ---- Typed in pieces (--split) ----
+//
+// Each sentence is cut at its word boundaries (the lexicon's own words, the
+// likeliest way to read the right text as words) into the compositions a
+// user might type it as:
+//   word    every word on its own
+//   phrase  runs of words, 2 to 4 syllables each
+//   half    two halves
+// and each piece is typed three ways, with the right text of the pieces
+// before it standing for what the user committed:
+//   bare     with nothing before it, as the engine was before it kept any
+//   led      after the pieces before it
+//   astray   after the end of another sentence: what a caret moved without
+//            a key (a click) leaves the engine believing
+// A piece counts as right when its first candidate is its text. What matters
+// is what changes: pieces the text before them fixes, and pieces it breaks;
+// and astray, how many right pieces the wrong text breaks, which is the
+// price of trusting it.
+
+struct Split { pieces: i64, later: i64, bare: i64, led: i64, fixed: i64, broken: i64, other: i64,
+               astray_broken: i64, astray_fixed: i64, whole_bare: i64, whole_led: i64, lines: i64, skipped: i64,
+               by_size: i64[12], bare_ns: i64, led_ns: i64 }
+
+// log2 of the weight of the word that reads characters [a, b) of `l` as the
+// line reads them, the best among the core and the mounted sets; NONE if
+// there is no such word.
+fn piece_weight(l: Line, cps: const u32[:], a: i64, b: i64) -> f64 {
+    var code: u16[>..] = [];
+    var text: u8[>..] = [];
+    for k in a..b {
+        code.push(l.syls[k]);
+        push_utf8(text, cps[k]);
+    }
+    var best = weight_in(lexicon::live, code, text);
+    for k in sets::SLOTS {
+        if !sets::used[k] { continue; }
+        let w = weight_in(sets::slot(k), code, text);
+        if w > best { best = w; }
+    }
+    return best;
+}
+
+fn weight_in(lex: lexicon::Lexicon&, code: const u16[:], text: const u8[:]) -> f64 {
+    let lo, hi = lexicon::exact(lex, code);
+    var best = decoder::NONE;
+    for i in lo..hi {
+        var t: u8[>..] = [];
+        lexicon::text(lex, i, t);
+        let w = (lex.entries[i].weight as f64) / lexicon::WEIGHT_SCALE;
+        if t == text && w > best { best = w; }
+    }
+    return best;
+}
+
+// Where each word of `l` ends, reading it as the likeliest sequence of
+// lexicon words, scored as the decoder scores a word (a character no word
+// reads stands alone).
+fn word_ends(l: Line, cps: const u32[:], ends: i64[>..]&) {
+    let n = l.count;
+    var best: f64[>..] = [0.0];
+    var back: i64[>..] = [0];
+    for i in 1..n + 1 {
+        var top = decoder::NONE;
+        var from = i - 1;
+        for size in 1..9 {
+            if size > i { break; }
+            var w = piece_weight(l, cps, i - size, i);
+            if w <= decoder::NONE {
+                if size > 1 { continue; }
+                w = 0.0;
+            }
+            let s = best[i - size] + w - sets::log_total - decoder::word_penalty;
+            if s > top { top = s; from = i - size; }
+        }
+        best.push(top);
+        back.push(from);
+    }
+    var at = n;
+    while at > 0 {
+        ends.push(at);
+        at = back[at];
+    }
+    reverse(ends[..]);
+}
+
+// Where each piece of `l` ends, by `policy`, from where its words end.
+fn piece_ends(l: Line, policy: const u8[:], words: const i64[:], ends: i64[>..]&) {
+    if policy == "word" {
+        ends.append(words);
+        return;
+    }
+    if policy == "half" {
+        var cut: i64 = 0;
+        for e in words {
+            if e < l.count && abs(2 * e - l.count) < abs(2 * cut - l.count) { cut = e; }
+        }
+        if cut > 0 { ends.push(cut); }
+        ends.push(l.count);
+        return;
+    }
+    var from: i64 = 0;
+    for k in words.len {
+        let want = 2 + (l.number + ends.len) % 3;
+        if words[k] - from >= want || k == words.len - 1 {
+            ends.push(words[k]);
+            from = words[k];
+        }
+    }
+}
+
+// The first candidate for `code` typed after `before`, with the context on
+// or off; how long its menu took.
+fn piece_first(before: const u8[:], code: const u8[:], on: bool, got: u8[>..]&) -> i64 {
+    session::context_on = on;
+    session::clear_composition();
+    session::commit.clear();
+    if before.len > 0 { session::tail_set(before); } else { session::tail_clear(); }
+    session::begin_composition();
+    session::input.append(code);
+    let t0 = clock_ns();
+    session::rebuild();
+    let spent = clock_ns() - t0;
+    if session::menu.candidates.len > 0 {
+        let c = session::menu.candidates[0];
+        got.append(session::menu.pool[c.text..c.text + c.len]);
+    }
+    return spent;
+}
+
+fn split_line(l: Line, full_pinyin: bool, policy: const u8[:], astray: const u8[:], flips: bool, sp: Split&,
+              out: u8[>..]&) {
+    var cps: u32[>..] = [];
+    each_utf8(l.text) { cp => cps.push(cp as u32); };
+    var words: i64[>..] = [];
+    word_ends(l, cps, words);
+    var ends: i64[>..] = [];
+    piece_ends(l, policy, words, ends);
+    sp.lines++;
+    var all_bare = true;
+    var all_led = true;
+    var from: i64 = 0;
+    var before: u8[>..] = [];
+    for e in ends {
+        var code: u8[>..] = [];
+        var want: u8[>..] = [];
+        for k in from..e {
+            if full_pinyin && k > from && (l.apostrophes >> k & 1) != 0 { code.push('\''); }
+            code.append(keys[l.syls[k]].text);
+            push_utf8(want, cps[k]);
+        }
+        if code.len > lattice::MAX_INPUT || code.len == 0 {
+            sp.skipped++;
+        } else {
+            var bare: u8[>..] = [];
+            var led: u8[>..] = [];
+            var lost: u8[>..] = [];
+            sp.bare_ns += piece_first("", code, false, bare);
+            sp.led_ns += piece_first(before, code, true, led);
+            piece_first(astray, code, true, lost);
+            let w = folded_text(want);
+            let b = folded_text(bare) == w;
+            let c = folded_text(led) == w;
+            let a = folded_text(lost) == w;
+            sp.pieces++;
+            if from > 0 { sp.later++; }
+            let size = if e - from > 4 { 4 } else { e - from };
+            sp.by_size[(size - 1) * 3] += 1;
+            if b { sp.bare++; sp.by_size[(size - 1) * 3 + 1] += 1; } else { all_bare = false; }
+            if c { sp.led++; sp.by_size[(size - 1) * 3 + 2] += 1; } else { all_led = false; }
+            if c && !b { sp.fixed++; }
+            if b && !c { sp.broken++; }
+            if !b && !c && bare != led { sp.other++; }
+            if b && !a { sp.astray_broken++; }
+            if a && !b { sp.astray_fixed++; }
+            if flips && b != c {
+                format(out, if c { "fix    " } else { "break  " }, l.category, "  ", before, " | ", code, "  want ", want,
+                       "  bare ", bare, "  led ", led, "\n");
+            }
+            if flips && b && !a {
+                format(out, "astray ", l.category, "  ", astray, " | ", code, "  want ", want, "  got ", lost, "\n");
+            }
+        }
+        before.append(want);
+        from = e;
+    }
+    if all_bare { sp.whole_bare++; }
+    if all_led { sp.whole_led++; }
+}
+
+fn percent2(hits: i64, total: i64) -> u8[>..] {
+    var s: u8[>..] = [];
+    format_flt(s, if total > 0 { 100.0 * hits / total } else { 0.0 }, 2);
+    s.push('%');
+    return s;
+}
+
+fn split_report(sentences: const Line[:], full_pinyin: bool, policy: const u8[:], flips: bool) {
+    session::rerank_sync = true;
+    var sets: u8[..31][>..] = [];
+    for l in sentences { if !contains(sets, l.category) { sets.push(l.category); } }
+    var out: u8[>..] = [];
+    for set in sets {
+        var sp = Split { pieces: 0, later: 0, bare: 0, led: 0, fixed: 0, broken: 0, other: 0, astray_broken: 0,
+                         astray_fixed: 0, whole_bare: 0, whole_led: 0, lines: 0, skipped: 0, by_size: [0; 12],
+                         bare_ns: 0, led_ns: 0 };
+        var astray: u8[>..] = [];
+        for l in sentences {
+            if l.category != set { continue; }
+            split_line(l, full_pinyin, policy, astray, flips, sp, out);
+            astray.clear();
+            astray.append(l.text);
+        }
+        print("pieces, ", set, ", by ", policy, ": ", sp.pieces, " of ", sp.lines, " sentences (", sp.later,
+              " with text before them; ", sp.skipped, " too long)");
+        print("  first candidate right: bare ", percent2(sp.bare, sp.pieces), ", led ", percent2(sp.led, sp.pieces),
+              "; every piece of a sentence right: bare ", percent(sp.whole_bare, sp.lines), ", led ",
+              percent(sp.whole_led, sp.lines));
+        print("  the text before fixes ", sp.fixed, " and breaks ", sp.broken, " (", percent2(sp.broken, sp.pieces),
+              " of pieces); ", sp.other, " wrong either way but changed");
+        print("  astray, after another sentence's end: breaks ", sp.astray_broken, " (",
+              percent2(sp.astray_broken, sp.pieces), " of pieces), fixes ", sp.astray_fixed);
+        for k in 4 {
+            print("    ", k + 1, if k == 3 { "+" } else { "" }, " syllables: ", sp.by_size[k * 3], " pieces, bare ",
+                  percent(sp.by_size[k * 3 + 1], sp.by_size[k * 3]), ", led ",
+                  percent(sp.by_size[k * 3 + 2], sp.by_size[k * 3]));
+        }
+        if sp.pieces > 0 {
+            print("  a piece's menu: bare ", sp.bare_ns / sp.pieces / 1000, " µs, led ", sp.led_ns / sp.pieces / 1000,
+                  " µs (means, reranked)");
+        }
+    }
+    write_stdout(out);
+}
+
+// --set=NAME=VALUE: one of the context's settings, for tuning.
+fn set_knob(arg: const u8[:]) -> bool {
+    let name, text, ok = split_once(arg, '=');
+    let v, good = parse_flt(text);
+    guard ok && good else { return false; }
+    if name == "word_weight" { session::word_weight = v; }
+    else if name == "word_margin" { session::word_margin = v; }
+    else if name == "lead_margin" { session::lead_margin = v; }
+    else if name == "lead_top" { session::lead_top = v as i64; }
+    else if name == "lead_reach" { session::lead_reach = v as i64; }
+    else { return false; }
+    return true;
+}
+
+
 // ---- Why a sentence is missed (--diagnose) ----
 //
 // For a sentence the engine gets wrong, the word graph it searched is built
@@ -267,9 +522,7 @@ fn constrained(w: decoder::Words&, pool: const u8[:], text_at: const u32[:], all
         while t >= 0 {
             let line = lines[t];
             context.clear();
-            if line.word < 0 {
-                context.append(decoder::preceding);
-            } else {
+            if line.word >= 0 {
                 if line.prev >= 0 && lines[line.prev].word >= 0 {
                     let pw: i64 = lines[line.prev].word;
                     context.append(pool[text_at[pw]..text_at[pw + 1]]);
@@ -760,7 +1013,8 @@ fn value(arg: const u8[:]) -> const u8[:] {
 fn main() {
     let all = args();
     var diagnosing = false;
-    var chained = false;                    // each sentence typed after the one before it, as if just committed
+    var split: u8[>..] = [];                // --split=POLICY: each sentence typed in pieces
+    var flips = false;                      // --flips: every piece the text before it fixes or breaks
     var export_path: u8[>..] = [];          // --export=FILE: segments, for an emitter
     var top_path: u8[>..] = [];             // --export-top=FILE: the decode's 16 best, for a verifier
     var top: u8[>..] = [];
@@ -771,7 +1025,14 @@ fn main() {
     for i in all.len {
         if all[i] == "--no-grammar" { session::use_grammar = false; }
         else if all[i] == "--diagnose" { diagnosing = true; }
-        else if all[i] == "--chained" { chained = true; }
+        else if has(all[i], "--split=") { split.append(value(all[i])); }
+        else if all[i] == "--flips" { flips = true; }
+        else if has(all[i], "--set=") {
+            if !set_knob(value(all[i])) {
+                write_stderr(str("accuracy: no such setting: ", all[i], "\n"));
+                exit(2);
+            }
+        }
         else if all[i] == "--coverage" { covering = true; }
         else if all[i] == "--no-english" { english::set_on(false); }
         else if all[i] == "--no-rerank" { rerank::set_on(false); }
@@ -846,6 +1107,14 @@ fn main() {
                             else { "" };
     print("accuracy: ", words.len, " words, ", sentences.len, " sentences, typed in ", spelling::live.meta[0].name, model,
           reranker);
+    if split.len > 0 {
+        if split != "word" && split != "phrase" && split != "half" {
+            write_stderr("accuracy: --split=word, phrase or half\n");
+            exit(2);
+        }
+        split_report(sentences, full_pinyin, split, flips);
+        exit(0);
+    }
 
     // words, by category
     var categories: u8[..31][>..] = [];
@@ -907,15 +1176,11 @@ fn main() {
                             kept_offered: [0; 6], size_all: [0; 6], size_offered: [0; 6] };
         var cov = Coverage { n: 0, graph: 0, offered: 0, at: [0; 30] };
         cover_ns.clear();
-        var before: u8[>..] = [];
         for l in sentences {
             if l.category != set { continue; }
             n++;
-            decoder::preceding.clear();
-            if chained && before.len > 0 { decoder::preceding.append(before); decoder::preceding.append("，"); }
+            session::tail_clear();
             if emitting { use_emissions(l.number); }
-            before.clear();
-            before.append(l.text);
             // Typed as the IME takes it: when the input is full, the next key
             // commits the best reading's first word to make room.
             var code: u8[>..] = [];

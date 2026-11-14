@@ -31,6 +31,7 @@ enum Learning {
     private static let setsKey = "lexiconSets"
     private static let englishKey = "englishWords"
     private static let fullCharsetKey = "fullCharset"
+    private static let contextKey = "readsContext"
     private static let fuzzyKey = "fuzzyPinyin"
 
     /// The fuzzy pinyin groups on (by id, "z_zh"), remembered across
@@ -68,6 +69,14 @@ enum Learning {
     static func useEnglish(_ on: Bool) {
         Engine.shared.setEnglish(on: on)
         englishOn = on
+    }
+
+    /// What was committed just before a composition, read for its
+    /// candidates (docs/context-design.md): on unless turned off. There is
+    /// no switch for it in Settings yet; `defaults write` of `readsContext`
+    /// in the input method's domain turns it off.
+    static var contextOn: Bool {
+        UserDefaults.standard.object(forKey: contextKey) as? Bool ?? true
     }
 
     /// Open the grammar model when the companion puts it in the shared folder.
@@ -109,6 +118,7 @@ enum Learning {
         }
         Engine.shared.setEnglish(on: englishOn)
         Engine.shared.setFullCharset(on: fullCharset)
+        Engine.shared.setContext(on: contextOn)
         Engine.shared.setFuzzy(fuzzy)
     }
 

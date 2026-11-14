@@ -27,7 +27,8 @@ let BOS = 1;
 let EOS = 2;
 let SPECIALS = 3;
 let MAX_SHORTLIST = 16;
-let MAX_IDS = 1024;             // MAX_SHORTLIST sequences of up to 64 positions
+let MAX_JOB = 32;               // sequences in one score: a shortlist alone, and again after the clause so far
+let MAX_IDS = 2048;             // MAX_JOB sequences of up to 64 positions
 let MAX_VOCAB = 1000000;
 
 struct Meta {
@@ -177,7 +178,7 @@ fn close() {
 
 // A shortlist to score: each sequence is ids[starts[k] .. starts[k + 1]],
 // <s> text </s>.
-struct Job { ids: i32[..1024], starts: i32[..17] }
+struct Job { ids: i32[..2048], starts: i32[..33] }
 
 fn clear_job(job: Job&) {
     job.ids.clear();
@@ -188,19 +189,35 @@ fn clear_job(job: Job&) {
 // Adds `text` to `job` as <s> text </s>, a character the model does not
 // know as <unk>. False, adding nothing, if the job is full or the text is
 // longer than the model reads.
-fn add(job: Job&, text: const u8[:]) -> bool {
-    guard mapped && job.starts.len <= MAX_SHORTLIST else { return false; }
+fn add(job: Job&, text: const u8[:]) -> bool { add_after(job, "", text, true) }
+
+// How many characters of text a sequence can hold, between <s> and </s>.
+fn room() -> i64 { if mapped { (live.meta[0].positions as i64) - 2 } else { 0 } }
+
+// Adds `text` after `lead`, the clause so far: <s> lead text, then </s> if
+// `closed`. Every sequence of a job that shares `lead` shares its cost, so
+// their scores compare as P(text | lead); left open, the score does not ask
+// that the clause end with `text`. False, adding nothing, if the job is full
+// or the two together are longer than the model reads.
+fn add_after(job: Job&, lead: const u8[:], text: const u8[:], closed: bool) -> bool {
+    guard mapped && job.starts.len <= MAX_JOB else { return false; }
     var chars: i64 = 0;
     each_utf8(text) { cp => chars++; };
-    guard chars >= 1 && chars <= (live.meta[0].positions as i64) - 2 && job.ids.len + chars + 2 <= job.ids.cap else {
+    var before: i64 = 0;
+    each_utf8(lead) { cp => before++; };
+    guard chars >= 1 && before + chars <= room() && job.ids.len + before + chars + 2 <= job.ids.cap else {
         return false;
     }
     job.ids.push(BOS);
+    each_utf8(lead) { cp =>
+        let id = ids.get(cp as u32);
+        if id { job.ids.push(id); } else { job.ids.push(UNK as i32); }
+    };
     each_utf8(text) { cp =>
         let id = ids.get(cp as u32);
         if id { job.ids.push(id); } else { job.ids.push(UNK as i32); }
     };
-    job.ids.push(EOS);
+    if closed { job.ids.push(EOS); }
     job.starts.push(job.ids.len as i32);
     return true;
 }
@@ -317,6 +334,33 @@ fn choose(job: Job&, scores: const f64[:]) -> i64 {
     }
     note_score(spent);
     return best(search, bits[..]);
+}
+
+// log2 P of each of `job`'s sequences for the session, into `bits`: scored
+// incrementally where the trie of the last score can be kept, at once
+// otherwise. False if the model cannot read the job or its scores are not
+// usable.
+fn rate(job: Job&, bits: f64[>..]&) -> bool {
+    let n = count(job);
+    guard mapped && live.meta.len == 1 && n > 0 else { return false; }
+    let t0 = clock_ns();
+    if cache_on {
+        bits.clear();
+        for _ in n { bits.push(0.0); }
+        let code = octo_rerank_cache_score(job.ids[..], job.starts[..], bits[..]);
+        if code == 1 {
+            note_score(clock_ns() - t0);
+            return false;
+        }
+        if code == 0 && usable(bits[..]) {
+            note_score(clock_ns() - t0);
+            return true;
+        }
+        full_rescores += 1;
+    }
+    let ok = score(job, bits) && usable(bits[..]);
+    note_score(clock_ns() - t0);
+    return ok;
 }
 
 // ---- rerank.tsv -------------------------------------------------------------------
