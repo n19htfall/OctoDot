@@ -2383,6 +2383,38 @@ fn mixed_sentences(s: u64) {
     press(s, session::KEY_ESCAPE);
 }
 
+fn learned_english_prefix(s: u64) {
+    userdb::reset();
+    userdb::clock_override = 1794000000;
+    let before = rank_after(s, "scali", "scaling");
+    check(before > 0, "scali offers scaling behind Chinese before learning");
+    check(pick(s, "scaling", "scaling", 0) && rank_after(s, "scali", "scaling") == before,
+          "one full spelling choice does not promote a completion");
+    check(pick(s, "scaling", "scaling", session::KEYFLAG_NO_LEARN) && rank_after(s, "scali", "scaling") == before,
+          "a no-learn choice does not teach the prefix");
+    check(pick(s, "scaling", "scaling", 0) && rank_after(s, "scali", "scaling") == 0,
+          "two full spelling choices put scaling first for scali");
+    check(rank_after(s, "sca", "scaling") != 0, "a short prefix does not promote the learned completion");
+
+    var saved: u8[>..] = [];
+    saved.append(session::user_save());
+    commit_first(s, "scali", "scaling");
+    check(session::user_restore(saved) == 0 && rank_after(s, "scali", "scaling") == 0,
+          "restored English choices still promote the completion");
+    userdb::choose("scali", "石川爱理", 0);
+    check(rank_after(s, "scali", "石川爱理") == 0 && rank_after(s, "scali", "scaling") > 0,
+          "the learned completion respects a Chinese choice for the same keys");
+    userdb::forget_choice("scali", "石川爱理");
+
+    type_text(s, "scali");
+    session::key(s, key_event(session::KEY_BACKSPACE, 0, session::MOD_SHIFT));
+    check(rank("scaling") == before && session::input == "scali" && userdb::english_uses("scaling", "scaling") == 0,
+          "Shift-Backspace forgets the full spelling choice behind the learned completion");
+    press(s, session::KEY_ESCAPE);
+    userdb::reset();
+    userdb::clock_override = 0;
+}
+
 fn english_words(s: u64) {
     check(english::active() && english::entry_count() > 2000, "the English dictionary is loaded");
     var order: i64[>..] = [];
@@ -2555,8 +2587,7 @@ fn english_words(s: u64) {
 
     check(pick(s, "ok", "OK", 0), "the first English word commits");
     check(pick(s, "ok", "OK", 0) && session::commit == "OK", "consecutive English words commit without an inserted space");
-    userdb::reset();
-    userdb::clock_override = 0;
+    learned_english_prefix(s);
 
     // The lookup itself, and what a key costs on top of the Chinese reading.
     var t = clock_ns();

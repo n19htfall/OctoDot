@@ -1173,25 +1173,31 @@ fn english_uses(code: const u8[:], text: const u8[:]) -> i64 {
     return round(effective(english[c].uses, english[c].day, today())) as i64;
 }
 
-// The picked form of `code` with the most uses, and that many. 0 if none still count.
-fn english_top(code: const u8[:], out: u8[>..]&) -> i64 {
-    out.clear();
+// The most used form for these keys, its stored code, and its decayed uses.
+// An exact choice wins over a choice that transfers from a longer code.
+fn english_top(code: const u8[:], allow_prefix: bool) -> const u8[:], const u8[:], i64 {
+    guard live_english > 0 else { return "", "", 0; }
+    let day = today();
     var best: i64 = -1;
     var uses: i64 = 0;
+    var best_exact = false;
     for c in english.len {
-        if !english[c].live { continue; }
         let e = english[c];
-        if compare(pool_en[e.code..e.code + e.code_len], code) != 0 { continue; }
-        let u = round(effective(e.uses, e.day, today())) as i64;
-        if u > uses {
+        if !e.live || e.code_len < code.len { continue; }
+        let exact = e.code_len == code.len;
+        if !exact && (!allow_prefix || best_exact) { continue; }
+        if compare(pool_en[e.code..e.code + code.len], code) != 0 { continue; }
+        let u = round(effective(e.uses, e.day, day)) as i64;
+        if u < (if exact { 1 } else { 2 }) { continue; }
+        if u > uses || (exact && !best_exact) {
             uses = u;
             best = c;
+            best_exact = exact;
         }
     }
-    guard best >= 0 else { return 0; }
+    guard best >= 0 else { return "", "", 0; }
     let e = english[best];
-    out.append(pool_en[e.text..e.text + e.text_len]);
-    return uses;
+    return pool_en[e.text..e.text + e.text_len], pool_en[e.code..e.code + e.code_len], uses;
 }
 
 fn unlearn_english(code: const u8[:], text: const u8[:]) -> bool {

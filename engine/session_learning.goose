@@ -215,7 +215,7 @@ fn unlearn_highlighted() -> bool {
     let c = menu.candidates[highlight];
     let text = decoder::candidate_text(menu, c);
     var forgot = false;
-    if c.code_len > 0 {                     // an English word: its use for these letters
+    if c.code_len > 0 {                     // an English word: the choice that supplied it
         forgot = userdb::unlearn_english(menu.pool[c.code..c.code + c.code_len], text);
     } else if candidate_mixed(c) {          // a mixed sentence: the choice of it for these keys
         var span: u8[>..] = [];

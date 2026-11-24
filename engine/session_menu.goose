@@ -164,7 +164,7 @@ fn typed_code(code: u8[>..]&, cased: u8[>..]&) {
     }
 }
 
-// Puts the English word `text`, typed as `code`, at place `at` of the menu:
+// Puts the English word `text` at place `at`, with its learning key `code`:
 // 1, or 0 if the menu has that text already or is full up to there.
 fn insert_english(at: i64, text: const u8[:], code: const u8[:]) -> i64 {
     guard text.len > 0 && text.len <= 65535 && code.len > 0 && code.len <= 255 else { return 0; }
@@ -183,6 +183,8 @@ fn insert_english(at: i64, text: const u8[:], code: const u8[:]) -> i64 {
 // a capital; a word the user picked for this code, by its uses; otherwise
 // the first candidate stays Chinese and a common exact match goes second;
 // completions of 4 letters or more, at most two, after the third candidate.
+// In full pinyin, repeated choices for a longer code can also bring its
+// completion to the front if the prefix has no exact match or chosen Chinese.
 // When the keys read as full Chinese syllables throughout (chinese_full),
 // English waits behind the Chinese instead: an exact match takes the last
 // place on the first page, and completions go after the first page, so
@@ -195,14 +197,17 @@ fn place_english() {
     typed_code(code, cased);
     if code.len == 0 || code.len > english::MAX_CODE { return; }
     let exact = english::exact(code);
-    var learned: u8[>..] = [];
-    let learned_uses = userdb::english_top(code, learned);
-    var primary: u8[>..] = [];
-    if learned_uses > 0 { primary.append(learned); }
-    else if exact >= 0 { english::prefer(exact, cased, primary); }
     let capital = english::has_capital(cased);
     var barrier: i64 = 0;
     if menu.candidates.len > 0 { barrier = userdb::chosen(code, decoder::candidate_text(menu, menu.candidates[0])); }
+    let can_complete = code.len >= 4;
+    let allow_prefix = scheme == "fullpinyin" && can_complete && code.len == input.len &&
+                       exact < 0 && !chinese_full && barrier == 0 &&
+                       (menu.candidates.len == 0 || menu.candidates[0].count > 0);
+    let learned, learned_code, learned_uses = userdb::english_top(code, allow_prefix);
+    var primary: u8[>..] = [];
+    if learned_uses > 0 { primary.append(learned); }
+    else if exact >= 0 { english::prefer(exact, cased, primary); }
     // The Chinese is nonsense next to the English word: English is meant,
     // unless the user picked that Chinese for these letters before.
     weak_chinese = exact >= 0 && barrier == 0 && english::bits(exact) - chinese_bits >= english::WEAK_CHINESE_BITS;
@@ -215,7 +220,7 @@ fn place_english() {
     }
     var inserted: i64 = 0;
     if at >= 0 {
-        inserted += insert_english(at, primary, code);
+        inserted += insert_english(at, primary, if learned_uses > 0 { learned_code } else { code[..] });
         if exact >= 0 {
             for k in english::form_count(exact) {
                 var form: u8[>..] = [];
@@ -225,7 +230,7 @@ fn place_english() {
             }
         }
     }
-    if code.len < 4 { return; }
+    if !can_complete { return; }
     var ids: i64[>..] = [];
     english::completions(code, 2, ids);
     var cat = menu.candidates.len;

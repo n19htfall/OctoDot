@@ -17,7 +17,7 @@ let MAX_CANDIDATES = 120;
 // A candidate: pool[text..text + len], reading input[..to], made of the
 // words refs[refs..refs + count], so choosing it can be learned.
 // An English candidate has no word refs. Its code is pool[code..code + code_len]
-// (the letters typed); code_len 0 is anything else.
+// (the key used to forget its learning); code_len 0 is anything else.
 struct Candidate { to: u8, text: u32, len: u16, refs: u32, count: u16, code: u32, code_len: u8 }
 
 root struct Menu {
